@@ -6364,6 +6364,16 @@ impl Vm {
         invocation
     }
 
+    /// Watches a channel a native returned that a native producer feeds,
+    /// for progress wakeups.
+    pub(super) fn track_native_result(&mut self, value: &Value) {
+        if let Value::Channel(channel) = value
+            && channel.has_native_producer()
+        {
+            self.progress.track_native_channel(channel);
+        }
+    }
+
     /// What a call of `function` gave: its result, or the error it reports.
     pub(super) fn settle_native(
         &mut self,
@@ -6375,25 +6385,22 @@ impl Vm {
         match invocation {
             NativeInvocation::Result(value, resources) => {
                 self.native_resources.register(resources);
-                if value.contains_non_finite_number() {
-                    return Err(self.error(
-                        RuntimeErrorKind::NativeContract,
-                        format!(
-                            "native `{}` returned a non-finite number",
-                            function.qualified_name()
-                        ),
-                        self.owned_span(span),
-                    ));
-                }
                 if let Some(signature) = resource_signature {
                     self.validate_foreign_resource_result(function, signature, &value, span)?;
                 }
-                if let Value::Channel(channel) = &value
-                    && channel.has_native_producer()
-                {
-                    self.progress.track_native_channel(channel);
-                }
+                self.track_native_result(&value);
                 Ok(value)
+            }
+            NativeInvocation::NonFinite(resources) => {
+                self.native_resources.register(resources);
+                Err(self.error(
+                    RuntimeErrorKind::NativeContract,
+                    format!(
+                        "native `{}` returned a non-finite number",
+                        function.qualified_name()
+                    ),
+                    self.owned_span(span),
+                ))
             }
             NativeInvocation::Error(error, resources) => {
                 self.native_resources.register(resources);

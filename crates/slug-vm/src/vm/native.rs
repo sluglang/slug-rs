@@ -927,27 +927,17 @@ impl Vm {
             invocation,
         };
         Some(match self.start_native(function, arguments) {
-            // A result the interpreter would accept: anything else fails
-            // the same way when it is reported.
+            // A result the interpreter would accept, settled as it settles
+            // one: anything else fails the same way when it is reported.
             NativeInvocation::Result(value, resources)
-                if !value.contains_non_finite_number()
-                    && signature.is_none_or(|signature| {
-                        self.validate_foreign_resource_result(function, signature, &value, None)
-                            .is_ok()
-                    }) =>
+                if signature.is_none_or(|signature| {
+                    self.validate_foreign_resource_result(function, signature, &value, None)
+                        .is_ok()
+                }) =>
             {
-                self.settle_native(
-                    function,
-                    NativeInvocation::Result(value, resources),
-                    signature,
-                    None,
-                )
-                .map_err(|_| {
-                    failure(NativeInvocation::ContractViolation(alloc::format!(
-                        "native `{}` could not be settled",
-                        function.qualified_name()
-                    )))
-                })
+                self.native_resources.register(resources);
+                self.track_native_result(&value);
+                Ok(value)
             }
             invocation => Err(failure(invocation)),
         })

@@ -682,7 +682,8 @@ pub enum NativeValueKind {
 pub struct NativeError {
     code: String,
     message: String,
-    data: Option<NativeOwnedValue>,
+    /// Boxed, as errors rarely carry data and travel by value.
+    data: Option<Box<NativeOwnedValue>>,
 }
 
 impl NativeError {
@@ -697,7 +698,7 @@ impl NativeError {
 
     #[must_use]
     pub fn with_data(mut self, data: NativeOwnedValue) -> Self {
-        self.data = Some(data);
+        self.data = Some(Box::new(data));
         self
     }
 
@@ -712,57 +713,74 @@ impl NativeError {
     }
 }
 
+/// A value a native gives the VM, which knows whether it holds a
+/// non-finite number: only [`NativeOwnedValue::float`] can make one, as
+/// the VM's own values never hold one.
 #[derive(Clone, Debug)]
-pub struct NativeOwnedValue(Value);
+pub struct NativeOwnedValue(Value, bool);
 
 impl NativeOwnedValue {
     #[must_use]
     pub fn nil() -> Self {
-        Self(Value::Nil)
+        Self(Value::Nil, false)
     }
 
     #[must_use]
     pub fn boolean(value: bool) -> Self {
-        Self(Value::Bool(value))
+        Self(Value::Bool(value), false)
     }
 
     #[must_use]
     pub fn integer(value: i64) -> Self {
-        Self(Value::Int(value))
+        Self(Value::Int(value), false)
     }
 
     #[must_use]
     pub fn float(value: f64) -> Self {
-        Self(Value::Float(value))
+        Self(Value::Float(value), !value.is_finite())
     }
 
     #[must_use]
     pub fn string(value: impl Into<crate::collections::Str>) -> Self {
-        Self(Value::Str(value.into()))
+        Self(Value::Str(value.into()), false)
     }
 
     #[must_use]
     pub fn bytes(value: impl Into<Rc<[u8]>>) -> Self {
-        Self(Value::Bytes(
-            Bytes::from_values(value.into().to_vec()).into_shared(),
-        ))
+        Self(
+            Value::Bytes(Bytes::from_values(value.into().to_vec()).into_shared()),
+            false,
+        )
     }
 
     #[must_use]
     pub fn list(values: Vec<Self>) -> Self {
-        Self(Value::List(List::from_values(
-            values.into_iter().map(|value| value.0).collect(),
-        )))
+        let non_finite = values.iter().any(|value| value.1);
+        Self(
+            Value::List(List::from_values(
+                values.into_iter().map(|value| value.0).collect(),
+            )),
+            non_finite,
+        )
     }
 
     #[must_use]
     pub fn map(entries: Vec<(Self, Self)>) -> Self {
-        Self(Value::Map(Map::new(
-            entries
-                .into_iter()
-                .map(|(key, value)| (key.0, value.0))
-                .collect(),
-        )))
+        let non_finite = entries.iter().any(|(key, value)| key.1 || value.1);
+        Self(
+            Value::Map(Map::new(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.0, value.0))
+                    .collect(),
+            )),
+            non_finite,
+        )
+    }
+
+    /// Whether it holds a number that is not finite.
+    pub(crate) fn is_non_finite(&self) -> bool {
+        self.1
     }
 
     pub(crate) fn into_value(self) -> Value {
@@ -962,7 +980,7 @@ impl<'call> NativeValueRef<'call> {
 
     #[must_use]
     pub fn to_owned(self) -> NativeOwnedValue {
-        NativeOwnedValue(self.value.clone())
+        NativeOwnedValue(self.value.clone(), false)
     }
 
     fn type_error(self, expected: &str) -> NativeError {
@@ -1359,6 +1377,9 @@ impl NativeFunction {
             return call.contract_violation(message);
         }
         match (status, call.outcome.take()) {
+            (NativeStatus::Ok, Some(NativeOutcome::Result(value))) if value.is_non_finite() => {
+                NativeInvocation::NonFinite(call.resources)
+            }
             (NativeStatus::Ok, Some(NativeOutcome::Result(value))) => {
                 NativeInvocation::Result(value.into_value(), call.resources)
             }
@@ -1652,7 +1673,10 @@ impl<'call> NativeCall<'call> {
     /// used to access call-scoped values after this callback returns.
     pub fn channel(&mut self, capacity: usize) -> (NativeOwnedValue, NativeChannelProducer) {
         let (channel, producer) = Channel::native(capacity);
-        (NativeOwnedValue(Value::Channel(Rc::new(channel))), producer)
+        (
+            NativeOwnedValue(Value::Channel(Rc::new(channel)), false),
+            producer,
+        )
     }
 
     /// Mints a native producer capability from a channel argument, attaching a
@@ -1681,7 +1705,7 @@ impl<'call> NativeCall<'call> {
     /// Creates an ordinary Slug channel without issuing a native producer capability.
     #[must_use]
     pub fn plain_channel(&mut self, capacity: usize) -> NativeOwnedValue {
-        NativeOwnedValue(Value::Channel(Rc::new(Channel::new(capacity))))
+        NativeOwnedValue(Value::Channel(Rc::new(Channel::new(capacity))), false)
     }
 
     /// Closes a channel argument and wakes blocked Slug senders and receivers.
@@ -1719,7 +1743,7 @@ impl<'call> NativeCall<'call> {
             home: crate::vm::island::Inbox::current(),
         });
         self.resources.push(Rc::downgrade(&resource));
-        Ok(NativeOwnedValue(Value::NativeResource(resource)))
+        Ok(NativeOwnedValue(Value::NativeResource(resource), false))
     }
 
     /// Runs a synchronous operation against a checked resource payload.
@@ -1858,6 +1882,8 @@ impl<'call> NativeCall<'call> {
 
 pub(crate) enum NativeInvocation {
     Result(Value, Vec<Weak<NativeResource>>),
+    /// A result holding a number that is not finite, which the VM refuses.
+    NonFinite(Vec<Weak<NativeResource>>),
     Error(NativeError, Vec<Weak<NativeResource>>),
     ContractViolation(String),
 }
@@ -1867,7 +1893,7 @@ impl NativeError {
         (
             self.code,
             self.message,
-            self.data.map(NativeOwnedValue::into_value),
+            self.data.map(|data| data.into_value()),
         )
     }
 }

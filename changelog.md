@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Calls to native and foreign functions no longer scan their result for
+  non-finite numbers twice: a result is known not to hold one unless the
+  function made a float that is not finite, which is still refused. A
+  long HTTP server run is about 5% faster.
+
 - Functions with `defer`, `onsuccess` and `onerror` actions, and
   functions that update module variables (`total = total + i`, `:+`,
   copying a struct with one field changed), now run as machine code,
