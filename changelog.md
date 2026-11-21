@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Code running inside a task with its own view of the module variables,
+  such as a `spawn` with `task var`s or a `fork`, calls module functions
+  directly from machine code instead of returning to the interpreter
+  for each call: Crawl's web front end, whose handlers run that way, is
+  3% faster with a crowd of players. A function that left machine code
+  on most of its first calls, as one may while the functions it calls
+  are still being compiled, is tried again later instead of staying
+  interpreted for the rest of the run.
+
 - More functions run as machine code: those written as `fn(...) match`,
   as std's `map`, `filter` and `find` are, and pipelines such as
   `x /> f(y)`. A call that leaves out trailing parameters whose defaults

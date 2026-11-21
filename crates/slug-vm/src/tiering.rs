@@ -183,6 +183,9 @@ const FRESH: u32 = 0;
 /// Compiled: entries run the native code.
 const COMPILED: u32 = u32::MAX - 1;
 /// Hot but not compiled, or no tier is installed: nothing more to count.
+/// A compiled chunk that settled, leaving early on most entries, is tried
+/// again after [`RETRY_AFTER`] interpreted entries, then after twice as
+/// many each time it settles again.
 const SETTLED: u32 = u32::MAX;
 
 /// A chunk's entries left before it is hot, and its native code once
@@ -197,12 +200,19 @@ pub(crate) struct NativeSlot {
     /// them it left again early, or declined.
     entries: AtomicU32,
     exits: AtomicU32,
+    /// How many times the compiled chunk has settled.
+    settles: AtomicU32,
 }
 
 /// Entries before a chunk's exits are judged.
 const JUDGED_AFTER: u32 = 64;
 /// Counts are halved here, so recent entries weigh most.
 const DECAY_AT: u32 = 1 << 16;
+/// Interpreted entries before a settled chunk's code is tried again: what
+/// it left on may have been passing, a callee not compiled yet, say.
+const RETRY_AFTER: u32 = 1 << 10;
+/// The most the wait doubles.
+const MOST_BACKOFF: u32 = 10;
 
 impl NativeSlot {
     pub(crate) const fn new() -> Self {
@@ -211,6 +221,7 @@ impl NativeSlot {
             code: OnceLock::new(),
             entries: AtomicU32::new(0),
             exits: AtomicU32::new(0),
+            settles: AtomicU32::new(0),
         }
     }
 
@@ -235,6 +246,10 @@ impl NativeSlot {
             self.exits.store(exits, Ordering::Relaxed);
         }
         if exited && entries >= JUDGED_AFTER && exits * 2 > entries {
+            // From here `entries` counts interpreted entries to the retry.
+            self.entries.store(0, Ordering::Relaxed);
+            let settles = self.settles.load(Ordering::Relaxed);
+            self.settles.store(settles.saturating_add(1), Ordering::Relaxed);
             self.state.store(SETTLED, Ordering::Relaxed);
         }
     }
@@ -255,10 +270,26 @@ impl NativeSlot {
         } else if left == COMPILED {
             self.code.get()
         } else if left == SETTLED {
-            None
+            self.settled()
         } else {
             self.reached(program, chunk, left)
         }
+    }
+
+    /// An entry into a settled chunk: its code once it is due a retry.
+    #[inline(never)]
+    fn settled(&self) -> Option<&Arc<dyn NativeCode>> {
+        let code = self.code.get()?;
+        let entries = self.entries.load(Ordering::Relaxed) + 1;
+        let backoff = self.settles.load(Ordering::Relaxed).saturating_sub(1).min(MOST_BACKOFF);
+        if entries < RETRY_AFTER << backoff {
+            self.entries.store(entries, Ordering::Relaxed);
+            return None;
+        }
+        self.entries.store(0, Ordering::Relaxed);
+        self.exits.store(0, Ordering::Relaxed);
+        self.state.store(COMPILED, Ordering::Relaxed);
+        Some(code)
     }
 
     #[cold]
@@ -329,6 +360,7 @@ impl core::fmt::Debug for NativeSlot {
             .field("compiled", &self.code.get().is_some())
             .field("entries", &self.entries.load(Ordering::Relaxed))
             .field("exits", &self.exits.load(Ordering::Relaxed))
+            .field("settles", &self.settles.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -352,6 +384,48 @@ mod tests {
         assert_eq!(slot.state.load(Ordering::Relaxed), COMPILED);
         slot.record_entry(true);
         assert_eq!(slot.state.load(Ordering::Relaxed), SETTLED);
+    }
+
+    struct NoCode;
+
+    impl NativeCode for NoCode {
+        fn run(&self, _: &mut Vm, _: &Value, _: &mut Vec<Value>) -> NativeOutcome {
+            unreachable!("the test runs no code")
+        }
+
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+    }
+
+    fn settle(slot: &NativeSlot) {
+        for _ in 0..JUDGED_AFTER {
+            slot.record_entry(true);
+        }
+        assert_eq!(slot.state.load(Ordering::Relaxed), SETTLED);
+    }
+
+    #[test]
+    fn a_settled_chunk_is_tried_again_later_each_time() {
+        let slot = NativeSlot::new();
+        assert!(slot.install(Arc::new(NoCode)));
+        for wait in [RETRY_AFTER, RETRY_AFTER * 2, RETRY_AFTER * 4] {
+            settle(&slot);
+            for _ in 1..wait {
+                assert!(slot.settled().is_none());
+            }
+            assert!(slot.settled().is_some());
+            assert_eq!(slot.state.load(Ordering::Relaxed), COMPILED);
+        }
+    }
+
+    #[test]
+    fn a_chunk_without_code_stays_settled() {
+        let slot = NativeSlot::new();
+        slot.state.store(SETTLED, Ordering::Relaxed);
+        for _ in 0..RETRY_AFTER * 2 {
+            assert!(slot.settled().is_none());
+        }
     }
 
     #[test]

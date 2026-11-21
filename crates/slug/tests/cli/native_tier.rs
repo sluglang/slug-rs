@@ -865,6 +865,34 @@ fn recursion_deeper_than_native_calls_go_continues_in_the_interpreter() {
 }
 
 #[test]
+fn compiled_calls_in_tasks_with_their_own_view_match_the_interpreter() {
+    // A spawned task with a `task var` and a fork each have their own view
+    // of the module variables. Their compiled loops call module functions,
+    // `val`s every view sees as they are, directly; what they read of the
+    // `task var` and the `var` stays each task's own. (How many calls are
+    // direct depends on when the background compiler finishes.)
+    same_with_and_without_native_code(
+        "task-views",
+        "task var who = \"main\"\n\
+         var shared = 10\n\
+         val step = fn(n) { n * 3 + 1 }\n\
+         val tag = fn(n) { who + \":\" + n }\n\
+         val loop = fn(i, total) {\n\
+             if (i == 0) { total } else { recur(i - 1, total + step(i) % 7 + shared) }\n\
+         }\n\
+         val main = fn() {\n\
+             val child = spawn {\n\
+                 who = \"child\"\n\
+                 [loop(2000, 0), tag(1)]\n\
+             }\n\
+             val forked = fork { [loop(2000, 0), tag(2)] }\n\
+             shared = 20\n\
+             println(select { await child }, select { await forked }, loop(2000, 0), tag(3))\n\
+         }\n",
+    );
+}
+
+#[test]
 fn deep_recursion_in_a_fork_stays_within_its_threads_stack() {
     // Forks run on threads with smaller stacks than the main thread's;
     // native calls stop at their budget and the interpreter goes on.

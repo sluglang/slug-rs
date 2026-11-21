@@ -2763,8 +2763,8 @@ impl Vm {
     }
 
     /// The value native code in `caller` calls as module-level name
-    /// `name`, when `caller` has resolved it, outside a task with its own
-    /// view of the variables (the interpreter reads it through that).
+    /// `name`, when `caller` has resolved it, as
+    /// [`Vm::native_value_callee`] reads it.
     #[cfg(feature = "native-hooks")]
     #[doc(hidden)]
     #[must_use]
@@ -2777,18 +2777,23 @@ impl Vm {
     }
 
     /// The value native code calls as `callee`, as `CallPositional` calls
-    /// it: a module binding's value, read outside a task with its own view
-    /// of the variables.
+    /// it: a module binding's value, read through the task's view of the
+    /// variables when it has one, as `native_global` reads it. Module
+    /// functions are `val`s, which every view sees as they are.
     #[cfg(feature = "native-hooks")]
     #[doc(hidden)]
     #[must_use]
     pub fn native_value_callee(&self, callee: &Value) -> Option<Value> {
         match callee {
-            Value::Binding { cell, .. } => {
+            Value::Binding { cell, name } => {
                 #[cfg(feature = "concurrency")]
-                if self.view.is_some() {
-                    return None;
+                if self.view.is_some()
+                    && let Some(value) = self.viewed_binding(cell, name).ok()?
+                {
+                    return Some(value);
                 }
+                #[cfg(not(feature = "concurrency"))]
+                let _ = name;
                 Some(cell.borrow().clone())
             }
             value => Some(value.clone()),

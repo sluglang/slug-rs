@@ -1044,6 +1044,30 @@ Against `master` (9 padded PGO rounds): tuned 0.99x, hold-outs 0.99x;
 `closure-accumulate` 0.87x, `crawl-game` 0.88x, `crawl-history` 0.99x,
 `higher-order` 1.03x inside its 4%/8% spread.
 
+### Code that still runs interpreted (2026-11-21)
+
+Sampling interpreted stacks with the tier on put `crawl-crowd` at 36%
+interpreted, the rest of the tuned workloads at 2-20%. Counting exits by
+site and declined calls by cause found:
+
+- **Task views.** Native code declined every module-level call inside
+  a task with its own view of the variables (40k in `crawl-crowd`,
+  whose handlers run that way), though functions are `val`s, which every
+  view sees as they are. Callees are now read through the view, as
+  `native_global` reads variables.
+- **Permanent settling.** A chunk that exited on most early entries,
+  while its callees were still cold or compiling (`slug.fmt.json`'s
+  `emitList`), stayed interpreted for the run. A settled chunk is now
+  tried again after 1024 interpreted entries, doubling each time it
+  settles again.
+- **Warm-up.** Most other declines are calls to closures not hot yet or
+  still queued for compiling. Thresholds from 1000 down to 30 changed no
+  workload's time, so they are left alone. Functions with `defer`
+  (`http-server`'s handlers) are Phase 4.
+
+Against the previous commit (9 padded PGO rounds): `crawl-crowd` 0.97x,
+the rest inside their spreads; tuned and hold-out geomeans 1.00x.
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.
