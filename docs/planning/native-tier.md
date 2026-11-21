@@ -1142,6 +1142,30 @@ the previous commit (9 padded PGO rounds): `defer-errors` 0.91x,
 `expression-evaluator` 1.02x just outside their spreads, though
 `crawl-history` runs no deferred action; tuned 0.99x, hold-out 1.00x.
 
+### Phase 4 closed (2026-11-21)
+
+Stages 1-3 and the module updates of stage 5 are done; `Spawn`,
+`Select` and `CallSelectedPooled` stay interpreted. Across Phase 4,
+`defer-errors` runs about 18% faster and `http-server` about 7%.
+
+`Spawn` and `Select` were left because `http-server`, the workload they
+would serve, is little interpreted. Sampling a run ten times longer
+(42k requests, a build with symbols and without PGO, 2 s) put 82% of
+the VM thread in native code, 9.5% in the interpreter (mostly the
+`select` in `tcp.read` and `tcp.accept`, which must suspend the task
+through the interpreter whenever its channel is empty), and 9% in the
+scheduler and waiting. Its native time goes to work Phase 4 does not
+touch: builtin and foreign calls (about a third, led by the foreign-call
+binding for string and TCP functions), copying and freeing values, and
+the index, arithmetic and match helpers. About 3% of the thread checks
+each native result for non-finite numbers, walking whole lists such as
+`split`'s; the interpreter pays the same check. Its one `defer` runs
+once per client, too rarely to compile.
+
+Leads, outside the tier: skip the non-finite check where a result cannot
+hold a float, and make the foreign-call path cheaper; both help the
+interpreter too.
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.
