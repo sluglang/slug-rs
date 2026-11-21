@@ -68,10 +68,12 @@ pub(crate) const CELL_LOCAL: u32 = u32::MAX;
 #[derive(Clone, Debug)]
 pub(crate) struct ExitTable {
     pub(crate) ip: usize,
-    /// The frame's scope depth there, and whether it leaves only to have
-    /// deferred actions run.
+    /// The frame's scope depth there.
     pub(crate) scope: u32,
-    pub(crate) cleanup: bool,
+    /// Whether it leaves while running the deferred actions of the
+    /// instruction at `ip`, one of which left: [`native_cleanup`]'s
+    /// [`CLEANUP_EXITED`].
+    pub(crate) unwinding: bool,
     pub(crate) locals: Vec<u32>,
     pub(crate) stack: Vec<u32>,
 }
@@ -95,6 +97,10 @@ pub(crate) mod stats {
     /// Calls native code could not make because the callee had no native
     /// code (or was not a closure an exact call enters).
     pub(crate) static UNCOMPILED_CALLS: AtomicU64 = AtomicU64::new(0);
+    /// Deferred actions native code ran.
+    pub(crate) static ACTIONS: AtomicU64 = AtomicU64::new(0);
+    /// Deferred actions native code ran that left to the interpreter.
+    pub(crate) static ACTIONS_LEFT: AtomicU64 = AtomicU64::new(0);
 
     #[inline]
     pub(crate) fn count(counter: &AtomicU64) {
@@ -114,8 +120,6 @@ struct Root {
     frames: Vec<NativeFrame>,
     /// A builtin's failed call, which the innermost frame left past.
     failure: Option<NativeFailure>,
-    /// Whether the innermost frame left only to have deferred actions run.
-    cleanup: bool,
 }
 
 /// The machine stack used since `root`'s entry, roughly: native frames
@@ -132,6 +136,28 @@ struct Exited {
     locals: Vec<NativeLocal>,
     stack: Vec<Value>,
     scopes: NativeScopes,
+    unwinding: bool,
+}
+
+impl Exited {
+    /// The frame, of `closure`, as a call native code was making.
+    fn into_frame(self, closure: Value) -> NativeFrame {
+        let Self {
+            ip,
+            locals,
+            stack,
+            scopes,
+            unwinding,
+        } = self;
+        NativeFrame {
+            closure,
+            ip,
+            locals,
+            stack,
+            scopes,
+            unwinding,
+        }
+    }
 }
 
 /// What one activation of generated code runs with. Its address is the
@@ -456,7 +482,6 @@ impl NativeCode for Compiled {
             base: 0,
             frames: Vec::new(),
             failure: None,
-            cleanup: false,
         };
         root.base = std::ptr::from_ref(&root) as usize;
         // SAFETY: everything passed lives across the call; the code moves
@@ -479,6 +504,7 @@ impl NativeCode for Compiled {
                 locals,
                 stack,
                 scopes,
+                unwinding,
             }) => {
                 root.frames.reverse();
                 NativeOutcome::Exit {
@@ -488,7 +514,7 @@ impl NativeCode for Compiled {
                     frames: root.frames,
                     failure: root.failure,
                     scopes,
-                    cleanup: root.cleanup,
+                    unwinding,
                 }
             }
         }
@@ -617,19 +643,8 @@ pub(crate) extern "C" fn native_call(
                 out.write(value);
                 CALL_RETURNED
             }
-            Err(Exited {
-                ip,
-                locals,
-                stack,
-                scopes,
-            }) => {
-                (*root).frames.push(NativeFrame {
-                    closure,
-                    ip,
-                    locals,
-                    stack,
-                    scopes,
-                });
+            Err(exited) => {
+                (*root).frames.push(exited.into_frame(closure));
                 CALL_EXITED
             }
         }
@@ -700,19 +715,9 @@ pub(crate) extern "C" fn native_call_exited(context: *mut Context, callee: *mut 
         let callee = &mut *callee;
         let exited = Box::from_raw(callee.exit);
         callee.exit = std::ptr::null_mut();
-        let Exited {
-            ip,
-            locals,
-            stack,
-            scopes,
-        } = *exited;
-        (*(*context).root).frames.push(NativeFrame {
-            closure: (*callee.closure).clone(),
-            ip,
-            locals,
-            stack,
-            scopes,
-        });
+        (*(*context).root)
+            .frames
+            .push(exited.into_frame((*callee.closure).clone()));
     }
 }
 
@@ -1207,30 +1212,74 @@ pub(crate) extern "C" fn native_defer(
     }
 }
 
-/// Leaves the activation's scopes from `scope` in: returns 0 when
-/// nothing deferred in them runs on success, dropping what is deferred
-/// `onerror`, and 1, changing nothing, when something does, for the
+/// [`native_cleanup`]'s result when every action ran.
+pub(crate) const CLEANUP_DONE: u32 = 0;
+/// [`native_cleanup`]'s result when it left the next action for the
 /// interpreter to run.
-pub(crate) extern "C" fn native_unwind(context: *mut Context, scope: u32) -> u32 {
-    // SAFETY: generated code passes its own context.
+pub(crate) const CLEANUP_DECLINED: u32 = 1;
+/// [`native_cleanup`]'s result when an action left to the interpreter.
+pub(crate) const CLEANUP_EXITED: u32 = 2;
+
+/// Runs what the activation deferred in its scopes from `scope` in, as
+/// the interpreter's cleanup on success does, newest first: drops each
+/// action deferred `onerror`, and calls each other one, a compiled
+/// closure of no parameters. Returns [`CLEANUP_DONE`] once all have run;
+/// [`CLEANUP_DECLINED`], leaving the rest deferred, when the next is not
+/// such a closure, the native calls have used their stack budget, or the
+/// thread needs attention; and [`CLEANUP_EXITED`] when one left to the
+/// interpreter, its frame recorded, for the activation to leave
+/// unwinding.
+pub(crate) extern "C" fn native_cleanup(context: *mut Context, scope: u32) -> u32 {
+    // SAFETY: generated code passes its own context. The VM is not
+    // otherwise borrowed while native code runs.
     unsafe {
         let context = &mut *context;
         if context.deferred.is_null() {
-            return 0;
+            return CLEANUP_DONE;
         }
-        let deferred = &mut *context.deferred;
-        let inner = deferred
-            .iter()
-            .rposition(|action| action.depth < scope)
-            .map_or(0, |last| last + 1);
-        if deferred[inner..]
-            .iter()
-            .any(|action| action.mode != DeferMode::Error)
-        {
-            return 1;
+        loop {
+            let deferred = &mut *context.deferred;
+            let Some(last) = deferred.last() else {
+                return CLEANUP_DONE;
+            };
+            if last.depth < scope {
+                return CLEANUP_DONE;
+            }
+            if last.mode == DeferMode::Error {
+                deferred.pop();
+                continue;
+            }
+            let root = context.root;
+            let entry = {
+                let vm = &*context.vm;
+                if stack_used(&*root) < STACK_BUDGET && !vm.native_needs_attention() {
+                    vm.native_entry(last.action.clone(), 0)
+                } else {
+                    None
+                }
+            };
+            let Some((closure, code)) = entry else {
+                stats::count(&stats::UNCOMPILED_CALLS);
+                return CLEANUP_DECLINED;
+            };
+            let Some(compiled) = code.as_any().downcast_ref::<Compiled>() else {
+                return CLEANUP_DECLINED;
+            };
+            if compiled.arity != 0 {
+                return CLEANUP_DECLINED;
+            }
+            deferred.pop();
+            stats::count(&stats::ACTIONS);
+            let arguments = std::ptr::NonNull::<Value>::dangling().as_ptr();
+            match compiled.enter(context.vm, &raw const closure, root, arguments) {
+                Ok(value) => drop(value),
+                Err(exited) => {
+                    (*root).frames.push(exited.into_frame(closure));
+                    stats::count(&stats::ACTIONS_LEFT);
+                    return CLEANUP_EXITED;
+                }
+            }
         }
-        deferred.truncate(inner);
-        0
     }
 }
 
@@ -1258,10 +1307,6 @@ pub(crate) extern "C" fn native_exit(context: *mut Context, exit: u32, base: *co
                 }
             })
             .collect();
-        // The innermost frame says why the activations leave.
-        if (*context.root).frames.is_empty() {
-            (*context.root).cleanup = table.cleanup;
-        }
         let deferred = if context.deferred.is_null() {
             Vec::new()
         } else {
@@ -1275,6 +1320,7 @@ pub(crate) extern "C" fn native_exit(context: *mut Context, exit: u32, base: *co
                 depth: table.scope,
                 deferred,
             },
+            unwinding: table.unwinding,
         }));
     }
 }

@@ -515,9 +515,8 @@ enum ExecutionOutcome {
 enum NativeEntry {
     /// The frame stays interpreted.
     Declined,
-    /// Native code left the frame to the interpreter: only to run
-    /// deferred actions, when `cleanup`.
-    Exited { cleanup: bool },
+    /// Native code left the frame to the interpreter.
+    Exited,
     /// The function returned this value.
     Returned(Value),
 }
@@ -2423,13 +2422,12 @@ impl Vm {
                     .chunk;
                 if let Some(native) = chunk.native.tick(program, index) {
                     let entry = self.enter_native(native)?;
-                    chunk.native.record_entry(matches!(
-                        entry,
-                        NativeEntry::Declined | NativeEntry::Exited { cleanup: false }
-                    ));
+                    chunk
+                        .native
+                        .record_entry(!matches!(entry, NativeEntry::Returned(_)));
                     match entry {
                         NativeEntry::Declined => {}
-                        NativeEntry::Exited { .. } => {
+                        NativeEntry::Exited => {
                             // The active frame may be a new one, of another
                             // chunk: look it up again.
                             interpret_entry = true;
@@ -2546,10 +2544,10 @@ impl Vm {
                 frames,
                 failure,
                 scopes,
-                cleanup,
+                unwinding,
             } => {
                 let frame = self.frames.last_mut().expect("active frame was checked");
-                (frame.scope_depth, frame.scopes) = cleanup::native_scopes(scopes);
+                (frame.scope_depth, frame.scopes) = cleanup::native_scopes(scopes, unwinding);
                 if locals.len() != frame.locals.len() {
                     return Err(self.error(
                         RuntimeErrorKind::InvalidBytecode,
@@ -2562,13 +2560,11 @@ impl Vm {
                 }
                 frame.ip = ip;
                 self.stack.extend(stack);
-                for frame in frames {
-                    self.push_native_frame(frame)?;
-                }
+                self.push_native_frames(frames, unwinding)?;
                 if let Some(failure) = failure {
                     return Err(self.native_raise(failure));
                 }
-                Ok(NativeEntry::Exited { cleanup })
+                Ok(NativeEntry::Exited)
             }
         }
     }
@@ -2611,10 +2607,9 @@ impl Vm {
         let outcome = native.run(self, &callee, &mut arguments_moved);
         arguments_moved.clear();
         self.native_arguments = arguments_moved;
-        chunk.native.record_entry(matches!(
-            outcome,
-            crate::tiering::NativeOutcome::Exit { cleanup: false, .. }
-        ));
+        chunk
+            .native
+            .record_entry(!matches!(outcome, crate::tiering::NativeOutcome::Return(_)));
         let local_count = chunk.locals;
         let Value::Closure(closure) = callee else {
             unreachable!("made a closure just now");
@@ -2633,7 +2628,7 @@ impl Vm {
                 frames,
                 failure,
                 scopes,
-                ..
+                unwinding,
             } => {
                 if locals.len() != local_count {
                     return Err(self.error(
@@ -2644,7 +2639,7 @@ impl Vm {
                 }
                 #[cfg(feature = "metrics")]
                 self.record_frame(local_count);
-                let (scope_depth, scopes) = cleanup::native_scopes(scopes);
+                let (scope_depth, scopes) = cleanup::native_scopes(scopes, unwinding);
                 let locals = self.native_frame_locals(locals);
                 self.push_frame(Frame {
                     closure,
@@ -2664,9 +2659,7 @@ impl Vm {
                     cleanup_owner_depth: cleanup.map(|cleanup| cleanup.owner_depth),
                 });
                 self.stack.extend(stack);
-                for frame in frames {
-                    self.push_native_frame(frame)?;
-                }
+                self.push_native_frames(frames, unwinding)?;
                 if self.frames.last().is_some_and(|frame| frame.ip == 0) {
                     self.native_resumed = true;
                 }
@@ -2678,18 +2671,51 @@ impl Vm {
         }
     }
 
-    /// Pushes the frame of a call native code was making when it exited,
-    /// as an exact positional call would have entered it.
+    /// Pushes the frames of the calls native code was making when it
+    /// exited, outermost first, above the active frame, which left while
+    /// running its deferred actions when `unwinding`.
     #[cfg(feature = "native-hooks")]
-    fn push_native_frame(&mut self, frame: crate::tiering::NativeFrame) -> VmResult<()> {
+    fn push_native_frames(
+        &mut self,
+        frames: Vec<crate::tiering::NativeFrame>,
+        unwinding: bool,
+    ) -> VmResult<()> {
+        // A frame left while running its deferred actions queues their
+        // cleanup before the action's frame, the next, is pushed above.
+        if unwinding {
+            self.queue_native_unwinding()?;
+        }
+        let mut owner = unwinding.then(|| self.frames.len() - 1);
+        for frame in frames {
+            let unwinding = frame.unwinding;
+            self.push_native_frame(frame, owner)?;
+            if unwinding {
+                self.queue_native_unwinding()?;
+            }
+            owner = unwinding.then(|| self.frames.len() - 1);
+        }
+        Ok(())
+    }
+
+    /// Pushes the frame of a call native code was making when it exited,
+    /// as an exact positional call would have entered it, or, a deferred
+    /// action of the frame at depth `owner`, as
+    /// [`cleanup::Vm::call_cleanup`] would have.
+    #[cfg(feature = "native-hooks")]
+    fn push_native_frame(
+        &mut self,
+        frame: crate::tiering::NativeFrame,
+        owner: Option<usize>,
+    ) -> VmResult<()> {
         let crate::tiering::NativeFrame {
             closure,
             ip,
             locals,
             stack,
             scopes,
+            unwinding,
         } = frame;
-        let (scope_depth, scopes) = cleanup::native_scopes(scopes);
+        let (scope_depth, scopes) = cleanup::native_scopes(scopes, unwinding);
         let Value::Closure(closure) = closure else {
             return Err(self.error(
                 RuntimeErrorKind::InvalidBytecode,
@@ -2711,16 +2737,20 @@ impl Vm {
         let locals = self.native_frame_locals(locals);
         self.push_frame(Frame {
             closure,
-            call_span: self.frame_call_span(),
+            call_span: if owner.is_some() {
+                None
+            } else {
+                self.frame_call_span()
+            },
             ip,
             stack_base: self.stack.len(),
             locals,
             provided: ProvidedArguments::All,
             scope_depth,
             scopes,
-            cleanup_action: false,
+            cleanup_action: owner.is_some(),
             cleanup_recovers: false,
-            cleanup_owner_depth: None,
+            cleanup_owner_depth: owner,
         });
         self.stack.extend(stack);
         Ok(())
@@ -4017,6 +4047,13 @@ impl Vm {
     #[cold]
     #[inline(never)]
     fn leave_scope_with_cleanup(&mut self) -> VmResult<Option<Value>> {
+        self.queue_leave_scope();
+        self.drive_cleanup()
+    }
+
+    /// Queues the cleanup of the active frame's innermost scope, as
+    /// [`Self::leave_scope_with_cleanup`] runs it.
+    fn queue_leave_scope(&mut self) {
         let frame = self.frames.last_mut().expect("frame was checked");
         frame.scope_depth -= 1;
         let actions = frame.scopes.pop().unwrap_or_default();
@@ -4030,7 +4067,6 @@ impl Vm {
             success: true,
             frame_depth: self.frames.len() - 1,
         });
-        self.drive_cleanup()
     }
 
     #[inline(never)]

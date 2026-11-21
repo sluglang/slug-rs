@@ -899,9 +899,8 @@ fn compiled_module_variable_updates_match_the_interpreter() {
 
 #[test]
 fn compiled_deferred_actions_match_the_interpreter() {
-    // Functions whose deferred actions are all `onerror` compile, beside
-    // and calling ones with `defer` and `onsuccess`, which stay
-    // interpreted: an `onerror` that recovers, one dropped on success,
+    // Functions with deferred actions of each kind: an `onerror` that
+    // recovers, one dropped on success,
     // actions in nested blocks, a `return` from inside one, `recur` with
     // actions deferred each iteration, an error passing through a caller's
     // `onerror`, and an error nothing recovers, its cleanup run in each
@@ -966,6 +965,113 @@ val main = fn() {\n\
 }\n\
 ",
     );
+}
+
+#[test]
+fn compiled_deferred_actions_that_leave_match_the_interpreter() {
+    // Native code runs deferred actions itself; these leave to the
+    // interpreter partway, as one that waits on a task does, with others
+    // still to run: at a block's end, a `return`, a `recur`, inside an
+    // action with actions of its own, in an `onerror` that recovers, and
+    // one that throws, past the actions after it and a caller's
+    // `onerror`. The interpreter carries on with the cleanup native code
+    // was running.
+    let trace = same_with_and_without_native_code(
+        "deferred-leaving",
+        r#"var events = []
+val note = fn(text) { events = events :+ text }
+val interpreted = fn(text) {
+    val t = spawn { text }
+    note(select { await t })
+}
+val blocks = fn(n) {
+    val a = {
+        defer { note("block " + n) }
+        defer onsuccess { note("block ok " + n) }
+        n + 1
+    }
+    a * 2
+}
+val early = fn(n) {
+    defer { note("outer " + n) }
+    {
+        defer { note("inner " + n) }
+        if (n % 2 == 0) { return n }
+    }
+    n + 100
+}
+val looping = fn(i, total) {
+    defer { note("iteration " + i) }
+    if (i == 0) { total } else { recur(i - 1, total + i) }
+}
+val leaving = fn(n) {
+    defer { note("after " + n) }
+    defer { interpreted("leaves " + n) }
+    defer onsuccess { note("first " + n) }
+    n
+}
+val leavingBlock = fn(n) {
+    val v = {
+        defer { note("block after " + n) }
+        defer { interpreted("block leaves " + n) }
+        n * 3
+    }
+    v + 1
+}
+val leavingLoop = fn(i) {
+    defer { interpreted("loop leaves " + i) }
+    defer { note("loop after " + i) }
+    if (i == 0) { "done" } else { recur(i - 1) }
+}
+val nestedAction = fn(n) {
+    defer { note("outer after " + n) }
+    defer {
+        defer { note("inner after " + n) }
+        defer { interpreted("inner leaves " + n) }
+        note("inner body " + n)
+    }
+    n
+}
+val throwing = fn(n) {
+    defer onerror(err) { note("onerror " + n) }
+    defer { note("still runs " + n) }
+    defer { throw {code: n} }
+    n
+}
+val recovering = fn(n) {
+    defer onerror(err) {
+        defer { note("recover after " + n) }
+        defer { interpreted("recover leaves " + n) }
+        "recovered " + err.code
+    }
+    throw {code: n}
+}
+val caller = fn(n) {
+    defer onerror(err) { note("caller onerror " + n); "caller " + err.code }
+    throwing(n)
+}
+val main = fn() {
+    val go = fn(i, out) {
+        if (i < 60) {
+            val row = [blocks(i), early(i), looping(2, 0), leaving(i), leavingBlock(i), leavingLoop(2), nestedAction(i), recovering(i), caller(i)]
+            recur(i + 1, if (i % 20 == 0) { out :+ row } else { out })
+        } else { out }
+    }
+    println(go(0, []))
+    println(len(events))
+    println(events[0:40])
+    println(events[len(events) - 30:])
+}
+"#,
+    );
+    let ran = trace
+        .split("deferred actions run, ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|left| left.parse::<u64>().ok())
+        .expect("the trace counts deferred actions");
+    assert!(ran > 0, "no action left native code:
+{trace}");
 }
 
 #[test]

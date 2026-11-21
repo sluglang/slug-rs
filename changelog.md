@@ -2,10 +2,12 @@
 
 ## Unreleased
 
-- Functions whose deferred actions are all `onerror`, and functions that
-  update module variables (`total = total + i`, `:+`, copying a struct
-  with one field changed), now run as machine code. `defer-errors` runs
-  10% faster. Leaving machine code no longer grows the interpreter's
+- Functions with `defer`, `onsuccess` and `onerror` actions, and
+  functions that update module variables (`total = total + i`, `:+`,
+  copying a struct with one field changed), now run as machine code,
+  which also runs the deferred actions itself. A function whose action
+  is a short closure runs about 2.7 times as fast; `defer-errors` runs
+  18% faster. Leaving machine code no longer grows the interpreter's
   pool of local-variable storage without bound, which had cost a few
   MB in long runs.
 

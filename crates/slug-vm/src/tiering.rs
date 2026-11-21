@@ -114,10 +114,10 @@ pub enum NativeOutcome {
         failure: Option<NativeFailure>,
         /// The frame's scopes and what is deferred in them.
         scopes: NativeScopes,
-        /// Whether it left only for the interpreter to run deferred
-        /// actions native code does not run: such an exit is expected
-        /// of the function, and does not count towards settling it.
-        cleanup: bool,
+        /// Whether the frame left while running its deferred actions for
+        /// the instruction at `ip`, one of which left too: its frame is
+        /// the first of `frames`.
+        unwinding: bool,
     },
 }
 
@@ -156,6 +156,9 @@ pub struct NativeFrame {
     pub locals: Vec<NativeLocal>,
     pub stack: Vec<Value>,
     pub scopes: NativeScopes,
+    /// As [`NativeOutcome::Exit`]'s: the next frame is a deferred action
+    /// of this one's.
+    pub unwinding: bool,
 }
 
 /// A local of a frame native code runs or leaves: its value, or, once a

@@ -1096,6 +1096,52 @@ Against the previous commit (9 padded PGO rounds): `defer-errors`
 0.90x, `http-server` 0.96x, the rest inside their spreads; tuned and
 hold-out geomeans 1.00x.
 
+### Stage 3 design: running deferred actions natively (2026-11-21)
+
+Native code runs the actions itself and never re-enters the interpreter;
+when an action leaves partway, the VM rebuilds the state the
+interpreter would have reached.
+
+- **Running them.** `LeaveScope`, `Return` and `recur` in a function
+  that defers call `native_cleanup(context, floor)`: newest first (the
+  list is sorted by depth, so this is the interpreter's order), it drops
+  `onerror` actions and enters each other one that is a compiled
+  closure of no parameters, as `native_call` does. It returns *done*;
+  *declined* (the next action is not compiled, is a builtin, the thread
+  needs attention, or the stack budget is used), its action left in
+  place, for native code to leave before the instruction as now, the
+  interpreter running it again over what is left; or *exited*, an
+  action having left partway.
+- **Rebuilding an exit mid-cleanup.** The owner then leaves before the
+  instruction with its exit marked `unwinding`, and the action's frame
+  follows it, as a callee's does. Rebuilding frames outermost first, the
+  VM queues for an unwinding frame what the instruction at its ip would
+  have, without driving the queue: `Return` takes its value and queues
+  as `begin_return` does; `LeaveScope` moves past and queues as
+  `leave_scope_with_cleanup` does; `recur` binds its arguments and
+  queues `Cleanup::Recur` and the inner scopes. The frame pushed next is
+  the action, marked as `call_cleanup` marks one. Every scope gets a
+  list, empty or not, so `recur`'s fast path cannot restart before the
+  action finishes. Errors need nothing new: `begin_error` finds the
+  queue it would have built.
+- **`recur` cleans up from scope 2**, as `restart_recur` keeps scope 1;
+  the frontend never defers in scope 1, so this mismatch was latent.
+- **Settling.** A declined cleanup now counts as an exit, so a function
+  whose action never compiles settles back to the interpreter and is
+  retried later, instead of leaving at every scope: 194k exits became
+  2.2k on a loop of 100k such calls. The separate cleanup exit flag of
+  Phase 4 went with it.
+
+Result: a loop calling a function with `defer { count = count + 1 }`
+runs in 0.08 s against 0.22 s interpreted. A differential test runs
+actions that leave partway at a block's end, a `return`, a `recur`, in
+nested actions, in a recovering `onerror`, and one that throws; with
+every function compiled, 932 actions ran natively and 392 left. Against
+the previous commit (9 padded PGO rounds): `defer-errors` 0.91x,
+`http-server` 0.97x; `crawl-history` 1.02x and the hold-out
+`expression-evaluator` 1.02x just outside their spreads, though
+`crawl-history` runs no deferred action; tuned 0.99x, hold-out 1.00x.
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.

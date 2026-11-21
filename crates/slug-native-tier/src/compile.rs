@@ -109,9 +109,7 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                 | Op::MatchLocalsPooled { .. }
                 | Op::TryMatchPooled { .. }
                 | Op::JumpIfProvided { .. }
-                | Op::Defer {
-                    mode: slug_vm::DeferMode::Error,
-                }
+                | Op::Defer { .. }
                 | Op::LeaveScope
                 | Op::Return
                 | Op::Throw
@@ -284,8 +282,8 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
 struct Runtime {
     binary: cranelift_codegen::ir::SigRef,
     attention: cranelift_codegen::ir::SigRef,
-    /// `(context, scope) -> status`: `native_unwind`.
-    unwind: cranelift_codegen::ir::SigRef,
+    /// `(context, scope) -> status`: `native_cleanup`.
+    cleanup: cranelift_codegen::ir::SigRef,
     clone: cranelift_codegen::ir::SigRef,
     drop: cranelift_codegen::ir::SigRef,
     release: cranelift_codegen::ir::SigRef,
@@ -327,7 +325,7 @@ impl Runtime {
                 &[types::I32],
             ),
             attention: signature(&[pointer], &[types::I32]),
-            unwind: signature(&[pointer, types::I32], &[types::I32]),
+            cleanup: signature(&[pointer, types::I32], &[types::I32]),
             clone: signature(&[pointer, pointer], &[]),
             drop: signature(&[pointer], &[]),
             release: signature(&[pointer, pointer], &[]),
@@ -408,6 +406,15 @@ struct Lowering<'a> {
     next_site: usize,
     /// Where a direct call builds its callee's context.
     callee_context: StackSlot,
+}
+
+/// Why generated code leaves to the interpreter at an exit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leaving {
+    /// For the interpreter to do what native code does not.
+    Exit,
+    /// Running deferred actions, one of which left.
+    Unwinding,
 }
 
 /// A block whose body is lowered after the function's own blocks.
@@ -1873,8 +1880,10 @@ impl<'a> Lowering<'a> {
                     .last()
                     .ok_or("a recur block has no recur instruction")?;
                 if self.function.defers {
-                    // A `recur` runs what the iteration deferred.
-                    self.unwind(inst, 1);
+                    // A `recur` runs what the iteration deferred in the
+                    // function's blocks; the interpreter keeps the
+                    // function's own scope.
+                    self.unwind(inst, 2);
                 }
                 let status = self.call(
                     self.runtime.attention,
@@ -1987,23 +1996,34 @@ impl<'a> Lowering<'a> {
 
     /// A block that leaves to the interpreter before `inst`.
     fn exit_block(&mut self, inst: &Inst) -> CodeBlock {
-        self.exit_with(inst.ip, &inst.snapshot, 0, false)
+        self.exit_with(inst.ip, &inst.snapshot, 0, Leaving::Exit)
     }
 
-    /// Continues past `inst`, which leaves scopes down to `scope`, when
-    /// nothing deferred in them is to run: what is deferred `onerror` is
-    /// dropped. Otherwise leaves to the interpreter before it, to run the
-    /// rest, an exit that does not count towards settling.
+    /// Runs what is deferred in the scopes from `scope` in, which `inst`
+    /// leaves, and continues past it. Leaves to the interpreter before it
+    /// when an action is not one native code runs, for the interpreter to
+    /// run the rest; and leaves unwinding when an action left.
     fn unwind(&mut self, inst: &Inst, scope: u32) {
         let floor = self.builder.ins().iconst(types::I32, i64::from(scope));
         let status = self.call(
-            self.runtime.unwind,
-            runtime::native_unwind as *const () as usize,
+            self.runtime.cleanup,
+            runtime::native_cleanup as *const () as usize,
             &[self.context, floor],
         )[0];
-        let exit = self.exit_with(inst.ip, &inst.snapshot, 0, true);
+        let declined = self.exit_with(inst.ip, &inst.snapshot, 0, Leaving::Exit);
+        let exited = self.exit_with(inst.ip, &inst.snapshot, 0, Leaving::Unwinding);
         let next = self.builder.create_block();
-        self.builder.ins().brif(status, exit, &[], next, &[]);
+        let left = self.builder.create_block();
+        self.builder.ins().brif(status, left, &[], next, &[]);
+        self.builder.switch_to_block(left);
+        let exited_status = self.builder.ins().icmp_imm(
+            IntCC::Equal,
+            status,
+            i64::from(runtime::CLEANUP_EXITED),
+        );
+        self.builder
+            .ins()
+            .brif(exited_status, exited, &[], declined, &[]);
         self.builder.switch_to_block(next);
     }
 
@@ -2011,18 +2031,18 @@ impl<'a> Lowering<'a> {
     /// callee left too: past the call, its arguments gone, and the
     /// callee's frame above.
     fn exit_after_call(&mut self, inst: &Inst) -> CodeBlock {
-        self.exit_with(inst.ip + 1, &inst.snapshot, inst.args.len(), false)
+        self.exit_with(inst.ip + 1, &inst.snapshot, inst.args.len(), Leaving::Exit)
     }
 
     /// A block that leaves to the interpreter at `ip` with the frame from
-    /// `snapshot`, less the top `popped` stack values: only to run
-    /// deferred actions, when `cleanup`.
+    /// `snapshot`, less the top `popped` stack values, for the reason
+    /// `leaving` gives.
     fn exit_with(
         &mut self,
         ip: usize,
         snapshot: &Snapshot,
         popped: usize,
-        cleanup: bool,
+        leaving: Leaving,
     ) -> CodeBlock {
         let id = u32::try_from(self.exits.len()).expect("exit count fits");
         let function = self.function;
@@ -2031,7 +2051,7 @@ impl<'a> Lowering<'a> {
         self.exits.push(ExitTable {
             ip,
             scope: snapshot.scope,
-            cleanup,
+            unwinding: leaving == Leaving::Unwinding,
             locals: snapshot
                 .locals
                 .iter()
