@@ -347,7 +347,10 @@ impl Vm {
             Some((opcode @ (PackedOpcode::Recur | PackedOpcode::RecurPositional), operand)) => {
                 let (arguments, provided) = if opcode == PackedOpcode::Recur {
                     let kinds = self
-                        .pooled_call_arguments(&program, crate::bytecode::CallArgumentsId::new(operand))?
+                        .pooled_call_arguments(
+                            &program,
+                            crate::bytecode::CallArgumentsId::new(operand),
+                        )?
                         .to_vec();
                     self.recur_arguments(&program, &kinds)?
                 } else {

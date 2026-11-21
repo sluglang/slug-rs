@@ -2016,11 +2016,10 @@ impl<'a> Lowering<'a> {
         let left = self.builder.create_block();
         self.builder.ins().brif(status, left, &[], next, &[]);
         self.builder.switch_to_block(left);
-        let exited_status = self.builder.ins().icmp_imm(
-            IntCC::Equal,
-            status,
-            i64::from(runtime::CLEANUP_EXITED),
-        );
+        let exited_status =
+            self.builder
+                .ins()
+                .icmp_imm(IntCC::Equal, status, i64::from(runtime::CLEANUP_EXITED));
         self.builder
             .ins()
             .brif(exited_status, exited, &[], declined, &[]);

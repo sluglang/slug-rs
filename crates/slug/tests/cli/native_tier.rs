@@ -1064,14 +1064,13 @@ val main = fn() {
 }
 "#,
     );
-    let ran = trace
+    let left = trace
         .split("deferred actions run, ")
         .nth(1)
         .and_then(|rest| rest.split(' ').next())
         .and_then(|left| left.parse::<u64>().ok())
-        .expect("the trace counts deferred actions");
-    assert!(ran > 0, "no action left native code:
-{trace}");
+        .expect("the trace counts deferred actions that left");
+    assert!(left > 0, "no action left native code:\n{trace}");
 }
 
 #[test]
