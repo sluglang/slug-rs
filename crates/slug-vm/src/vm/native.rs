@@ -641,6 +641,70 @@ impl Vm {
         Some(matched)
     }
 
+    /// Matches the items of list pattern `pattern` of `caller`'s program
+    /// against `subjects`, item `i` against subject `i`, with `operands`,
+    /// as `MatchLocals` does against a frame's first locals, pushing what
+    /// it binds onto `bindings`: whether it matched, or `None` where the
+    /// interpreter must run it, which reports any error.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_match_locals(
+        &self,
+        caller: &Value,
+        pattern: MatchPatternId,
+        subjects: &[&Value],
+        operands: &[Value],
+        bindings: &mut Vec<Value>,
+    ) -> Option<bool> {
+        let Value::Closure(closure) = caller else {
+            return None;
+        };
+        // Bindings are left to the interpreter, as `native_match` leaves them.
+        if subjects
+            .iter()
+            .copied()
+            .chain(operands)
+            .any(|value| matches!(value, Value::Binding { .. }))
+        {
+            return None;
+        }
+        let Some(crate::MatchPattern::List { items, .. }) = closure.program.match_pattern(pattern)
+        else {
+            return None;
+        };
+        if items.len() > subjects.len() {
+            return None;
+        }
+        let mut list_views_created = 0;
+        #[cfg(feature = "concurrency")]
+        let view = self.view.as_deref();
+        #[cfg(not(feature = "concurrency"))]
+        let view = None;
+        let mut matched = true;
+        for (item, subject) in items.iter().zip(subjects) {
+            matched = matches_pattern(
+                item,
+                subject,
+                operands,
+                bindings,
+                &mut list_views_created,
+                &|cell, name| read_binding(view, cell, name),
+            )
+            .ok()?;
+            if !matched {
+                break;
+            }
+        }
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.borrow_mut().list_views_created += list_views_created;
+        }
+        if !matched {
+            bindings.clear();
+        }
+        Some(matched)
+    }
+
     /// `operands[0]` sliced by the start, end, and step that follow it,
     /// those `present`.
     fn native_slice(&self, present: [bool; 3], operands: Vec<Value>) -> Result<Value, Vec<Value>> {

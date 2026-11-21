@@ -104,6 +104,7 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                 | Op::Map(_)
                 | Op::InterpolatePooled(_)
                 | Op::MatchCasePooled { .. }
+                | Op::MatchLocalsPooled { .. }
                 | Op::TryMatchPooled { .. }
                 | Op::JumpIfProvided { .. }
                 | Op::Throw
@@ -378,6 +379,10 @@ struct Lowering<'a> {
     /// The values live out of each block.
     /// Computed when a value first may move.
     live_out: Option<Vec<Vec<u64>>>,
+    /// Each block's live-in values, snapshot locals included: an edge may
+    /// move an argument into its parameter only when its target uses it
+    /// no other way.
+    edge_live_in: Option<Vec<Vec<u64>>>,
     exits: Vec<ExitTable>,
     operations: Vec<runtime::Operation>,
     matches: Vec<runtime::MatchSite>,
@@ -460,6 +465,7 @@ impl<'a> Lowering<'a> {
             cell_operand,
             owning,
             live_out: None,
+            edge_live_in: None,
             exits: Vec::new(),
             operations: Vec::new(),
             matches: Vec::new(),
@@ -553,6 +559,9 @@ impl<'a> Lowering<'a> {
 
     /// Lowers `inst`, instruction `position.1` of block `position.0`.
     fn lower_inst(&mut self, inst: &Inst, position: (usize, usize)) -> Result<(), String> {
+        if let Some((pattern, operands, kind)) = Match::of(&inst.op) {
+            return self.lower_match(inst, pattern, operands, kind);
+        }
         match &inst.op {
             Op::Constant(index) => {
                 let slot = self.slot(inst.results[0].index());
@@ -617,12 +626,6 @@ impl<'a> Lowering<'a> {
             | Op::UpdateCapture { .. }
             | Op::Map(_)
             | Op::InterpolatePooled(_) => self.lower_operation(inst, position)?,
-            Op::MatchCasePooled {
-                pattern, operands, ..
-            } => self.lower_match(inst, *pattern, *operands, false)?,
-            Op::TryMatchPooled {
-                pattern, operands, ..
-            } => self.lower_match(inst, *pattern, *operands, true)?,
             // Native code is entered only with every parameter passed.
             Op::JumpIfProvided { .. } => self.choice = Some(Choice::Target),
             Op::Not => self.lower_not(inst),
@@ -1187,33 +1190,55 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// A `MatchCasePooled`: the VM's `native_match` writes the value and
-    /// its bindings to the results, which follow one another, and the
-    /// block's end takes the fall-through when it matched.
+    /// A `MatchCasePooled`, `TryMatchPooled`, or `MatchLocalsPooled`: the
+    /// VM's `native_match` writes what it pushes to the results, which
+    /// follow one another, and the block's end takes the fall-through when
+    /// it matched. A `TryMatchPooled` always continues.
     fn lower_match(
         &mut self,
         inst: &Inst,
         pattern: slug_vm::MatchPatternId,
         operands: usize,
-        tries: bool,
+        kind: Match,
     ) -> Result<(), String> {
         let consecutive = inst
             .results
             .windows(2)
             .all(|pair| pair[1].index() == pair[0].index() + 1);
-        if inst.results.is_empty() || !consecutive || inst.args.len() != operands + 1 {
+        // A parameter list's items bind nothing when they are all literals;
+        // the other matches push at least the value or whether it matched.
+        // Its arguments are the operands, then every parameter, which the
+        // lifter leaves out when it is a cell.
+        let (subjects, results_needed) = match kind {
+            Match::Parameters => (self.function.arity, 0),
+            Match::Case | Match::Try => (1, 1),
+        };
+        if inst.results.len() < results_needed
+            || !consecutive
+            || inst.args.len() != operands + subjects
+        {
             return Err(format!("instruction {} is a malformed match", inst.ip));
         }
+        let slots = |values: &[crate::ir::ValueId]| -> Vec<u32> {
+            values
+                .iter()
+                .map(|value| u32::try_from(value.index()).expect("slot index fits"))
+                .collect()
+        };
+        let (operands, subjects) = match kind {
+            Match::Parameters => (
+                slots(&inst.args[..operands]),
+                Some(slots(&inst.args[operands..])),
+            ),
+            Match::Case | Match::Try => (slots(&inst.args), None),
+        };
         let site = self.matches.len();
         self.matches.push(runtime::MatchSite {
             pattern,
-            operands: inst
-                .args
-                .iter()
-                .map(|value| u32::try_from(value.index()).expect("slot index fits"))
-                .collect(),
+            operands,
             results: inst.results.len(),
-            tries,
+            tries: matches!(kind, Match::Try),
+            subjects,
         });
         let site = self
             .builder
@@ -1221,7 +1246,8 @@ impl<'a> Lowering<'a> {
             .iconst(types::I32, i64::try_from(site).expect("site fits"));
         let base = self.slot(0);
         let base = self.address(base);
-        let out = self.slot(inst.results[0].index());
+        // With no results nothing is written; any slot's address will do.
+        let out = self.slot(inst.results.first().map_or(0, |result| result.index()));
         let out = self.address(out);
         let status = self.call(
             self.runtime.operation,
@@ -1237,7 +1263,7 @@ impl<'a> Lowering<'a> {
         let next = self.builder.create_block();
         self.builder.ins().brif(settled, next, &[], exit, &[]);
         self.builder.switch_to_block(next);
-        if !tries {
+        if !matches!(kind, Match::Try) {
             let matched =
                 self.builder
                     .ins()
@@ -1868,10 +1894,32 @@ impl<'a> Lowering<'a> {
     fn lower_edge(&mut self, edge: &Edge) {
         let function = self.function;
         let params = &function.blocks[edge.block.index()].params;
-        for (argument, param) in edge.args.iter().zip(params) {
+        let live_in = self
+            .edge_live_in
+            .get_or_insert_with(|| liveness(function, true).0);
+        let live = &live_in[edge.block.index()];
+        // An argument the target uses only as its parameter moves into it,
+        // leaving `nil`, so that it is not shared on the way: a list that
+        // passes a join, such as a defaulted parameter, still appends in
+        // place. Every other argument is cloned.
+        let moves: Vec<bool> = edge
+            .args
+            .iter()
+            .map(|argument| {
+                self.owning[argument.index()]
+                    && edge.args.iter().filter(|other| *other == argument).count() == 1
+                    && live[argument.index() / 64] & (1 << (argument.index() % 64)) == 0
+            })
+            .collect();
+        for ((argument, param), moves) in edge.args.iter().zip(params).zip(moves) {
             let source = self.slot(argument.index());
             let target = self.slot(param.index());
-            self.clone_into(source, target);
+            if moves {
+                self.copy_words(source, target);
+                self.store_tag(source, layout::NIL);
+            } else {
+                self.clone_into(source, target);
+            }
         }
         let target = self.blocks[edge.block.index()];
         self.builder.ins().jump(target, &[]);
@@ -2248,6 +2296,35 @@ const INLINE_RELEASES: usize = 6;
 /// the runtime to release them.
 const INLINE_TESTS: usize = 32;
 
+/// Which match instruction [`Lowering::lower_match`] lowers.
+#[derive(Clone, Copy)]
+enum Match {
+    /// `MatchCasePooled`: the value on the stack.
+    Case,
+    /// `TryMatchPooled`: destructuring, which always continues.
+    Try,
+    /// `MatchLocalsPooled`: the function's parameters, as one list.
+    Parameters,
+}
+
+impl Match {
+    /// A match instruction's pattern, operand count, and kind.
+    fn of(op: &Op) -> Option<(slug_vm::MatchPatternId, usize, Self)> {
+        match op {
+            Op::MatchCasePooled {
+                pattern, operands, ..
+            } => Some((*pattern, *operands, Self::Case)),
+            Op::TryMatchPooled {
+                pattern, operands, ..
+            } => Some((*pattern, *operands, Self::Try)),
+            Op::MatchLocalsPooled {
+                pattern, operands, ..
+            } => Some((*pattern, *operands, Self::Parameters)),
+            _ => None,
+        }
+    }
+}
+
 /// How a block that ends in a choice chooses.
 #[derive(Clone, Copy)]
 enum Choice {
@@ -2315,6 +2392,13 @@ fn inst_uses(inst: &Inst) -> impl Iterator<Item = &ValueId> {
 /// can reach. Only a `recur`, which starts afresh, goes back, so the
 /// blocks in reverse order see every successor first.
 fn live_out(function: &Function) -> Vec<Vec<u64>> {
+    liveness(function, false).1
+}
+
+/// The values live into and out of each block, as bit sets. With
+/// `snapshot_locals`, the locals an exit would hand the interpreter count
+/// as uses too.
+fn liveness(function: &Function, snapshot_locals: bool) -> (Vec<Vec<u64>>, Vec<Vec<u64>>) {
     let words = function.values.len().div_ceil(64);
     let mut live_in: Vec<Vec<u64>> = vec![Vec::new(); function.blocks.len()];
     let mut live_out = vec![Vec::new(); function.blocks.len()];
@@ -2327,13 +2411,28 @@ fn live_out(function: &Function) -> Vec<Vec<u64>> {
         }
         let mut entering = out.clone();
         let terminator = terminator_uses(&block.terminator);
-        for value in block.insts.iter().flat_map(inst_uses).chain(&terminator) {
+        let locals = block
+            .insts
+            .iter()
+            .filter(|_| snapshot_locals)
+            .flat_map(|inst| &inst.snapshot.locals)
+            .filter_map(|local| match local {
+                crate::ir::Local::Value(value) => Some(value),
+                crate::ir::Local::Cell => None,
+            });
+        for value in block
+            .insts
+            .iter()
+            .flat_map(inst_uses)
+            .chain(&terminator)
+            .chain(locals)
+        {
             entering[value.index() / 64] |= 1 << (value.index() % 64);
         }
         live_in[index] = entering;
         live_out[index] = out;
     }
-    live_out
+    (live_in, live_out)
 }
 
 /// Which values' slots may own something: parameters, the results of
@@ -2369,6 +2468,7 @@ fn owning_values(function: &Function) -> Vec<bool> {
                     | Op::Map(_)
                     | Op::InterpolatePooled(_)
                     | Op::MatchCasePooled { .. }
+                    | Op::MatchLocalsPooled { .. }
                     | Op::TryMatchPooled { .. }
                     // `~` on bytes makes bytes.
                     | Op::BitNot

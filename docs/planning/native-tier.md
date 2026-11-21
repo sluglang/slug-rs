@@ -1014,6 +1014,36 @@ is the runtime copying lists, which both tiers share.
   conformance test `cancel-releases-waits` fails under load on `master`
   too (25 of 72 runs there, 33 of 72 here), so it predates this branch.
 
+### After merging: parameter matches and defaults (2026-11-21)
+
+Sizing Phase 4 found few hot chunks with `defer` or `onerror`. The
+larger gap was `MatchLocalsPooled`, the `fn(...) match` that std's `map`,
+`filter` and `find` are written with, which did not compile. It now
+does, as do pipelines with positional arguments, which are direct calls
+with their first two arguments swapped.
+
+Two things then made `higher-order` 6.84x and three workloads 3-6%
+slower:
+
+- **Block arguments were cloned.** An accumulator passed through a join
+  was always shared, so each `acc :+ h` copied the list. An argument now
+  moves when the edge passes it once and the target, counting the
+  locals an exit would hand back, does not read it.
+- **Calls that left out a default were never direct.** `xs /> filter(f)`
+  passes 2 of 3 arguments, so it ran one iteration interpreted and
+  entered native code at `recur` through the frame path, which costs
+  more than it saves on 3-item lists. A chunk now records the defaults
+  of its last parameters when each is a constant, `[]`, `nil`, `true` or
+  `false`. A positional call that leaves only those out, from the
+  interpreter or native code, supplies them and binds as a full call.
+  A default that runs code, keyword calls, and native calls to functions
+  of more than 8 parameters keep the general path, and a call site
+  records its callee only for calls that pass every argument.
+
+Against `master` (9 padded PGO rounds): tuned 0.99x, hold-outs 0.99x;
+`closure-accumulate` 0.87x, `crawl-game` 0.88x, `crawl-history` 0.99x,
+`higher-order` 1.03x inside its 4%/8% spread.
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- More functions run as machine code: those written as `fn(...) match`,
+  as std's `map`, `filter` and `find` are, and pipelines such as
+  `x /> f(y)`. A call that leaves out trailing parameters whose defaults
+  are constants, `[]`, `nil`, `true` or `false` (`xs /> filter(f)`)
+  supplies them itself and is as fast as a full call, interpreted or
+  not. A list passed on through a branch is no longer copied, which had
+  made appending to it in a loop quadratic in native code. Of the
+  benchmarks, `closure-accumulate` runs 13% faster and Crawl's game 12%.
+
 - The `slug` runner compiles hot functions to machine code by default, on
   macOS and Linux: a recursive integer function such as `fib` runs about 10
   times faster than interpreted; of the benchmark programs, Invaders runs

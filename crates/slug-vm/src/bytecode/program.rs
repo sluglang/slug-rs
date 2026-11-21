@@ -322,6 +322,12 @@ impl Program {
                 .parameters
                 .iter()
                 .any(|parameter| parameter.variadic),
+            plain_defaults: super::chunk::plain_defaults(
+                &code,
+                &chunk.constants,
+                chunk.arity,
+                !chunk.parameters.iter().any(|parameter| parameter.variadic),
+            ),
             callable_identity: chunk.callable_identity,
             locals: chunk.locals,
             constants: chunk.constants.clone(),
@@ -590,6 +596,14 @@ impl Program {
     }
     pub(crate) fn call_arguments(&self, id: CallArgumentsId) -> Option<&[CallArgumentKind]> {
         self.call_arguments.get(id.index()).map(Vec::as_slice)
+    }
+
+    /// The kinds of a pooled call's arguments, for the native tier.
+    #[cfg(feature = "native-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_call_arguments(&self, id: CallArgumentsId) -> Option<&[CallArgumentKind]> {
+        self.call_arguments(id)
     }
     pub(crate) fn selected_call(&self, id: SelectedCallId) -> Option<(CallArgumentsId, usize)> {
         self.selected_calls.get(id.index()).copied()

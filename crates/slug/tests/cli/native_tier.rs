@@ -486,11 +486,12 @@ fn compiled_matches_defaults_throws_and_maps_match_the_interpreter() {
 fn compiled_calls_move_last_reads_and_restore_them_when_declined() {
     // `add` takes the map its caller reads for the last time, and adds to
     // it in place; `keep` reads its map again after the call, so `add` must
-    // not change it. `grow`, called without its default, is declined, and
-    // its moved argument goes back for the interpreter to pass.
+    // not change it. `grow`, called without a default that runs code, is
+    // declined, and its moved argument goes back for the interpreter to
+    // pass.
     let trace = same_with_and_without_native_code(
         "moved-arguments",
-        "val grow = fn(m, k, extra = 0) { m + {[k]: k + extra} }\n\
+        "val grow = fn(m, k, extra = k - k) { m + {[k]: k + extra} }\n\
          val add = fn(m, k) { m + {[k]: k} }\n\
          val fill = fn(n, m) {\n\
              if (n == 0) { m } else { recur(n - 1, add(grow(m, n), n + 1000)) }\n\
@@ -594,6 +595,94 @@ fn compiled_cleanup_actions_match_the_interpreter() {
              println(log)\n\
              println(counts(3), counts(4))\n\
              rethrows(5)\n\
+         }\n",
+    );
+}
+
+#[test]
+fn compiled_parameter_matches_and_pipelines_match_the_interpreter() {
+    // A `match` on a function's parameters, as std's `map` and `filter`
+    // are written: list items, literals that bind nothing, guards, a map
+    // pattern, a pinned operand, and a failure to the interpreter's error.
+    // Pipelines with positional arguments call the callee directly, a
+    // closure, a module function, or a builtin.
+    same_with_and_without_native_code(
+        "parameter-matches",
+        "val sum = fn(xs, acc) match {\n\
+             [[], ...] => acc\n\
+             [[h, ...t], ...] => recur(t, acc + h)\n\
+         }\n\
+         val classify = fn(a, b) match {\n\
+             [0, 0] => \"origin\"\n\
+             [0, _] => \"y-axis\"\n\
+             [_, 0] => \"x-axis\"\n\
+             [x, y] if x == y => \"diagonal\"\n\
+             [{kind: \"p\", v}, n] => \"point \" + v + \" \" + n\n\
+             _ => \"other\"\n\
+         }\n\
+         val pinned = fn(x, want) match {\n\
+             [^want, ...] => \"same\"\n\
+             _ => \"different\"\n\
+         }\n\
+         val add = fn(a, b, c) { a * 100 + b * 10 + c }\n\
+         val pipes = fn(n, acc) {\n\
+             if (n == 0) { acc } else {\n\
+                 recur(n - 1, acc + (n /> add(2, 3)) + ([n, n] /> len()) + (n /> fn(v) { v * 2 }()))\n\
+             }\n\
+         }\n\
+         val main = fn() {\n\
+             var out = []\n\
+             val go = fn(i) {\n\
+                 if (i < 3) {\n\
+                     out = out :+ [sum([1, 2, 3, i], 0), classify(0, 0), classify(0, i), classify(i, 0)]\n\
+                     out = out :+ [classify(i, i), classify({kind: \"p\", v: i}, 7), classify(\"a\", 1)]\n\
+                     out = out :+ [pinned(i, 1), pinned(i, \"1\"), pipes(20, 0)]\n\
+                     recur(i + 1)\n\
+                 }\n\
+             }\n\
+             go(0)\n\
+             println(out)\n\
+             println(sum([1, \"x\"], 0))\n\
+         }\n",
+    );
+}
+
+#[test]
+fn calls_that_leave_out_plain_defaults_match_the_interpreter() {
+    // Calls that leave out parameters whose defaults are constants or `[]`
+    // supply them themselves, from the interpreter and from native code:
+    // each call gets its own `[]`, a default that runs code (`b = a + 1`)
+    // keeps the general path, a site that alternates full and short calls
+    // calls both correctly, and a function with more parameters than
+    // native code fills stays correct.
+    same_with_and_without_native_code(
+        "plain-defaults",
+        "val {filter, map} = import(\"slug.std\")\n\
+         val grow = fn(n, acc = []) { if (n == 0) { acc } else { recur(n - 1, acc :+ n) } }\n\
+         val kinds = fn(a, b = 1, c = \"c\", d = nil, e = true, f = false) { [a, b, c, d, e, f] }\n\
+         val computed = fn(a, b = a + 1, c = 0) { [a, b, c] }\n\
+         val wide = fn(a, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0, j = 9) {\n\
+             a + b + c + d + e + f + g + h + i + j\n\
+         }\n\
+         val main = fn() {\n\
+             var out = []\n\
+             val go = fn(i, total) {\n\
+                 if (i < 300) {\n\
+                     val xs = [i, i + 1, i + 2]\n\
+                     val kept = xs /> filter(fn(x) { x % 2 == 0 }) /> map(fn(x) { x * 10 })\n\
+                     val k = if (i % 2 == 0) { kinds(i) } else { kinds(i, 2, \"z\") }\n\
+                     val w = if (i % 3 == 0) { wide(i) } else { wide(i, 1, 1, 1, 1, 1, 1, 1, 1, 1) }\n\
+                     val first = grow(3)\n\
+                     val second = grow(2)\n\
+                     if (i % 100 == 0) {\n\
+                         out = out :+ [kept, k, w, first, second, computed(i), computed(i, 5)]\n\
+                         out = out :+ [kinds(i, c: \"kw\"), grow(1, [0])]\n\
+                     }\n\
+                     recur(i + 1, total + len(kept) + len(first) + len(second) + w)\n\
+                 } else { total }\n\
+             }\n\
+             println(go(0, 0))\n\
+             println(out)\n\
          }\n",
     );
 }

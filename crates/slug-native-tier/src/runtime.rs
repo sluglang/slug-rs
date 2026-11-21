@@ -283,6 +283,10 @@ pub(crate) struct MatchSite {
     /// A `TryMatchPooled`, which always continues: it pushes the bindings,
     /// or `nil` for each when the pattern fails, then whether it matched.
     pub(crate) tries: bool,
+    /// For a `MatchLocalsPooled`, the slots of the parameters its items
+    /// match, item `i` against parameter `i`; `operands` then holds only
+    /// the pattern's operands, and it pushes only the bindings.
+    pub(crate) subjects: Option<Vec<u32>>,
 }
 
 /// An instruction [`native_operation`] runs: its operands' slots, and
@@ -465,6 +469,10 @@ impl NativeCode for Compiled {
     }
 }
 
+/// The most parameters a call [`native_call`] supplies defaults for may
+/// have.
+const FILLED_ARGUMENTS: usize = 8;
+
 /// Calls `callee`, or module-level name `name` when `callee` is null, with
 /// the `count` arguments at `arguments`, which it takes, when it is a
 /// compiled closure an exact positional call enters or a builtin: writes
@@ -553,9 +561,26 @@ pub(crate) extern "C" fn native_call(
         let Some(compiled) = code.as_any().downcast_ref::<Compiled>() else {
             return declined(arguments_slice);
         };
-        if site != NO_SITE {
-            record_call(context, name, site, &closure, compiled);
-        }
+        let count = count as usize;
+        // A call that leaves out parameters with plain defaults passes
+        // them here; a site records only calls that pass every one, since
+        // it calls the code with its own arguments.
+        let mut full = [const { std::mem::MaybeUninit::<Value>::uninit() }; FILLED_ARGUMENTS];
+        let arguments = if count == compiled.arity {
+            if site != NO_SITE {
+                record_call(context, name, site, &closure, compiled);
+            }
+            arguments
+        } else if compiled.arity <= FILLED_ARGUMENTS {
+            let full = full.as_mut_ptr().cast::<Value>();
+            std::ptr::copy_nonoverlapping(arguments, full, count);
+            for slot in count..compiled.arity {
+                full.add(slot).write(Vm::native_default(&closure, slot));
+            }
+            full
+        } else {
+            return declined(arguments_slice);
+        };
         let outcome = compiled.enter(context.vm, &raw const closure, root, arguments);
         match outcome {
             Ok(value) => {
@@ -974,6 +999,34 @@ pub(crate) extern "C" fn native_match(
         let context = &*context;
         let compiled = &*context.compiled;
         let site = &compiled.matches[site as usize];
+        if let Some(subjects) = &site.subjects {
+            let subjects: Vec<&Value> = subjects
+                .iter()
+                .map(|slot| &*base.add(*slot as usize))
+                .collect();
+            let operands: Vec<Value> = site
+                .operands
+                .iter()
+                .map(|slot| (*base.add(*slot as usize)).clone())
+                .collect();
+            let mut bindings = Vec::new();
+            return match (*context.vm).native_match_locals(
+                &*context.closure,
+                site.pattern,
+                &subjects,
+                &operands,
+                &mut bindings,
+            ) {
+                Some(true) if bindings.len() == site.results => {
+                    for (index, binding) in bindings.into_iter().enumerate() {
+                        out.add(index).write(binding);
+                    }
+                    MATCHED
+                }
+                Some(false) => NOT_MATCHED,
+                _ => 2,
+            };
+        }
         let Some((value, operands)) = site.operands.split_first() else {
             return 2;
         };

@@ -2796,7 +2796,9 @@ impl Vm {
     }
 
     /// `target` and its native code, when it is a closure an exact
-    /// positional call of `count` arguments enters, counting the call.
+    /// positional call of `count` arguments enters, counting the call. A
+    /// call that leaves out parameters with plain defaults enters too, with
+    /// [`Vm::native_default`]s for them.
     /// `None` for anything else: native code then leaves to the
     /// interpreter, which makes the call.
     #[cfg(feature = "native-hooks")]
@@ -2815,11 +2817,30 @@ impl Vm {
             return None;
         }
         let chunk = closure.program.chunk(closure.chunk)?;
-        if chunk.arity != count || !chunk.binds_full_positional_calls || chunk.locals < count {
+        if !(chunk.fewest_positional()..=chunk.arity).contains(&count)
+            || !chunk.binds_full_positional_calls
+            || chunk.locals < chunk.arity
+        {
             return None;
         }
         let code = chunk.native.tick(&closure.program, closure.chunk)?.clone();
         Some((Value::Closure(closure), code))
+    }
+
+    /// The default of parameter `slot` of `closure`, a closure
+    /// [`Vm::native_entry`] entered for a call that left it out.
+    #[cfg(feature = "native-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_default(closure: &Value, slot: usize) -> Value {
+        let Value::Closure(closure) = closure else {
+            unreachable!("native_entry gives a closure");
+        };
+        closure
+            .program
+            .chunk(closure.chunk)
+            .expect("native_entry checked the chunk")
+            .plain_default(slot)
     }
 
     /// Whether this thread needs attention: native code leaves to the
@@ -5451,8 +5472,16 @@ impl Vm {
             let other_domain = closure.domain != self.domain && !closure.captures.is_empty();
             #[cfg(not(feature = "concurrency"))]
             let other_domain = false;
-            if chunk.arity != count || !chunk.binds_full_positional_calls || other_domain {
+            if !(chunk.fewest_positional()..=chunk.arity).contains(&count)
+                || !chunk.binds_full_positional_calls
+                || other_domain
+            {
                 return Ok(Some(closure));
+            }
+            // The parameters left out have plain defaults, which the call
+            // supplies itself.
+            for slot in count..chunk.arity {
+                self.stack.push(chunk.plain_default(slot));
             }
             if chunk.locals < chunk.arity {
                 return Err(self.error_at(
@@ -5469,6 +5498,7 @@ impl Vm {
         let Some(closure) = self.enter_native_call(closure, stack_base, arguments, None)? else {
             return Ok(None);
         };
+        let count = self.stack.len() - arguments;
         let (mut locals, reused) = self.take_frame_locals(Vec::new(), local_count);
         for (local, value) in locals.iter_mut().zip(self.stack.drain(arguments..)) {
             *local = LocalSlot::Direct(value);

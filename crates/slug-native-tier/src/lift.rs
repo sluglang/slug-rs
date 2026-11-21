@@ -9,7 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use slug_vm::{Capture, Op, Program, ReadSource, VerifiedChunk, VerifiedInstruction};
+use slug_vm::{
+    CallArgumentKind, Capture, Op, Program, ReadSource, VerifiedChunk, VerifiedInstruction,
+};
 
 use crate::ir::{
     Block, BlockId, Edge, Function, Inst, Local, Snapshot, Terminator, ValueDef, ValueId,
@@ -24,7 +26,32 @@ use crate::ir::{
 pub fn lift(program: &Program, chunk: usize) -> Result<Function, String> {
     let verified = program.verified_chunk(chunk)?;
     let (closures, cells) = closures(program, &verified)?;
-    Lifter::new(chunk, &verified, closures, cells).run()
+    let pipelines = positional_pipelines(program, &verified);
+    let mut lifter = Lifter::new(chunk, &verified, closures, cells);
+    lifter.pipelines = pipelines;
+    lifter.run()
+}
+
+/// The pipeline calls whose arguments are all positional, by instruction,
+/// and how many arguments each passes, the piped value included:
+/// `value /> callee(arguments)` is then the call `callee(value,
+/// arguments)`, as the interpreter makes it.
+fn positional_pipelines(program: &Program, chunk: &VerifiedChunk) -> BTreeMap<usize, usize> {
+    chunk
+        .instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(ip, instruction)| {
+            let Op::PipelineCallPooled(id) = &instruction.op else {
+                return None;
+            };
+            let kinds = program.native_call_arguments(*id)?;
+            kinds
+                .iter()
+                .all(|kind| matches!(kind, CallArgumentKind::Positional))
+                .then_some((ip, kinds.len() + 1))
+        })
+        .collect()
 }
 
 /// What each closure the chunk makes captures, by instruction, and which
@@ -80,6 +107,8 @@ struct Lifter<'a> {
     incoming: Vec<Vec<Incoming>>,
     /// The block each block-starting instruction became.
     block_at: Vec<Option<BlockId>>,
+    /// See [`positional_pipelines`].
+    pipelines: BTreeMap<usize, usize>,
 }
 
 impl<'a> Lifter<'a> {
@@ -107,6 +136,7 @@ impl<'a> Lifter<'a> {
             leaders: BTreeSet::new(),
             incoming: (0..length).map(|_| Vec::new()).collect(),
             block_at: vec![None; length],
+            pipelines: BTreeMap::new(),
         }
     }
 
@@ -422,6 +452,21 @@ impl<'a> Lifter<'a> {
                     });
                 }
                 return Ok(true);
+            }
+            Op::PipelineCallPooled(_) if self.pipelines.contains_key(&ip) => {
+                // The stack holds the value, the callee, then the other
+                // arguments; a positional call takes the callee first. An
+                // exit before it leaves the stack as it was, for the
+                // interpreter's own pipeline call.
+                let count = self.pipelines[&ip];
+                self.emit(ip, instruction, Vec::new(), state, snapshot)?;
+                let block = self.current_block();
+                let inst = self.function.blocks[block]
+                    .insts
+                    .last_mut()
+                    .expect("an instruction was emitted");
+                inst.op = Op::CallPositional(count);
+                inst.args.swap(0, 1);
             }
             _ => self.emit(ip, instruction, Vec::new(), state, snapshot)?,
         }
