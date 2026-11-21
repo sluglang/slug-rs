@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Functions whose deferred actions are all `onerror`, and functions that
+  update module variables (`total = total + i`, `:+`, copying a struct
+  with one field changed), now run as machine code. `defer-errors` runs
+  10% faster. Leaving machine code no longer grows the interpreter's
+  pool of local-variable storage without bound, which had cost a few
+  MB in long runs.
+
 - Code running inside a task with its own view of the module variables,
   such as a `spawn` with `task var`s or a `fork`, calls module functions
   directly from machine code instead of returning to the interpreter

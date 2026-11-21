@@ -93,6 +93,10 @@ pub trait NativeCode: Send + Sync {
 
 /// How native code left its frame.
 #[doc(hidden)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "made once an entry and moved out at once; boxing an exit costs an allocation"
+)]
 pub enum NativeOutcome {
     /// The function returned this value.
     Return(Value),
@@ -108,7 +112,31 @@ pub enum NativeOutcome {
         /// A builtin the innermost frame called, which failed: the
         /// interpreter reports it there, past the call.
         failure: Option<NativeFailure>,
+        /// The frame's scopes and what is deferred in them.
+        scopes: NativeScopes,
+        /// Whether it left only for the interpreter to run deferred
+        /// actions native code does not run: such an exit is expected
+        /// of the function, and does not count towards settling it.
+        cleanup: bool,
     },
+}
+
+/// The scopes of a frame native code leaves: how deep it is, and each
+/// action deferred in it, first deferred first, with the depth of the
+/// scope it belongs to (the function's own is 1).
+#[doc(hidden)]
+#[derive(Default)]
+pub struct NativeScopes {
+    pub depth: u32,
+    pub deferred: Vec<NativeDeferred>,
+}
+
+/// An action native code deferred.
+#[doc(hidden)]
+pub struct NativeDeferred {
+    pub action: Value,
+    pub mode: crate::DeferMode,
+    pub depth: u32,
 }
 
 /// A builtin's call native code made that failed, for the interpreter to
@@ -127,6 +155,7 @@ pub struct NativeFrame {
     pub ip: usize,
     pub locals: Vec<NativeLocal>,
     pub stack: Vec<Value>,
+    pub scopes: NativeScopes,
 }
 
 /// A local of a frame native code runs or leaves: its value, or, once a
@@ -249,7 +278,8 @@ impl NativeSlot {
             // From here `entries` counts interpreted entries to the retry.
             self.entries.store(0, Ordering::Relaxed);
             let settles = self.settles.load(Ordering::Relaxed);
-            self.settles.store(settles.saturating_add(1), Ordering::Relaxed);
+            self.settles
+                .store(settles.saturating_add(1), Ordering::Relaxed);
             self.state.store(SETTLED, Ordering::Relaxed);
         }
     }
@@ -281,7 +311,11 @@ impl NativeSlot {
     fn settled(&self) -> Option<&Arc<dyn NativeCode>> {
         let code = self.code.get()?;
         let entries = self.entries.load(Ordering::Relaxed) + 1;
-        let backoff = self.settles.load(Ordering::Relaxed).saturating_sub(1).min(MOST_BACKOFF);
+        let backoff = self
+            .settles
+            .load(Ordering::Relaxed)
+            .saturating_sub(1)
+            .min(MOST_BACKOFF);
         if entries < RETRY_AFTER << backoff {
             self.entries.store(entries, Ordering::Relaxed);
             return None;

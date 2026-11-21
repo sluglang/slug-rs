@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use slug_vm::{
-    BinaryOperator, Capture, GlobalNameId, MatchPatternId, NativeCode, NativeFailure, NativeFrame,
-    NativeLocal, NativeOperation, NativeOutcome, NativeReadSource, Value, Vm,
+    BinaryOperator, Capture, DeferMode, GlobalNameId, MatchPatternId, NativeCode, NativeDeferred,
+    NativeFailure, NativeFrame, NativeLocal, NativeOperation, NativeOutcome, NativeReadSource,
+    NativeScopes, Value, Vm,
 };
 
 /// Where generated code finds a [`Value`]'s parts. `Value` is `repr(u64)`
@@ -67,6 +68,10 @@ pub(crate) const CELL_LOCAL: u32 = u32::MAX;
 #[derive(Clone, Debug)]
 pub(crate) struct ExitTable {
     pub(crate) ip: usize,
+    /// The frame's scope depth there, and whether it leaves only to have
+    /// deferred actions run.
+    pub(crate) scope: u32,
+    pub(crate) cleanup: bool,
     pub(crate) locals: Vec<u32>,
     pub(crate) stack: Vec<u32>,
 }
@@ -109,6 +114,8 @@ struct Root {
     frames: Vec<NativeFrame>,
     /// A builtin's failed call, which the innermost frame left past.
     failure: Option<NativeFailure>,
+    /// Whether the innermost frame left only to have deferred actions run.
+    cleanup: bool,
 }
 
 /// The machine stack used since `root`'s entry, roughly: native frames
@@ -124,6 +131,7 @@ struct Exited {
     ip: usize,
     locals: Vec<NativeLocal>,
     stack: Vec<Value>,
+    scopes: NativeScopes,
 }
 
 /// What one activation of generated code runs with. Its address is the
@@ -150,6 +158,9 @@ pub(crate) struct Context {
     ret: *mut Value,
     /// What an exit leaves for the interpreter, once it has: a `Box`.
     exit: *mut Exited,
+    /// What the activation deferred, in order, of a function that
+    /// defers; null for any other.
+    deferred: *mut Vec<NativeDeferred>,
 }
 
 impl Context {
@@ -183,6 +194,7 @@ pub(crate) mod offsets {
     pub(crate) const CONTEXT_ATTENTION: i32 = offset_of!(Context, attention) as i32;
     pub(crate) const CONTEXT_RET: i32 = offset_of!(Context, ret) as i32;
     pub(crate) const CONTEXT_EXIT: i32 = offset_of!(Context, exit) as i32;
+    pub(crate) const CONTEXT_DEFERRED: i32 = offset_of!(Context, deferred) as i32;
     pub(crate) const CONTEXT_SIZE: u32 = size_of::<Context>() as u32;
     pub(crate) const ROOT_BASE: i32 = offset_of!(Root, base) as i32;
     pub(crate) const RECORD_GLOBALS: i32 = offset_of!(CallRecord, globals) as i32;
@@ -271,6 +283,8 @@ pub(crate) struct Compiled {
     closures: Vec<(usize, Vec<Capture>)>,
     operations: Vec<Operation>,
     matches: Vec<MatchSite>,
+    /// Whether the function defers actions, which each activation keeps.
+    defers: bool,
 }
 
 /// A `MatchCasePooled` [`native_match`] runs: its pattern, the slots of
@@ -306,6 +320,7 @@ pub(crate) struct Tables {
     pub(crate) operations: Vec<Operation>,
     pub(crate) matches: Vec<MatchSite>,
     pub(crate) sites: Box<[AtomicPtr<CallRecord>]>,
+    pub(crate) defers: bool,
 }
 
 /// Empty call-site records for a function with `count` module-level call
@@ -338,6 +353,7 @@ impl Compiled {
             closures: tables.closures,
             operations: tables.operations,
             matches: tables.matches,
+            defers: tables.defers,
         }
     }
 
@@ -388,7 +404,13 @@ impl Compiled {
             )
         };
         let mut ret = MaybeUninit::<Value>::uninit();
+        let mut deferred = Vec::new();
         let mut context = Context {
+            deferred: if self.defers {
+                &raw mut deferred
+            } else {
+                std::ptr::null_mut()
+            },
             vm,
             compiled: self,
             cells: if self.cells.is_empty() {
@@ -434,6 +456,7 @@ impl NativeCode for Compiled {
             base: 0,
             frames: Vec::new(),
             failure: None,
+            cleanup: false,
         };
         root.base = std::ptr::from_ref(&root) as usize;
         // SAFETY: everything passed lives across the call; the code moves
@@ -451,7 +474,12 @@ impl NativeCode for Compiled {
         };
         match outcome {
             Ok(value) => NativeOutcome::Return(value),
-            Err(Exited { ip, locals, stack }) => {
+            Err(Exited {
+                ip,
+                locals,
+                stack,
+                scopes,
+            }) => {
                 root.frames.reverse();
                 NativeOutcome::Exit {
                     ip,
@@ -459,6 +487,8 @@ impl NativeCode for Compiled {
                     stack,
                     frames: root.frames,
                     failure: root.failure,
+                    scopes,
+                    cleanup: root.cleanup,
                 }
             }
         }
@@ -587,12 +617,18 @@ pub(crate) extern "C" fn native_call(
                 out.write(value);
                 CALL_RETURNED
             }
-            Err(Exited { ip, locals, stack }) => {
+            Err(Exited {
+                ip,
+                locals,
+                stack,
+                scopes,
+            }) => {
                 (*root).frames.push(NativeFrame {
                     closure,
                     ip,
                     locals,
                     stack,
+                    scopes,
                 });
                 CALL_EXITED
             }
@@ -619,6 +655,7 @@ unsafe fn record_call(
     unsafe {
         let caller = &*context.compiled;
         if !compiled.cells.is_empty()
+            || compiled.defers
             || context.globals.is_null()
             || !Vm::native_global_is_fixed(&*context.closure, GlobalNameId::new(name))
         {
@@ -663,12 +700,18 @@ pub(crate) extern "C" fn native_call_exited(context: *mut Context, callee: *mut 
         let callee = &mut *callee;
         let exited = Box::from_raw(callee.exit);
         callee.exit = std::ptr::null_mut();
-        let Exited { ip, locals, stack } = *exited;
+        let Exited {
+            ip,
+            locals,
+            stack,
+            scopes,
+        } = *exited;
         (*(*context).root).frames.push(NativeFrame {
             closure: (*callee.closure).clone(),
             ip,
             locals,
             stack,
+            scopes,
         });
     }
 }
@@ -1125,6 +1168,72 @@ pub(crate) extern "C" fn native_release(context: *mut Context, base: *mut Value)
     }
 }
 
+/// Defers the action at `action`, a clone of it, in the activation's
+/// scope `operand / 4`, with mode `operand % 4` (`Always`, `Success`,
+/// `Error`). Returns 1, deferring nothing, when it is not something to
+/// call, for the interpreter to fail as it does.
+pub(crate) extern "C" fn native_defer(
+    context: *mut Context,
+    operand: u32,
+    action: *mut Value,
+) -> u32 {
+    // SAFETY: generated code passes its own context, of a function that
+    // defers, and an initialized slot.
+    unsafe {
+        let context = &mut *context;
+        let action = &*action;
+        if context.deferred.is_null()
+            || !matches!(
+                action,
+                Value::Closure(_)
+                    | Value::Native(_)
+                    | Value::DeclaredNative { .. }
+                    | Value::Builtin(_)
+            )
+        {
+            return 1;
+        }
+        let mode = match operand % 4 {
+            0 => DeferMode::Always,
+            1 => DeferMode::Success,
+            _ => DeferMode::Error,
+        };
+        (*context.deferred).push(NativeDeferred {
+            action: action.clone(),
+            mode,
+            depth: operand / 4,
+        });
+        0
+    }
+}
+
+/// Leaves the activation's scopes from `scope` in: returns 0 when
+/// nothing deferred in them runs on success, dropping what is deferred
+/// `onerror`, and 1, changing nothing, when something does, for the
+/// interpreter to run.
+pub(crate) extern "C" fn native_unwind(context: *mut Context, scope: u32) -> u32 {
+    // SAFETY: generated code passes its own context.
+    unsafe {
+        let context = &mut *context;
+        if context.deferred.is_null() {
+            return 0;
+        }
+        let deferred = &mut *context.deferred;
+        let inner = deferred
+            .iter()
+            .rposition(|action| action.depth < scope)
+            .map_or(0, |last| last + 1);
+        if deferred[inner..]
+            .iter()
+            .any(|action| action.mode != DeferMode::Error)
+        {
+            return 1;
+        }
+        deferred.truncate(inner);
+        0
+    }
+}
+
 /// Records exit `exit`: clones the frame its table describes from the
 /// slots at `base` into the context. Generated code then drops its slots
 /// and returns `EXITED`.
@@ -1149,10 +1258,23 @@ pub(crate) extern "C" fn native_exit(context: *mut Context, exit: u32, base: *co
                 }
             })
             .collect();
+        // The innermost frame says why the activations leave.
+        if (*context.root).frames.is_empty() {
+            (*context.root).cleanup = table.cleanup;
+        }
+        let deferred = if context.deferred.is_null() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut *context.deferred)
+        };
         context.exit = Box::into_raw(Box::new(Exited {
             ip: table.ip,
             locals,
             stack: table.stack.iter().map(read).collect(),
+            scopes: NativeScopes {
+                depth: table.scope,
+                deferred,
+            },
         }));
     }
 }

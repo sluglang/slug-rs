@@ -101,12 +101,19 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                 | Op::StructCopyPooled(_)
                 | Op::CopyGlobalPooled { .. }
                 | Op::UpdateCapture { .. }
+                | Op::UpdateGlobalPooled { .. }
+                | Op::CopyGlobalUpdatePooled { .. }
                 | Op::Map(_)
                 | Op::InterpolatePooled(_)
                 | Op::MatchCasePooled { .. }
                 | Op::MatchLocalsPooled { .. }
                 | Op::TryMatchPooled { .. }
                 | Op::JumpIfProvided { .. }
+                | Op::Defer {
+                    mode: slug_vm::DeferMode::Error,
+                }
+                | Op::LeaveScope
+                | Op::Return
                 | Op::Throw
                 | Op::MatchFailure
                 | Op::NotImplemented
@@ -268,6 +275,7 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
             operations,
             matches,
             sites,
+            defers: function.defers,
         },
     ))
 }
@@ -276,6 +284,8 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
 struct Runtime {
     binary: cranelift_codegen::ir::SigRef,
     attention: cranelift_codegen::ir::SigRef,
+    /// `(context, scope) -> status`: `native_unwind`.
+    unwind: cranelift_codegen::ir::SigRef,
     clone: cranelift_codegen::ir::SigRef,
     drop: cranelift_codegen::ir::SigRef,
     release: cranelift_codegen::ir::SigRef,
@@ -317,6 +327,7 @@ impl Runtime {
                 &[types::I32],
             ),
             attention: signature(&[pointer], &[types::I32]),
+            unwind: signature(&[pointer, types::I32], &[types::I32]),
             clone: signature(&[pointer, pointer], &[]),
             drop: signature(&[pointer], &[]),
             release: signature(&[pointer, pointer], &[]),
@@ -624,6 +635,8 @@ impl<'a> Lowering<'a> {
             | Op::StructCopyPooled(_)
             | Op::CopyGlobalPooled { .. }
             | Op::UpdateCapture { .. }
+            | Op::UpdateGlobalPooled { .. }
+            | Op::CopyGlobalUpdatePooled { .. }
             | Op::Map(_)
             | Op::InterpolatePooled(_) => self.lower_operation(inst, position)?,
             // Native code is entered only with every parameter passed.
@@ -640,14 +653,12 @@ impl<'a> Lowering<'a> {
                 let slot = self.slot(inst.results[0].index());
                 self.store_tag(slot, layout::NIL);
             }
-            Op::True | Op::False => {
-                let slot = self.slot(inst.results[0].index());
-                let value = self
-                    .builder
-                    .ins()
-                    .iconst(types::I8, i64::from(matches!(inst.op, Op::True)));
-                self.store_bool(slot, value);
-            }
+            Op::True | Op::False => self.lower_bool(inst, matches!(inst.op, Op::True)),
+            Op::Defer { mode } => self.lower_defer(inst, *mode),
+            // Leaving a scope or the function runs what was deferred in it,
+            // which the interpreter does.
+            Op::LeaveScope => self.unwind(inst, inst.snapshot.scope),
+            Op::Return => self.unwind(inst, 1),
             // A `recur` is lowered with its block's terminator, and the
             // others' block ends leave to the interpreter, which runs them.
             Op::RecurPositional(_) | Op::Throw | Op::MatchFailure | Op::NotImplemented => {}
@@ -658,6 +669,36 @@ impl<'a> Lowering<'a> {
             op => self.lower_operator(inst, op, position)?,
         }
         Ok(())
+    }
+
+    /// A `Defer`: the action, a callable, joins what the activation
+    /// deferred in its scope; anything else leaves to the interpreter,
+    /// which fails as it does.
+    fn lower_defer(&mut self, inst: &Inst, mode: slug_vm::DeferMode) {
+        let action = self.slot(inst.args[0].index());
+        let action = self.address(action);
+        let mode = match mode {
+            slug_vm::DeferMode::Always => 0,
+            slug_vm::DeferMode::Success => 1,
+            slug_vm::DeferMode::Error => 2,
+        };
+        let operand = self
+            .builder
+            .ins()
+            .iconst(types::I32, i64::from(inst.snapshot.scope) * 4 + mode);
+        let status = self.call(
+            self.runtime.operand,
+            runtime::native_defer as *const () as usize,
+            &[self.context, operand, action],
+        )[0];
+        self.exit_unless_ok(inst, status);
+    }
+
+    /// A `True` or `False`.
+    fn lower_bool(&mut self, inst: &Inst, value: bool) {
+        let slot = self.slot(inst.results[0].index());
+        let value = self.builder.ins().iconst(types::I8, i64::from(value));
+        self.store_bool(slot, value);
     }
 
     /// An index read of any of its forms.
@@ -1756,6 +1797,10 @@ impl<'a> Lowering<'a> {
         self.builder
             .ins()
             .store(flags, null, callee, offsets::CONTEXT_EXIT);
+        // A site records only functions that defer nothing.
+        self.builder
+            .ins()
+            .store(flags, null, callee, offsets::CONTEXT_DEFERRED);
         let result = self.slot(inst.results[0].index());
         let result = self.address(result);
         self.builder
@@ -1827,6 +1872,10 @@ impl<'a> Lowering<'a> {
                     .insts
                     .last()
                     .ok_or("a recur block has no recur instruction")?;
+                if self.function.defers {
+                    // A `recur` runs what the iteration deferred.
+                    self.unwind(inst, 1);
+                }
                 let status = self.call(
                     self.runtime.attention,
                     runtime::native_attention as *const () as usize,
@@ -1938,25 +1987,51 @@ impl<'a> Lowering<'a> {
 
     /// A block that leaves to the interpreter before `inst`.
     fn exit_block(&mut self, inst: &Inst) -> CodeBlock {
-        self.exit_with(inst.ip, &inst.snapshot, 0)
+        self.exit_with(inst.ip, &inst.snapshot, 0, false)
+    }
+
+    /// Continues past `inst`, which leaves scopes down to `scope`, when
+    /// nothing deferred in them is to run: what is deferred `onerror` is
+    /// dropped. Otherwise leaves to the interpreter before it, to run the
+    /// rest, an exit that does not count towards settling.
+    fn unwind(&mut self, inst: &Inst, scope: u32) {
+        let floor = self.builder.ins().iconst(types::I32, i64::from(scope));
+        let status = self.call(
+            self.runtime.unwind,
+            runtime::native_unwind as *const () as usize,
+            &[self.context, floor],
+        )[0];
+        let exit = self.exit_with(inst.ip, &inst.snapshot, 0, true);
+        let next = self.builder.create_block();
+        self.builder.ins().brif(status, exit, &[], next, &[]);
+        self.builder.switch_to_block(next);
     }
 
     /// A block that leaves to the interpreter during call `inst`, whose
     /// callee left too: past the call, its arguments gone, and the
     /// callee's frame above.
     fn exit_after_call(&mut self, inst: &Inst) -> CodeBlock {
-        self.exit_with(inst.ip + 1, &inst.snapshot, inst.args.len())
+        self.exit_with(inst.ip + 1, &inst.snapshot, inst.args.len(), false)
     }
 
     /// A block that leaves to the interpreter at `ip` with the frame from
-    /// `snapshot`, less the top `popped` stack values.
-    fn exit_with(&mut self, ip: usize, snapshot: &Snapshot, popped: usize) -> CodeBlock {
+    /// `snapshot`, less the top `popped` stack values: only to run
+    /// deferred actions, when `cleanup`.
+    fn exit_with(
+        &mut self,
+        ip: usize,
+        snapshot: &Snapshot,
+        popped: usize,
+        cleanup: bool,
+    ) -> CodeBlock {
         let id = u32::try_from(self.exits.len()).expect("exit count fits");
         let function = self.function;
         let own = |value: &ValueId| !matches!(function.def(*value), ValueDef::Below(_));
         let stack = &snapshot.stack[..snapshot.stack.len() - popped];
         self.exits.push(ExitTable {
             ip,
+            scope: snapshot.scope,
+            cleanup,
             locals: snapshot
                 .locals
                 .iter()

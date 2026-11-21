@@ -334,7 +334,11 @@ pub(crate) fn plain_defaults(
     {
         return alloc::boxed::Box::default();
     }
-    let plain = found.iter().rev().take_while(|value| value.is_some()).count();
+    let plain = found
+        .iter()
+        .rev()
+        .take_while(|value| value.is_some())
+        .count();
     found[arity - plain..].iter().flatten().copied().collect()
 }
 
@@ -357,7 +361,9 @@ impl CompiledChunk {
                 Constant::Value(value) => value.clone(),
                 Constant::Function(_) => unreachable!("a plain default is a value"),
             },
-            PlainDefault::EmptyList => Value::List(crate::collections::List::from_values(Vec::new())),
+            PlainDefault::EmptyList => {
+                Value::List(crate::collections::List::from_values(Vec::new()))
+            }
             PlainDefault::Nil => Value::Nil,
             PlainDefault::True => Value::Bool(true),
             PlainDefault::False => Value::Bool(false),

@@ -89,6 +89,9 @@ fn closures(program: &Program, chunk: &VerifiedChunk) -> Result<(Closures, Vec<b
 struct State {
     locals: Vec<Local>,
     stack: Vec<ValueId>,
+    /// How many scopes deep: `EnterScope` and `LeaveScope` nest, so every
+    /// path to an instruction agrees.
+    scope: u32,
 }
 
 /// An edge whose target's parameters are not known yet.
@@ -129,6 +132,10 @@ impl<'a> Lifter<'a> {
                 cells,
                 closures,
                 exact_positional: chunk.exact_positional,
+                defers: chunk
+                    .instructions
+                    .iter()
+                    .any(|instruction| matches!(instruction.op, Op::Defer { .. })),
                 constants: chunk.constants.clone(),
                 values: Vec::new(),
                 blocks: Vec::new(),
@@ -247,7 +254,11 @@ impl<'a> Lifter<'a> {
             .map(|index| self.new_value(ValueDef::Below(index)))
             .collect();
         self.block_at[0] = Some(block);
-        State { locals, stack }
+        State {
+            locals,
+            stack,
+            scope: 1,
+        }
     }
 
     fn local_holding(&self, index: usize, value: ValueId) -> Local {
@@ -272,7 +283,16 @@ impl<'a> Lifter<'a> {
         let Some(first) = incoming.first() else {
             return Err(format!("instruction {ip} starts a block nothing jumps to"));
         };
+        if incoming
+            .iter()
+            .any(|edge| edge.state.scope != first.state.scope)
+        {
+            return Err(format!(
+                "paths join at different scopes at instruction {ip}"
+            ));
+        }
         let mut joined = State {
+            scope: first.state.scope,
             locals: first.state.locals.clone(),
             stack: first
                 .state
@@ -348,6 +368,7 @@ impl<'a> Lifter<'a> {
             ip,
             locals: before.locals.clone(),
             stack: before.stack.clone(),
+            scope: before.scope,
         };
         match &instruction.op {
             Op::Pop => {
@@ -398,10 +419,28 @@ impl<'a> Lifter<'a> {
                 self.end_choice(ip, instruction, &before, state)?;
                 return Ok(true);
             }
+            Op::Return if self.function.defers => {
+                // An instruction, for native code to check what is deferred.
+                self.emit(ip, instruction, Vec::new(), state, snapshot)?;
+                let value = self.last_inst().args[0];
+                self.end_block(Terminator::Return(value));
+                return Ok(true);
+            }
             Op::Return => {
                 let value = self.pop(state, 1)?;
                 self.end_block(Terminator::Return(value[0]));
                 return Ok(true);
+            }
+            Op::EnterScope => {
+                state.scope = state.scope.checked_add(1).ok_or("scopes nest too deeply")?;
+            }
+            Op::LeaveScope => {
+                self.emit(ip, instruction, Vec::new(), state, snapshot)?;
+                state.scope = state
+                    .scope
+                    .checked_sub(1)
+                    .filter(|scope| *scope >= 1)
+                    .ok_or_else(|| format!("instruction {ip} leaves the function's own scope"))?;
             }
             Op::Recur(_) | Op::RecurPooled(_) | Op::RecurPositional(_) => {
                 self.emit(ip, instruction, Vec::new(), state, snapshot)?;
@@ -533,6 +572,7 @@ impl<'a> Lifter<'a> {
             ));
         }
         let target_state = State {
+            scope: before.scope,
             locals: before.locals.clone(),
             stack: before
                 .stack

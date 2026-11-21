@@ -515,8 +515,9 @@ enum ExecutionOutcome {
 enum NativeEntry {
     /// The frame stays interpreted.
     Declined,
-    /// Native code left the frame to the interpreter.
-    Exited,
+    /// Native code left the frame to the interpreter: only to run
+    /// deferred actions, when `cleanup`.
+    Exited { cleanup: bool },
     /// The function returned this value.
     Returned(Value),
 }
@@ -2422,12 +2423,13 @@ impl Vm {
                     .chunk;
                 if let Some(native) = chunk.native.tick(program, index) {
                     let entry = self.enter_native(native)?;
-                    chunk
-                        .native
-                        .record_entry(!matches!(entry, NativeEntry::Returned(_)));
+                    chunk.native.record_entry(matches!(
+                        entry,
+                        NativeEntry::Declined | NativeEntry::Exited { cleanup: false }
+                    ));
                     match entry {
                         NativeEntry::Declined => {}
-                        NativeEntry::Exited => {
+                        NativeEntry::Exited { .. } => {
                             // The active frame may be a new one, of another
                             // chunk: look it up again.
                             interpret_entry = true;
@@ -2510,7 +2512,10 @@ impl Vm {
             .program()
             .chunk(frame.closure.chunk)
             .map_or(0, |chunk| chunk.arity);
-        if !(0..parameters).all(|slot| frame.provided.is_provided(slot)) {
+        if !(0..parameters).all(|slot| frame.provided.is_provided(slot))
+            || frame.scope_depth != 1
+            || !frame.scopes.is_empty()
+        {
             return Ok(NativeEntry::Declined);
         }
         let mut locals = core::mem::take(&mut self.native_arguments);
@@ -2540,8 +2545,11 @@ impl Vm {
                 stack,
                 frames,
                 failure,
+                scopes,
+                cleanup,
             } => {
                 let frame = self.frames.last_mut().expect("active frame was checked");
+                (frame.scope_depth, frame.scopes) = cleanup::native_scopes(scopes);
                 if locals.len() != frame.locals.len() {
                     return Err(self.error(
                         RuntimeErrorKind::InvalidBytecode,
@@ -2560,7 +2568,7 @@ impl Vm {
                 if let Some(failure) = failure {
                     return Err(self.native_raise(failure));
                 }
-                Ok(NativeEntry::Exited)
+                Ok(NativeEntry::Exited { cleanup })
             }
         }
     }
@@ -2603,9 +2611,10 @@ impl Vm {
         let outcome = native.run(self, &callee, &mut arguments_moved);
         arguments_moved.clear();
         self.native_arguments = arguments_moved;
-        chunk
-            .native
-            .record_entry(!matches!(outcome, crate::tiering::NativeOutcome::Return(_)));
+        chunk.native.record_entry(matches!(
+            outcome,
+            crate::tiering::NativeOutcome::Exit { cleanup: false, .. }
+        ));
         let local_count = chunk.locals;
         let Value::Closure(closure) = callee else {
             unreachable!("made a closure just now");
@@ -2623,6 +2632,8 @@ impl Vm {
                 stack,
                 frames,
                 failure,
+                scopes,
+                ..
             } => {
                 if locals.len() != local_count {
                     return Err(self.error(
@@ -2633,6 +2644,8 @@ impl Vm {
                 }
                 #[cfg(feature = "metrics")]
                 self.record_frame(local_count);
+                let (scope_depth, scopes) = cleanup::native_scopes(scopes);
+                let locals = self.native_frame_locals(locals);
                 self.push_frame(Frame {
                     closure,
                     call_span: if cleanup.is_some() {
@@ -2642,10 +2655,10 @@ impl Vm {
                     },
                     ip,
                     stack_base,
-                    locals: locals.into_iter().map(LocalSlot::from_native).collect(),
+                    locals,
                     provided: ProvidedArguments::All,
-                    scope_depth: 1,
-                    scopes: Vec::new(),
+                    scope_depth,
+                    scopes,
                     cleanup_action: cleanup.is_some(),
                     cleanup_recovers: cleanup.is_some_and(|cleanup| cleanup.recovers),
                     cleanup_owner_depth: cleanup.map(|cleanup| cleanup.owner_depth),
@@ -2674,7 +2687,9 @@ impl Vm {
             ip,
             locals,
             stack,
+            scopes,
         } = frame;
+        let (scope_depth, scopes) = cleanup::native_scopes(scopes);
         let Value::Closure(closure) = closure else {
             return Err(self.error(
                 RuntimeErrorKind::InvalidBytecode,
@@ -2693,7 +2708,7 @@ impl Vm {
                 None,
             ));
         }
-        let locals = locals.into_iter().map(LocalSlot::from_native).collect();
+        let locals = self.native_frame_locals(locals);
         self.push_frame(Frame {
             closure,
             call_span: self.frame_call_span(),
@@ -2701,8 +2716,8 @@ impl Vm {
             stack_base: self.stack.len(),
             locals,
             provided: ProvidedArguments::All,
-            scope_depth: 1,
-            scopes: Vec::new(),
+            scope_depth,
+            scopes,
             cleanup_action: false,
             cleanup_recovers: false,
             cleanup_owner_depth: None,
@@ -4330,6 +4345,17 @@ impl Vm {
         locals.extend(arguments.into_iter().map(LocalSlot::Direct));
         locals.resize_with(local_count, || LocalSlot::Direct(Value::Nil));
         (locals, reused)
+    }
+
+    /// A frame's locals for those native code left, in a vector from the
+    /// pool, as an interpreted call takes one: a frame's return gives its
+    /// vector back, so one native code made would grow the pool.
+    #[cfg(feature = "native-hooks")]
+    fn native_frame_locals(&mut self, locals: Vec<crate::tiering::NativeLocal>) -> Vec<LocalSlot> {
+        let mut slots = self.local_slot_pool.pop().unwrap_or_default();
+        slots.clear();
+        slots.extend(locals.into_iter().map(LocalSlot::from_native));
+        slots
     }
 
     pub(in crate::vm) fn recycle_frame_locals(&mut self, mut locals: Vec<LocalSlot>) {

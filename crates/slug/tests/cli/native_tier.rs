@@ -865,6 +865,110 @@ fn recursion_deeper_than_native_calls_go_continues_in_the_interpreter() {
 }
 
 #[test]
+fn compiled_module_variable_updates_match_the_interpreter() {
+    // Module `var`s updated in place by compiled code: a number, a map
+    // merge, a list append, a struct's and a map's field copied with an
+    // update, from a spawned task too, and an update that fails.
+    same_with_and_without_native_code(
+        "module-updates",
+        "val Player = struct { name:str, memory:map, steps:num }\n\
+         var total = 0\n\
+         var seen = {}\n\
+         var log = []\n\
+         var player = Player { name: \"p\", memory: {}, steps: 0 }\n\
+         var record = {count: 0, tags: []}\n\
+         val tick = fn(i) {\n\
+             total = total + i\n\
+             seen = seen + {[\"k\" + i % 13]: i}\n\
+             log = log :+ (i % 7)\n\
+             player = player copy {memory: player.memory + {[\"m\" + i % 5]: i}}\n\
+             record = record copy {tags: record.tags :+ (i % 3)}\n\
+             total\n\
+         }\n\
+         val loop = fn(i, acc) { if (i == 0) { acc } else { recur(i - 1, acc + tick(i)) } }\n\
+         val bad = fn(v) { log = log + v }\n\
+         val main = fn() {\n\
+             println(loop(400, 0))\n\
+             println(total, len(seen), len(log), player.memory, len(record.tags))\n\
+             val forked = spawn { loop(5, 0) }\n\
+             println(select { await forked }, total)\n\
+             println(bad(\"x\"))\n\
+         }\n",
+    );
+}
+
+#[test]
+fn compiled_deferred_actions_match_the_interpreter() {
+    // Functions whose deferred actions are all `onerror` compile, beside
+    // and calling ones with `defer` and `onsuccess`, which stay
+    // interpreted: an `onerror` that recovers, one dropped on success,
+    // actions in nested blocks, a `return` from inside one, `recur` with
+    // actions deferred each iteration, an error passing through a caller's
+    // `onerror`, and an error nothing recovers, its cleanup run in each
+    // frame it leaves.
+    same_with_and_without_native_code(
+        "deferred",
+        "val log = fn(acc, text) { acc :+ text }\n\
+var events = []\n\
+val note = fn(text) { events = events :+ text }\n\
+val guarded = fn(n) {\n\
+    defer onerror(err) { \"recovered \" + err.code }\n\
+    if (n % 5 == 0) { throw {code: n} }\n\
+    n * 2\n\
+}\n\
+val counted = fn(n) {\n\
+    var done = 0\n\
+    defer { done = done + 1 }\n\
+    defer onsuccess { note(\"ok \" + n) }\n\
+    defer onerror(err) { note(\"failed \" + n) }\n\
+    if (n % 7 == 0) { throw {code: n} }\n\
+    n + done\n\
+}\n\
+val nested = fn(n) {\n\
+    val inner = {\n\
+        if (n % 2 == 0) { defer { note(\"even block \" + n) }; note(\"in block \" + n) }\n\
+        n + 1\n\
+    }\n\
+    defer onerror(err) { 0 }\n\
+    if (n % 3 == 0) { return inner * 10 }\n\
+    inner\n\
+}\n\
+val looping = fn(i, total) {\n\
+    defer onerror(err) { -1 }\n\
+    if (i == 0) { total } else { recur(i - 1, total + guarded(i)) }\n\
+}\n\
+val loopingAlways = fn(i, total) {\n\
+    defer { note(\"iteration \" + i) }\n\
+    if (i == 0) { total } else { recur(i - 1, total + i) }\n\
+}\n\
+val caught = fn(n) {\n\
+    defer onerror(err) { \"caught \" + err.code }\n\
+    counted(n)\n\
+}\n\
+val boom = fn(n) {\n\
+    defer { note(\"boom cleanup \" + n) }\n\
+    if (n > 2) { throw {code: n} }\n\
+    n\n\
+}\n\
+val deep = fn(n) { defer { note(\"deep \" + n) }; boom(n) + 1 }\n\
+val main = fn() {\n\
+    val go = fn(i, out) {\n\
+        if (i < 300) {\n\
+            val row = [guarded(i), nested(i), caught(i), looping(4, 0)]\n\
+            recur(i + 1, if (i % 50 == 0) { out :+ row } else { out })\n\
+        } else { out }\n\
+    }\n\
+    println(go(0, []))\n\
+    println(loopingAlways(3, 0), deep(1))\n\
+    println(len(events), events[0:12])\n\
+    println(events[len(events) - 3:])\n\
+    println(deep(3))\n\
+}\n\
+",
+    );
+}
+
+#[test]
 fn compiled_calls_in_tasks_with_their_own_view_match_the_interpreter() {
     // A spawned task with a `task var` and a fork each have their own view
     // of the module variables. Their compiled loops call module functions,

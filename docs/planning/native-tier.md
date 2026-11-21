@@ -1068,6 +1068,34 @@ site and declined calls by cause found:
 Against the previous commit (9 padded PGO rounds): `crawl-crowd` 0.97x,
 the rest inside their spreads; tuned and hold-out geomeans 1.00x.
 
+### Phase 4: deferred actions and module updates (2026-11-21)
+
+- **Scopes.** The lifter tracks scope depth statically; joins must
+  agree on it. Native code keeps a list of deferred actions in the
+  context (`native_defer`), and `LeaveScope`, `Return` and `recur` in a
+  function that defers call `native_unwind`, which drops `onerror`
+  actions and stays native when nothing else is pending. Otherwise, and
+  at every exit, the actions and depth move into the interpreter
+  frame's scopes, so recovery and unwinding are the interpreter's.
+- **Only `onerror` compiles.** With `defer` or `onsuccess`, native code
+  left at each return to run the actions, and `defer-errors` was 1.14x
+  slower. Running them natively needs the interpreter to take over a
+  cleanup already in progress when an action exits partway; that is
+  stage 3, not done. `Spawn` and `Select` still decline, and so does
+  `CallSelectedPooled` (two `crawl-history` chunks).
+- **Module updates.** `UpdateGlobalPooled` and `CopyGlobalUpdatePooled`
+  run through one out-of-line `native_global_update`; growing
+  `native_operation`'s hot arms instead cost `fannkuch-redux` 6%,
+  `higher-order` 4% and `invaders-game` 3%.
+- **Locals pool leak.** Frames built from native exits brought fresh
+  locals vectors, which were recycled into the pool and never taken
+  out. They now come from the pool; `defer-errors`' RSS had grown from
+  7.5 to 17.7 MB before the fix.
+
+Against the previous commit (9 padded PGO rounds): `defer-errors`
+0.90x, `http-server` 0.96x, the rest inside their spreads; tuned and
+hold-out geomeans 1.00x.
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.

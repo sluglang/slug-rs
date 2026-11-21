@@ -78,6 +78,9 @@ pub struct Snapshot {
     /// The operand stack, bottom first, including the values below the
     /// function's own.
     pub stack: Vec<ValueId>,
+    /// How many scopes deep it is, the function's own being 1: what an
+    /// exit's frame records, with whatever was deferred in them.
+    pub scope: u32,
 }
 
 /// One bytecode instruction that does more than move values between
@@ -191,6 +194,9 @@ pub struct Function {
     /// Whether a call or `recur` with exactly `arity` positional arguments
     /// binds them straight into the parameters.
     pub exact_positional: bool,
+    /// Whether it defers actions: its `Return`s are then instructions,
+    /// which check what is deferred.
+    pub defers: bool,
     pub constants: Vec<Constant>,
     pub values: Vec<ValueDef>,
     /// The entry block is first; its parameters are the arguments.

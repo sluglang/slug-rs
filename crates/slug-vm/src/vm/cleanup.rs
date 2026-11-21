@@ -31,6 +31,29 @@ pub(super) enum Cleanup {
     Error(RuntimeError),
 }
 
+/// A frame's `scope_depth` and `scopes` for the scopes native code left:
+/// no list of scopes when nothing is deferred, as the interpreter keeps
+/// a frame until its first `defer`.
+#[cfg(feature = "native-hooks")]
+pub(super) fn native_scopes(scopes: crate::tiering::NativeScopes) -> (u32, Vec<Vec<Deferred>>) {
+    let crate::tiering::NativeScopes { depth, deferred } = scopes;
+    let depth = depth.max(1);
+    if deferred.is_empty() {
+        return (depth, Vec::new());
+    }
+    let mut lists: Vec<Vec<Deferred>> = (0..depth).map(|_| Vec::new()).collect();
+    for crate::tiering::NativeDeferred {
+        action,
+        mode,
+        depth: scope,
+    } in deferred
+    {
+        let index = (scope.clamp(1, depth) - 1) as usize;
+        lists[index].push(Deferred { action, mode });
+    }
+    (depth, lists)
+}
+
 impl Vm {
     pub(super) fn begin_return(&mut self, value: Value) -> VmResult<Option<Value>> {
         let frame_depth = self.frames.len().checked_sub(1).ok_or_else(|| {
