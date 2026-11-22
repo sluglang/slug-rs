@@ -37,6 +37,34 @@ jobs:
         if: runner.os != 'Windows'
         run: make test-filesystem-clutch
 
+  # The native tier on Windows, where it stays off by default until this
+  # passes: the tier's own tests, the slug suite interpreted as a baseline,
+  # then with hot chunks compiled in the background, then with every chunk
+  # compiled at its first entry. Each step runs even when an earlier one
+  # fails, so a failure shows which layer breaks.
+  native-tier-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+      - name: The tier's own tests and differential tests
+        run: make test-native-tier
+      - name: The slug suite, interpreted
+        if: success() || failure()
+        run: SLUG_NATIVE=off cargo test -p slug --features metrics --tests --bins
+      - name: The slug suite, hot chunks compiled
+        if: success() || failure()
+        run: SLUG_NATIVE=on cargo test -p slug --features metrics --tests --bins
+      - name: The slug suite, every chunk compiled
+        if: success() || failure()
+        run: SLUG_NATIVE=all cargo test -p slug --features native,metrics --tests --bins
+
   # The fork fixtures under ThreadSanitizer, with std rebuilt for it.
   thread-sanitizer:
     runs-on: ubuntu-latest
