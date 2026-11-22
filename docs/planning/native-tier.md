@@ -1005,7 +1005,10 @@ is the runtime copying lists, which both tiers share.
   feature of `slug`, and `SLUG_NATIVE` is `on` when unset, except on
   Windows, where native code has not run yet (the VM's thread there has a
   1 MB stack, which native frames share): it stays `off` there until
-  tested. `make test` sets `SLUG_NATIVE=off`, so it still checks the
+  tested. *2026-11-22:* a Windows CI job runs the tier's tests and the
+  slug suite off, on, with every chunk compiled, and as by default; with a
+  native frame capped at a quarter of the stack budget, all pass, and
+  `SLUG_NATIVE` is `on` when unset there too. `make test` sets `SLUG_NATIVE=off`, so it still checks the
   interpreter alone, and `make test-native-on` runs the slug suite as
   programs run by default.
 - **Known gaps.** Functions with `defer`/`onerror` blocks (their
@@ -1013,6 +1016,195 @@ is the runtime copying lists, which both tiers share.
   Phase 4. The fork
   conformance test `cancel-releases-waits` fails under load on `master`
   too (25 of 72 runs there, 33 of 72 here), so it predates this branch.
+
+### After merging: parameter matches and defaults (2026-11-21)
+
+Sizing Phase 4 found few hot chunks with `defer` or `onerror`. The
+larger gap was `MatchLocalsPooled`, the `fn(...) match` that std's `map`,
+`filter` and `find` are written with, which did not compile. It now
+does, as do pipelines with positional arguments, which are direct calls
+with their first two arguments swapped.
+
+Two things then made `higher-order` 6.84x and three workloads 3-6%
+slower:
+
+- **Block arguments were cloned.** An accumulator passed through a join
+  was always shared, so each `acc :+ h` copied the list. An argument now
+  moves when the edge passes it once and the target, counting the
+  locals an exit would hand back, does not read it.
+- **Calls that left out a default were never direct.** `xs /> filter(f)`
+  passes 2 of 3 arguments, so it ran one iteration interpreted and
+  entered native code at `recur` through the frame path, which costs
+  more than it saves on 3-item lists. A chunk now records the defaults
+  of its last parameters when each is a constant, `[]`, `nil`, `true` or
+  `false`. A positional call that leaves only those out, from the
+  interpreter or native code, supplies them and binds as a full call.
+  A default that runs code, keyword calls, and native calls to functions
+  of more than 8 parameters keep the general path, and a call site
+  records its callee only for calls that pass every argument.
+
+Against `master` (9 padded PGO rounds): tuned 0.99x, hold-outs 0.99x;
+`closure-accumulate` 0.87x, `crawl-game` 0.88x, `crawl-history` 0.99x,
+`higher-order` 1.03x inside its 4%/8% spread.
+
+### Code that still runs interpreted (2026-11-21)
+
+Sampling interpreted stacks with the tier on put `crawl-crowd` at 36%
+interpreted, the rest of the tuned workloads at 2-20%. Counting exits by
+site and declined calls by cause found:
+
+- **Task views.** Native code declined every module-level call inside
+  a task with its own view of the variables (40k in `crawl-crowd`,
+  whose handlers run that way), though functions are `val`s, which every
+  view sees as they are. Callees are now read through the view, as
+  `native_global` reads variables.
+- **Permanent settling.** A chunk that exited on most early entries,
+  while its callees were still cold or compiling (`slug.fmt.json`'s
+  `emitList`), stayed interpreted for the run. A settled chunk is now
+  tried again after 1024 interpreted entries, doubling each time it
+  settles again.
+- **Warm-up.** Most other declines are calls to closures not hot yet or
+  still queued for compiling. Thresholds from 1000 down to 30 changed no
+  workload's time, so they are left alone. Functions with `defer`
+  (`http-server`'s handlers) are Phase 4.
+
+Against the previous commit (9 padded PGO rounds): `crawl-crowd` 0.97x,
+the rest inside their spreads; tuned and hold-out geomeans 1.00x.
+
+### Phase 4: deferred actions and module updates (2026-11-21)
+
+- **Scopes.** The lifter tracks scope depth statically; joins must
+  agree on it. Native code keeps a list of deferred actions in the
+  context (`native_defer`), and `LeaveScope`, `Return` and `recur` in a
+  function that defers call `native_unwind`, which drops `onerror`
+  actions and stays native when nothing else is pending. Otherwise, and
+  at every exit, the actions and depth move into the interpreter
+  frame's scopes, so recovery and unwinding are the interpreter's.
+- **Only `onerror` compiles.** With `defer` or `onsuccess`, native code
+  left at each return to run the actions, and `defer-errors` was 1.14x
+  slower. Running them natively needs the interpreter to take over a
+  cleanup already in progress when an action exits partway; that is
+  stage 3, not done. `Spawn` and `Select` still decline, and so does
+  `CallSelectedPooled` (two `crawl-history` chunks).
+- **Module updates.** `UpdateGlobalPooled` and `CopyGlobalUpdatePooled`
+  run through one out-of-line `native_global_update`; growing
+  `native_operation`'s hot arms instead cost `fannkuch-redux` 6%,
+  `higher-order` 4% and `invaders-game` 3%.
+- **Locals pool leak.** Frames built from native exits brought fresh
+  locals vectors, which were recycled into the pool and never taken
+  out. They now come from the pool; `defer-errors`' RSS had grown from
+  7.5 to 17.7 MB before the fix.
+
+Against the previous commit (9 padded PGO rounds): `defer-errors`
+0.90x, `http-server` 0.96x, the rest inside their spreads; tuned and
+hold-out geomeans 1.00x.
+
+### Stage 3 design: running deferred actions natively (2026-11-21)
+
+Native code runs the actions itself and never re-enters the interpreter;
+when an action leaves partway, the VM rebuilds the state the
+interpreter would have reached.
+
+- **Running them.** `LeaveScope`, `Return` and `recur` in a function
+  that defers call `native_cleanup(context, floor)`: newest first (the
+  list is sorted by depth, so this is the interpreter's order), it drops
+  `onerror` actions and enters each other one that is a compiled
+  closure of no parameters, as `native_call` does. It returns *done*;
+  *declined* (the next action is not compiled, is a builtin, the thread
+  needs attention, or the stack budget is used), its action left in
+  place, for native code to leave before the instruction as now, the
+  interpreter running it again over what is left; or *exited*, an
+  action having left partway.
+- **Rebuilding an exit mid-cleanup.** The owner then leaves before the
+  instruction with its exit marked `unwinding`, and the action's frame
+  follows it, as a callee's does. Rebuilding frames outermost first, the
+  VM queues for an unwinding frame what the instruction at its ip would
+  have, without driving the queue: `Return` takes its value and queues
+  as `begin_return` does; `LeaveScope` moves past and queues as
+  `leave_scope_with_cleanup` does; `recur` binds its arguments and
+  queues `Cleanup::Recur` and the inner scopes. The frame pushed next is
+  the action, marked as `call_cleanup` marks one. Every scope gets a
+  list, empty or not, so `recur`'s fast path cannot restart before the
+  action finishes. Errors need nothing new: `begin_error` finds the
+  queue it would have built.
+- **`recur` cleans up from scope 2**, as `restart_recur` keeps scope 1;
+  the frontend never defers in scope 1, so this mismatch was latent.
+- **Settling.** A declined cleanup now counts as an exit, so a function
+  whose action never compiles settles back to the interpreter and is
+  retried later, instead of leaving at every scope: 194k exits became
+  2.2k on a loop of 100k such calls. The separate cleanup exit flag of
+  Phase 4 went with it.
+
+Result: a loop calling a function with `defer { count = count + 1 }`
+runs in 0.08 s against 0.22 s interpreted. A differential test runs
+actions that leave partway at a block's end, a `return`, a `recur`, in
+nested actions, in a recovering `onerror`, and one that throws; with
+every function compiled, 932 actions ran natively and 392 left. Against
+the previous commit (9 padded PGO rounds): `defer-errors` 0.91x,
+`http-server` 0.97x; `crawl-history` 1.02x and the hold-out
+`expression-evaluator` 1.02x just outside their spreads, though
+`crawl-history` runs no deferred action; tuned 0.99x, hold-out 1.00x.
+
+### Phase 4 closed (2026-11-21)
+
+Stages 1-3 and the module updates of stage 5 are done; `Spawn`,
+`Select` and `CallSelectedPooled` stay interpreted. Across Phase 4,
+`defer-errors` runs about 18% faster and `http-server` about 7%.
+
+`Spawn` and `Select` were left because `http-server`, the workload they
+would serve, is little interpreted. Sampling a run ten times longer
+(42k requests, a build with symbols and without PGO, 2 s) put 82% of
+the VM thread in native code, 9.5% in the interpreter (mostly the
+`select` in `tcp.read` and `tcp.accept`, which must suspend the task
+through the interpreter whenever its channel is empty), and 9% in the
+scheduler and waiting. Its native time goes to work Phase 4 does not
+touch: builtin and foreign calls (about a third, led by the foreign-call
+binding for string and TCP functions), copying and freeing values, and
+the index, arithmetic and match helpers. About 3% of the thread checks
+each native result for non-finite numbers, walking whole lists such as
+`split`'s; the interpreter pays the same check. Its one `defer` runs
+once per client, too rarely to compile.
+
+Leads, outside the tier: skip the non-finite check where a result cannot
+hold a float, and make the foreign-call path cheaper; both help the
+interpreter too.
+
+### The branch after the merge: result (2026-11-22)
+
+`feature/native-match-locals` holds the work after the tier's merge
+(22c18841): parameter matches and defaults, task views and settled-chunk
+retries, Phase 4, the non-finite double scan in native calls, the fork
+cancellation fix, a cap on native frame size, and Windows: the tier on by
+default there, and `slug.io.fs` (with long paths) and `slug.net.tcp`
+ported, all in CI on `windows-latest`.
+
+Against `master` at 22c18841, the branch at 1350122c (9 padded PGO
+rounds): tuned 0.97x, hold-outs 0.98x.
+
+| Workload | Ratio | Spread | Why |
+|---|---:|---:|---|
+| `defer-errors` | 0.83x | 2%/1% | deferred actions run natively |
+| `closure-accumulate` | 0.87x | 3%/2% | parameter matches and defaults |
+| `crawl-game` | 0.90x | 6%/2% | the same, and fewer exits |
+| `crawl-crowd` | 0.94x | 1%/1% | calls in task views |
+| `crawl-history` | 0.96x | 2%/2% | |
+| `http-server` | 0.97x | 2%/6% | |
+| `fannkuch-redux`, `typed-spectral-norm` | 0.97x | | |
+| hold-outs `crawl-pages`, `text-wrap`, `expression-evaluator` | 0.97x | | |
+
+The rest lie from 0.98x to 1.03x, inside their spreads (`higher-order`
+1.03x at 5%/4%; `function-call`, `typed-n-body`, `fib` 1.02x). Memory
+fell where the frame-locals pool had grown (`crawl-game` -5.2 MB,
+`tiny-interpreter` -3.5 MB, `invaders-game` -2.3 MB) and rose where more
+compiles (`crawl-ticks` +4.5 MB, `closure-accumulate` +1.6 MB,
+`higher-order` +0.9 MB); whether `crawl-ticks`' rise is fixed or grows
+with a run is not yet known.
+
+What remains is outside the tier's plan: `Spawn`, `Select`, and
+`CallSelectedPooled` stay interpreted on evidence (Phase 4 closed above);
+the time left in the workloads profiled goes to value copies, builtin and
+foreign calls, and runtime helpers native code calls; and Windows has run
+only in CI, not yet under a real program's load.
 
 ## Risks
 

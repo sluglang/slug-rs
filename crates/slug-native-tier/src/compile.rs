@@ -55,12 +55,27 @@ use crate::{
     },
 };
 
+/// The most IR values a compiled function may have. Its native frame holds
+/// a slot for each, and the stack budget is checked only at calls, so one
+/// frame past it could overflow a thread's stack on its own: the main
+/// thread's is 1 MiB on Windows. This keeps a frame within a quarter of
+/// [`runtime::STACK_BUDGET`], 2730 values; the largest hot function of the
+/// benchmarks and clutch suites has under 1000.
+#[allow(clippy::cast_sign_loss, reason = "a slot's size is positive")]
+const MAX_VALUES: usize = runtime::STACK_BUDGET / 4 / layout::SIZE as usize;
+
 /// Why a function does not compile, or `Ok` if it can.
 ///
 /// # Errors
 ///
 /// Returns the first thing the baseline tier does not compile yet.
 pub fn qualify(function: &Function) -> Result<(), String> {
+    if function.values.len() > MAX_VALUES {
+        return Err(format!(
+            "it has {} values, more than the {MAX_VALUES} a native frame holds",
+            function.values.len()
+        ));
+    }
     let cell = |slot: &usize| function.cells.get(*slot).copied().unwrap_or(true);
     for block in &function.blocks {
         for inst in &block.insts {
@@ -101,11 +116,17 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                 | Op::StructCopyPooled(_)
                 | Op::CopyGlobalPooled { .. }
                 | Op::UpdateCapture { .. }
+                | Op::UpdateGlobalPooled { .. }
+                | Op::CopyGlobalUpdatePooled { .. }
                 | Op::Map(_)
                 | Op::InterpolatePooled(_)
                 | Op::MatchCasePooled { .. }
+                | Op::MatchLocalsPooled { .. }
                 | Op::TryMatchPooled { .. }
                 | Op::JumpIfProvided { .. }
+                | Op::Defer { .. }
+                | Op::LeaveScope
+                | Op::Return
                 | Op::Throw
                 | Op::MatchFailure
                 | Op::NotImplemented
@@ -267,6 +288,7 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
             operations,
             matches,
             sites,
+            defers: function.defers,
         },
     ))
 }
@@ -275,6 +297,8 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
 struct Runtime {
     binary: cranelift_codegen::ir::SigRef,
     attention: cranelift_codegen::ir::SigRef,
+    /// `(context, scope) -> status`: `native_cleanup`.
+    cleanup: cranelift_codegen::ir::SigRef,
     clone: cranelift_codegen::ir::SigRef,
     drop: cranelift_codegen::ir::SigRef,
     release: cranelift_codegen::ir::SigRef,
@@ -316,6 +340,7 @@ impl Runtime {
                 &[types::I32],
             ),
             attention: signature(&[pointer], &[types::I32]),
+            cleanup: signature(&[pointer, types::I32], &[types::I32]),
             clone: signature(&[pointer, pointer], &[]),
             drop: signature(&[pointer], &[]),
             release: signature(&[pointer, pointer], &[]),
@@ -378,6 +403,10 @@ struct Lowering<'a> {
     /// The values live out of each block.
     /// Computed when a value first may move.
     live_out: Option<Vec<Vec<u64>>>,
+    /// Each block's live-in values, snapshot locals included: an edge may
+    /// move an argument into its parameter only when its target uses it
+    /// no other way.
+    edge_live_in: Option<Vec<Vec<u64>>>,
     exits: Vec<ExitTable>,
     operations: Vec<runtime::Operation>,
     matches: Vec<runtime::MatchSite>,
@@ -392,6 +421,15 @@ struct Lowering<'a> {
     next_site: usize,
     /// Where a direct call builds its callee's context.
     callee_context: StackSlot,
+}
+
+/// Why generated code leaves to the interpreter at an exit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leaving {
+    /// For the interpreter to do what native code does not.
+    Exit,
+    /// Running deferred actions, one of which left.
+    Unwinding,
 }
 
 /// A block whose body is lowered after the function's own blocks.
@@ -460,6 +498,7 @@ impl<'a> Lowering<'a> {
             cell_operand,
             owning,
             live_out: None,
+            edge_live_in: None,
             exits: Vec::new(),
             operations: Vec::new(),
             matches: Vec::new(),
@@ -553,6 +592,9 @@ impl<'a> Lowering<'a> {
 
     /// Lowers `inst`, instruction `position.1` of block `position.0`.
     fn lower_inst(&mut self, inst: &Inst, position: (usize, usize)) -> Result<(), String> {
+        if let Some((pattern, operands, kind)) = Match::of(&inst.op) {
+            return self.lower_match(inst, pattern, operands, kind);
+        }
         match &inst.op {
             Op::Constant(index) => {
                 let slot = self.slot(inst.results[0].index());
@@ -615,14 +657,10 @@ impl<'a> Lowering<'a> {
             | Op::StructCopyPooled(_)
             | Op::CopyGlobalPooled { .. }
             | Op::UpdateCapture { .. }
+            | Op::UpdateGlobalPooled { .. }
+            | Op::CopyGlobalUpdatePooled { .. }
             | Op::Map(_)
             | Op::InterpolatePooled(_) => self.lower_operation(inst, position)?,
-            Op::MatchCasePooled {
-                pattern, operands, ..
-            } => self.lower_match(inst, *pattern, *operands, false)?,
-            Op::TryMatchPooled {
-                pattern, operands, ..
-            } => self.lower_match(inst, *pattern, *operands, true)?,
             // Native code is entered only with every parameter passed.
             Op::JumpIfProvided { .. } => self.choice = Some(Choice::Target),
             Op::Not => self.lower_not(inst),
@@ -637,14 +675,12 @@ impl<'a> Lowering<'a> {
                 let slot = self.slot(inst.results[0].index());
                 self.store_tag(slot, layout::NIL);
             }
-            Op::True | Op::False => {
-                let slot = self.slot(inst.results[0].index());
-                let value = self
-                    .builder
-                    .ins()
-                    .iconst(types::I8, i64::from(matches!(inst.op, Op::True)));
-                self.store_bool(slot, value);
-            }
+            Op::True | Op::False => self.lower_bool(inst, matches!(inst.op, Op::True)),
+            Op::Defer { mode } => self.lower_defer(inst, *mode),
+            // Leaving a scope or the function runs what was deferred in it,
+            // which the interpreter does.
+            Op::LeaveScope => self.unwind(inst, inst.snapshot.scope),
+            Op::Return => self.unwind(inst, 1),
             // A `recur` is lowered with its block's terminator, and the
             // others' block ends leave to the interpreter, which runs them.
             Op::RecurPositional(_) | Op::Throw | Op::MatchFailure | Op::NotImplemented => {}
@@ -655,6 +691,36 @@ impl<'a> Lowering<'a> {
             op => self.lower_operator(inst, op, position)?,
         }
         Ok(())
+    }
+
+    /// A `Defer`: the action, a callable, joins what the activation
+    /// deferred in its scope; anything else leaves to the interpreter,
+    /// which fails as it does.
+    fn lower_defer(&mut self, inst: &Inst, mode: slug_vm::DeferMode) {
+        let action = self.slot(inst.args[0].index());
+        let action = self.address(action);
+        let mode = match mode {
+            slug_vm::DeferMode::Always => 0,
+            slug_vm::DeferMode::Success => 1,
+            slug_vm::DeferMode::Error => 2,
+        };
+        let operand = self
+            .builder
+            .ins()
+            .iconst(types::I32, i64::from(inst.snapshot.scope) * 4 + mode);
+        let status = self.call(
+            self.runtime.operand,
+            runtime::native_defer as *const () as usize,
+            &[self.context, operand, action],
+        )[0];
+        self.exit_unless_ok(inst, status);
+    }
+
+    /// A `True` or `False`.
+    fn lower_bool(&mut self, inst: &Inst, value: bool) {
+        let slot = self.slot(inst.results[0].index());
+        let value = self.builder.ins().iconst(types::I8, i64::from(value));
+        self.store_bool(slot, value);
     }
 
     /// An index read of any of its forms.
@@ -1187,33 +1253,55 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// A `MatchCasePooled`: the VM's `native_match` writes the value and
-    /// its bindings to the results, which follow one another, and the
-    /// block's end takes the fall-through when it matched.
+    /// A `MatchCasePooled`, `TryMatchPooled`, or `MatchLocalsPooled`: the
+    /// VM's `native_match` writes what it pushes to the results, which
+    /// follow one another, and the block's end takes the fall-through when
+    /// it matched. A `TryMatchPooled` always continues.
     fn lower_match(
         &mut self,
         inst: &Inst,
         pattern: slug_vm::MatchPatternId,
         operands: usize,
-        tries: bool,
+        kind: Match,
     ) -> Result<(), String> {
         let consecutive = inst
             .results
             .windows(2)
             .all(|pair| pair[1].index() == pair[0].index() + 1);
-        if inst.results.is_empty() || !consecutive || inst.args.len() != operands + 1 {
+        // A parameter list's items bind nothing when they are all literals;
+        // the other matches push at least the value or whether it matched.
+        // Its arguments are the operands, then every parameter, which the
+        // lifter leaves out when it is a cell.
+        let (subjects, results_needed) = match kind {
+            Match::Parameters => (self.function.arity, 0),
+            Match::Case | Match::Try => (1, 1),
+        };
+        if inst.results.len() < results_needed
+            || !consecutive
+            || inst.args.len() != operands + subjects
+        {
             return Err(format!("instruction {} is a malformed match", inst.ip));
         }
+        let slots = |values: &[crate::ir::ValueId]| -> Vec<u32> {
+            values
+                .iter()
+                .map(|value| u32::try_from(value.index()).expect("slot index fits"))
+                .collect()
+        };
+        let (operands, subjects) = match kind {
+            Match::Parameters => (
+                slots(&inst.args[..operands]),
+                Some(slots(&inst.args[operands..])),
+            ),
+            Match::Case | Match::Try => (slots(&inst.args), None),
+        };
         let site = self.matches.len();
         self.matches.push(runtime::MatchSite {
             pattern,
-            operands: inst
-                .args
-                .iter()
-                .map(|value| u32::try_from(value.index()).expect("slot index fits"))
-                .collect(),
+            operands,
             results: inst.results.len(),
-            tries,
+            tries: matches!(kind, Match::Try),
+            subjects,
         });
         let site = self
             .builder
@@ -1221,7 +1309,8 @@ impl<'a> Lowering<'a> {
             .iconst(types::I32, i64::try_from(site).expect("site fits"));
         let base = self.slot(0);
         let base = self.address(base);
-        let out = self.slot(inst.results[0].index());
+        // With no results nothing is written; any slot's address will do.
+        let out = self.slot(inst.results.first().map_or(0, |result| result.index()));
         let out = self.address(out);
         let status = self.call(
             self.runtime.operation,
@@ -1237,7 +1326,7 @@ impl<'a> Lowering<'a> {
         let next = self.builder.create_block();
         self.builder.ins().brif(settled, next, &[], exit, &[]);
         self.builder.switch_to_block(next);
-        if !tries {
+        if !matches!(kind, Match::Try) {
             let matched =
                 self.builder
                     .ins()
@@ -1730,6 +1819,10 @@ impl<'a> Lowering<'a> {
         self.builder
             .ins()
             .store(flags, null, callee, offsets::CONTEXT_EXIT);
+        // A site records only functions that defer nothing.
+        self.builder
+            .ins()
+            .store(flags, null, callee, offsets::CONTEXT_DEFERRED);
         let result = self.slot(inst.results[0].index());
         let result = self.address(result);
         self.builder
@@ -1801,6 +1894,12 @@ impl<'a> Lowering<'a> {
                     .insts
                     .last()
                     .ok_or("a recur block has no recur instruction")?;
+                if self.function.defers {
+                    // A `recur` runs what the iteration deferred in the
+                    // function's blocks; the interpreter keeps the
+                    // function's own scope.
+                    self.unwind(inst, 2);
+                }
                 let status = self.call(
                     self.runtime.attention,
                     runtime::native_attention as *const () as usize,
@@ -1868,10 +1967,32 @@ impl<'a> Lowering<'a> {
     fn lower_edge(&mut self, edge: &Edge) {
         let function = self.function;
         let params = &function.blocks[edge.block.index()].params;
-        for (argument, param) in edge.args.iter().zip(params) {
+        let live_in = self
+            .edge_live_in
+            .get_or_insert_with(|| liveness(function, true).0);
+        let live = &live_in[edge.block.index()];
+        // An argument the target uses only as its parameter moves into it,
+        // leaving `nil`, so that it is not shared on the way: a list that
+        // passes a join, such as a defaulted parameter, still appends in
+        // place. Every other argument is cloned.
+        let moves: Vec<bool> = edge
+            .args
+            .iter()
+            .map(|argument| {
+                self.owning[argument.index()]
+                    && edge.args.iter().filter(|other| *other == argument).count() == 1
+                    && live[argument.index() / 64] & (1 << (argument.index() % 64)) == 0
+            })
+            .collect();
+        for ((argument, param), moves) in edge.args.iter().zip(params).zip(moves) {
             let source = self.slot(argument.index());
             let target = self.slot(param.index());
-            self.clone_into(source, target);
+            if moves {
+                self.copy_words(source, target);
+                self.store_tag(source, layout::NIL);
+            } else {
+                self.clone_into(source, target);
+            }
         }
         let target = self.blocks[edge.block.index()];
         self.builder.ins().jump(target, &[]);
@@ -1890,25 +2011,61 @@ impl<'a> Lowering<'a> {
 
     /// A block that leaves to the interpreter before `inst`.
     fn exit_block(&mut self, inst: &Inst) -> CodeBlock {
-        self.exit_with(inst.ip, &inst.snapshot, 0)
+        self.exit_with(inst.ip, &inst.snapshot, 0, Leaving::Exit)
+    }
+
+    /// Runs what is deferred in the scopes from `scope` in, which `inst`
+    /// leaves, and continues past it. Leaves to the interpreter before it
+    /// when an action is not one native code runs, for the interpreter to
+    /// run the rest; and leaves unwinding when an action left.
+    fn unwind(&mut self, inst: &Inst, scope: u32) {
+        let floor = self.builder.ins().iconst(types::I32, i64::from(scope));
+        let status = self.call(
+            self.runtime.cleanup,
+            runtime::native_cleanup as *const () as usize,
+            &[self.context, floor],
+        )[0];
+        let declined = self.exit_with(inst.ip, &inst.snapshot, 0, Leaving::Exit);
+        let exited = self.exit_with(inst.ip, &inst.snapshot, 0, Leaving::Unwinding);
+        let next = self.builder.create_block();
+        let left = self.builder.create_block();
+        self.builder.ins().brif(status, left, &[], next, &[]);
+        self.builder.switch_to_block(left);
+        let exited_status =
+            self.builder
+                .ins()
+                .icmp_imm(IntCC::Equal, status, i64::from(runtime::CLEANUP_EXITED));
+        self.builder
+            .ins()
+            .brif(exited_status, exited, &[], declined, &[]);
+        self.builder.switch_to_block(next);
     }
 
     /// A block that leaves to the interpreter during call `inst`, whose
     /// callee left too: past the call, its arguments gone, and the
     /// callee's frame above.
     fn exit_after_call(&mut self, inst: &Inst) -> CodeBlock {
-        self.exit_with(inst.ip + 1, &inst.snapshot, inst.args.len())
+        self.exit_with(inst.ip + 1, &inst.snapshot, inst.args.len(), Leaving::Exit)
     }
 
     /// A block that leaves to the interpreter at `ip` with the frame from
-    /// `snapshot`, less the top `popped` stack values.
-    fn exit_with(&mut self, ip: usize, snapshot: &Snapshot, popped: usize) -> CodeBlock {
+    /// `snapshot`, less the top `popped` stack values, for the reason
+    /// `leaving` gives.
+    fn exit_with(
+        &mut self,
+        ip: usize,
+        snapshot: &Snapshot,
+        popped: usize,
+        leaving: Leaving,
+    ) -> CodeBlock {
         let id = u32::try_from(self.exits.len()).expect("exit count fits");
         let function = self.function;
         let own = |value: &ValueId| !matches!(function.def(*value), ValueDef::Below(_));
         let stack = &snapshot.stack[..snapshot.stack.len() - popped];
         self.exits.push(ExitTable {
             ip,
+            scope: snapshot.scope,
+            unwinding: leaving == Leaving::Unwinding,
             locals: snapshot
                 .locals
                 .iter()
@@ -2248,6 +2405,35 @@ const INLINE_RELEASES: usize = 6;
 /// the runtime to release them.
 const INLINE_TESTS: usize = 32;
 
+/// Which match instruction [`Lowering::lower_match`] lowers.
+#[derive(Clone, Copy)]
+enum Match {
+    /// `MatchCasePooled`: the value on the stack.
+    Case,
+    /// `TryMatchPooled`: destructuring, which always continues.
+    Try,
+    /// `MatchLocalsPooled`: the function's parameters, as one list.
+    Parameters,
+}
+
+impl Match {
+    /// A match instruction's pattern, operand count, and kind.
+    fn of(op: &Op) -> Option<(slug_vm::MatchPatternId, usize, Self)> {
+        match op {
+            Op::MatchCasePooled {
+                pattern, operands, ..
+            } => Some((*pattern, *operands, Self::Case)),
+            Op::TryMatchPooled {
+                pattern, operands, ..
+            } => Some((*pattern, *operands, Self::Try)),
+            Op::MatchLocalsPooled {
+                pattern, operands, ..
+            } => Some((*pattern, *operands, Self::Parameters)),
+            _ => None,
+        }
+    }
+}
+
 /// How a block that ends in a choice chooses.
 #[derive(Clone, Copy)]
 enum Choice {
@@ -2315,6 +2501,13 @@ fn inst_uses(inst: &Inst) -> impl Iterator<Item = &ValueId> {
 /// can reach. Only a `recur`, which starts afresh, goes back, so the
 /// blocks in reverse order see every successor first.
 fn live_out(function: &Function) -> Vec<Vec<u64>> {
+    liveness(function, false).1
+}
+
+/// The values live into and out of each block, as bit sets. With
+/// `snapshot_locals`, the locals an exit would hand the interpreter count
+/// as uses too.
+fn liveness(function: &Function, snapshot_locals: bool) -> (Vec<Vec<u64>>, Vec<Vec<u64>>) {
     let words = function.values.len().div_ceil(64);
     let mut live_in: Vec<Vec<u64>> = vec![Vec::new(); function.blocks.len()];
     let mut live_out = vec![Vec::new(); function.blocks.len()];
@@ -2327,13 +2520,28 @@ fn live_out(function: &Function) -> Vec<Vec<u64>> {
         }
         let mut entering = out.clone();
         let terminator = terminator_uses(&block.terminator);
-        for value in block.insts.iter().flat_map(inst_uses).chain(&terminator) {
+        let locals = block
+            .insts
+            .iter()
+            .filter(|_| snapshot_locals)
+            .flat_map(|inst| &inst.snapshot.locals)
+            .filter_map(|local| match local {
+                crate::ir::Local::Value(value) => Some(value),
+                crate::ir::Local::Cell => None,
+            });
+        for value in block
+            .insts
+            .iter()
+            .flat_map(inst_uses)
+            .chain(&terminator)
+            .chain(locals)
+        {
             entering[value.index() / 64] |= 1 << (value.index() % 64);
         }
         live_in[index] = entering;
         live_out[index] = out;
     }
-    live_out
+    (live_in, live_out)
 }
 
 /// Which values' slots may own something: parameters, the results of
@@ -2369,6 +2577,7 @@ fn owning_values(function: &Function) -> Vec<bool> {
                     | Op::Map(_)
                     | Op::InterpolatePooled(_)
                     | Op::MatchCasePooled { .. }
+                    | Op::MatchLocalsPooled { .. }
                     | Op::TryMatchPooled { .. }
                     // `~` on bytes makes bytes.
                     | Op::BitNot

@@ -86,6 +86,10 @@ pub(crate) struct Waiter {
     /// another thread is carried there to run.
     #[cfg(all(feature = "threads", not(target_os = "none")))]
     home: Arc<crate::vm::island::Inbox>,
+    /// The fork the waiting execution runs in, if any: once it is
+    /// cancelled, nothing should hand the waiter a value.
+    #[cfg(all(feature = "threads", not(target_os = "none")))]
+    fork: Option<Arc<crate::vm::island::IslandControl>>,
     resume: Rc<dyn Fn(Result<Value, crate::RuntimeError>)>,
     /// Applied to a wake before it is carried to the waiter's thread: a
     /// fork's receive rejects an unsendable value here, so the value never
@@ -158,6 +162,8 @@ impl Waiter {
             set_closed_send_error: Rc::new(move |error| root.set_closed_send_error(error)),
             #[cfg(all(feature = "threads", not(target_os = "none")))]
             home: crate::vm::island::Inbox::current(),
+            #[cfg(all(feature = "threads", not(target_os = "none")))]
+            fork: crate::vm::island::current_island(),
         }
     }
 
@@ -180,6 +186,8 @@ impl Waiter {
             set_closed_send_error: Rc::new(|_| {}),
             #[cfg(all(feature = "threads", not(target_os = "none")))]
             home: crate::vm::island::Inbox::current(),
+            #[cfg(all(feature = "threads", not(target_os = "none")))]
+            fork: crate::vm::island::current_island(),
         }
     }
 
@@ -188,6 +196,8 @@ impl Waiter {
         let claim = Some(state.borrow().claimed.clone());
         #[cfg(all(feature = "threads", not(target_os = "none")))]
         let home = state.borrow().waiter.home.clone();
+        #[cfg(all(feature = "threads", not(target_os = "none")))]
+        let fork = state.borrow().waiter.fork.clone();
         let resume_state = state.clone();
         #[cfg(feature = "concurrency")]
         let screen: Option<Rc<Screen>> = match &wake {
@@ -237,7 +247,25 @@ impl Waiter {
             }),
             #[cfg(all(feature = "threads", not(target_os = "none")))]
             home,
+            #[cfg(all(feature = "threads", not(target_os = "none")))]
+            fork,
         }
+    }
+
+    /// Whether the waiter's fork was cancelled, so that nothing may hand it
+    /// a value: it never runs to take one.
+    #[cfg_attr(
+        not(all(feature = "threads", not(target_os = "none"))),
+        allow(
+            clippy::unused_self,
+            reason = "only a threaded build has forks to cancel"
+        )
+    )]
+    fn abandoned(&self) -> bool {
+        #[cfg(all(feature = "threads", not(target_os = "none")))]
+        return self.fork.as_ref().is_some_and(|fork| fork.abandoned());
+        #[cfg(not(all(feature = "threads", not(target_os = "none"))))]
+        false
     }
 
     /// Claims this waiter's select, when it has one; whether the claim is
@@ -733,19 +761,22 @@ pub(crate) fn run_wakes(wakes: Vec<ChannelWake>) {
 }
 
 /// The first parked receiver this channel can claim. One already claimed,
-/// by another case of its `select`, is stale and dropped.
+/// by another case of its `select`, is stale and dropped, as is one in a
+/// cancelled fork, whose island may not have left the queue yet.
 fn pop_receiver(state: &mut ChannelState) -> Option<Waiter> {
     while let Some(receiver) = state.receivers.pop_front() {
-        if receiver.try_claim() {
+        if !receiver.abandoned() && receiver.try_claim() {
             return Some(receiver);
         }
     }
     None
 }
 
+/// The first parked sender this channel can claim, as [`pop_receiver`]
+/// finds a receiver: a cancelled fork's send never completes.
 fn pop_sender(state: &mut ChannelState) -> Option<(Waiter, Value)> {
     while let Some((sender, value)) = state.senders.pop_front() {
-        if sender.try_claim() {
+        if !sender.abandoned() && sender.try_claim() {
             return Some((sender, value));
         }
     }

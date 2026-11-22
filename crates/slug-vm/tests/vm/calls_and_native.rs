@@ -559,6 +559,61 @@ fn rejects_non_finite_native_results() {
 }
 
 #[test]
+fn rejects_non_finite_numbers_nested_in_native_results() {
+    fn listed(call: &mut NativeCall<'_>) -> NativeStatus {
+        call.return_value(NativeOwnedValue::list(vec![
+            NativeOwnedValue::string("a"),
+            NativeOwnedValue::list(vec![NativeOwnedValue::float(f64::INFINITY)]),
+        ]))
+    }
+    fn mapped(call: &mut NativeCall<'_>) -> NativeStatus {
+        call.return_value(NativeOwnedValue::map(vec![(
+            NativeOwnedValue::string("x"),
+            NativeOwnedValue::float(f64::NEG_INFINITY),
+        )]))
+    }
+    fn finite(call: &mut NativeCall<'_>) -> NativeStatus {
+        call.return_value(NativeOwnedValue::list(vec![NativeOwnedValue::float(1.5)]))
+    }
+
+    let module = NativeModule::new("test.nested_non_finite", ()).unwrap();
+    for (name, callback) in [
+        ("listed", listed as fn(&mut NativeCall<'_>) -> NativeStatus),
+        ("mapped", mapped),
+    ] {
+        let mut main = Chunk::new("main", 0);
+        main.emit(Op::GetGlobal(name.into()))
+            .emit(Op::Call(0))
+            .emit(Op::Return);
+        let mut vm = Vm::new();
+        vm.define_native(
+            module
+                .function(name, NativeArity::Exact(0), callback)
+                .unwrap(),
+        )
+        .unwrap();
+        let error = vm
+            .run(&program_with_main(main), 0)
+            .expect_err("a nested non-finite number must not enter Slug");
+        assert_eq!(error.kind, RuntimeErrorKind::NativeContract, "{name}");
+        assert!(error.message.contains("non-finite number"), "{name}");
+    }
+
+    let mut main = Chunk::new("main", 0);
+    main.emit(Op::GetGlobal("finite".into()))
+        .emit(Op::Call(0))
+        .emit(Op::Return);
+    let mut vm = Vm::new();
+    vm.define_native(
+        module
+            .function("finite", NativeArity::Exact(0), finite)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(vm.run(&program_with_main(main), 0).is_ok());
+}
+
+#[test]
 fn native_descriptors_use_module_qualified_signature_identity() {
     fn returns_nil(call: &mut NativeCall<'_>) -> NativeStatus {
         call.return_value(NativeOwnedValue::nil())

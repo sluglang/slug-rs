@@ -123,6 +123,15 @@ pub enum NativeOperation {
         slot: usize,
         operator: GlobalUpdate,
     },
+    UpdateGlobalPooled {
+        name: GlobalNameId,
+        operator: GlobalUpdate,
+    },
+    CopyGlobalUpdatePooled {
+        name: GlobalNameId,
+        fields: StructFieldsId,
+        operator: GlobalUpdate,
+    },
 }
 
 impl NativeOperation {
@@ -153,6 +162,19 @@ impl NativeOperation {
             },
             Op::UpdateCapture { slot, operator } => Self::UpdateCapture {
                 slot: *slot,
+                operator: *operator,
+            },
+            Op::UpdateGlobalPooled { name, operator } => Self::UpdateGlobalPooled {
+                name: *name,
+                operator: *operator,
+            },
+            Op::CopyGlobalUpdatePooled {
+                name,
+                fields,
+                operator,
+            } => Self::CopyGlobalUpdatePooled {
+                name: *name,
+                fields: *fields,
                 operator: *operator,
             },
             _ => return None,
@@ -539,7 +561,113 @@ impl Vm {
                 drop(cell.replace(value.clone()));
                 Ok(value)
             }
+            Op::UpdateGlobalPooled { .. } | Op::CopyGlobalUpdatePooled { .. } => {
+                self.native_global_update(caller, op, operands)
+            }
         }
+    }
+
+    /// An `UpdateGlobal` or `CopyGlobalUpdate` for [`Vm::native_operation`],
+    /// out of line, so that the other operations' code stays as it was.
+    #[inline(never)]
+    fn native_global_update(
+        &self,
+        caller: &Value,
+        op: &NativeOperation,
+        operands: Vec<Value>,
+    ) -> Result<Value, Vec<Value>> {
+        let Value::Closure(closure) = caller else {
+            return Err(operands);
+        };
+        match op {
+            NativeOperation::UpdateGlobalPooled { name, operator } => {
+                let Some(cell) = self.native_variable(caller, *name) else {
+                    return Err(operands);
+                };
+                self.native_update(&cell, *operator, operands)
+            }
+            NativeOperation::CopyGlobalUpdatePooled {
+                name,
+                fields,
+                operator,
+            } => {
+                let (Some(cell), Some(names)) = (
+                    self.native_variable(caller, *name),
+                    closure.program.struct_fields(*fields),
+                ) else {
+                    return Err(operands);
+                };
+                self.native_copy_update(&cell, names, *operator, operands)
+            }
+            _ => Err(operands),
+        }
+    }
+
+    /// `operator` applied to `operands`, the two values, assigned to
+    /// `cell`, as `UpdateGlobal` assigns (and `UpdateCapture`): the cell lets
+    /// go of its value first when nothing can fail, so that an operand
+    /// nothing else holds is updated in place.
+    fn native_update(
+        &self,
+        cell: &crate::value::BindingCell,
+        operator: GlobalUpdate,
+        operands: Vec<Value>,
+    ) -> Result<Value, Vec<Value>> {
+        let [left, right] = <[Value; 2]>::try_from(operands)?;
+        let value = if update_cannot_fail(operator, &left, &right) {
+            drop(cell.replace(Value::Nil));
+            // It cannot fail, as checked.
+            self.apply_update(operator, left, right)
+                .map_err(|_| Vec::new())?
+        } else {
+            match self.apply_update(operator, left.clone(), right.clone()) {
+                Ok(value) => value,
+                Err(_) => return Err(Vec::from([left, right])),
+            }
+        };
+        drop(cell.replace(value.clone()));
+        Ok(value)
+    }
+
+    /// A `CopyGlobalUpdate` of `operands`, the copied value, the other
+    /// replacements, then the two values `operator` applies to, assigned
+    /// to `cell`, when nothing can fail; otherwise the interpreter runs it.
+    /// As the interpreter does, the cell lets go of its value and the
+    /// updated field is taken out of the copied one first, so that a field
+    /// nothing else holds is updated in place.
+    fn native_copy_update(
+        &self,
+        cell: &crate::value::BindingCell,
+        names: &[String],
+        operator: GlobalUpdate,
+        mut operands: Vec<Value>,
+    ) -> Result<Value, Vec<Value>> {
+        let (Some(last), true) = (names.last(), operands.len() == names.len() + 2) else {
+            return Err(operands);
+        };
+        let right = &operands[operands.len() - 1];
+        let left = &operands[operands.len() - 2];
+        if !update_cannot_fail(operator, left, right) || !copy_cannot_fail(&operands[0], names) {
+            return Err(operands);
+        }
+        let right = operands.pop().expect("length was checked");
+        let left = operands.pop().expect("length was checked");
+        drop(cell.replace(Value::Nil));
+        drop(match &mut operands[0] {
+            Value::Map(map) => map.take_string_field(last),
+            Value::Struct(value) => crate::value::StructValue::take_field(value, last),
+            _ => None,
+        });
+        // Neither can fail, as checked.
+        operands.push(
+            self.apply_update(operator, left, right)
+                .map_err(|_| Vec::new())?,
+        );
+        #[cfg(feature = "metrics")]
+        self.record_copy(&operands[0]);
+        let value = Self::native_copy(names, operands).map_err(|_| Vec::new())?;
+        drop(cell.replace(value.clone()));
+        Ok(value)
     }
 
     /// `list :+ value` or, unless `append`, `value +: list`, of `operands`
@@ -631,6 +759,70 @@ impl Vm {
             &|cell, name| read_binding(view, cell, name),
         )
         .ok()?;
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.borrow_mut().list_views_created += list_views_created;
+        }
+        if !matched {
+            bindings.clear();
+        }
+        Some(matched)
+    }
+
+    /// Matches the items of list pattern `pattern` of `caller`'s program
+    /// against `subjects`, item `i` against subject `i`, with `operands`,
+    /// as `MatchLocals` does against a frame's first locals, pushing what
+    /// it binds onto `bindings`: whether it matched, or `None` where the
+    /// interpreter must run it, which reports any error.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_match_locals(
+        &self,
+        caller: &Value,
+        pattern: MatchPatternId,
+        subjects: &[&Value],
+        operands: &[Value],
+        bindings: &mut Vec<Value>,
+    ) -> Option<bool> {
+        let Value::Closure(closure) = caller else {
+            return None;
+        };
+        // Bindings are left to the interpreter, as `native_match` leaves them.
+        if subjects
+            .iter()
+            .copied()
+            .chain(operands)
+            .any(|value| matches!(value, Value::Binding { .. }))
+        {
+            return None;
+        }
+        let Some(crate::MatchPattern::List { items, .. }) = closure.program.match_pattern(pattern)
+        else {
+            return None;
+        };
+        if items.len() > subjects.len() {
+            return None;
+        }
+        let mut list_views_created = 0;
+        #[cfg(feature = "concurrency")]
+        let view = self.view.as_deref();
+        #[cfg(not(feature = "concurrency"))]
+        let view = None;
+        let mut matched = true;
+        for (item, subject) in items.iter().zip(subjects) {
+            matched = matches_pattern(
+                item,
+                subject,
+                operands,
+                bindings,
+                &mut list_views_created,
+                &|cell, name| read_binding(view, cell, name),
+            )
+            .ok()?;
+            if !matched {
+                break;
+            }
+        }
         #[cfg(feature = "metrics")]
         {
             self.metrics.borrow_mut().list_views_created += list_views_created;
@@ -735,27 +927,17 @@ impl Vm {
             invocation,
         };
         Some(match self.start_native(function, arguments) {
-            // A result the interpreter would accept: anything else fails
-            // the same way when it is reported.
+            // A result the interpreter would accept, settled as it settles
+            // one: anything else fails the same way when it is reported.
             NativeInvocation::Result(value, resources)
-                if !value.contains_non_finite_number()
-                    && signature.is_none_or(|signature| {
-                        self.validate_foreign_resource_result(function, signature, &value, None)
-                            .is_ok()
-                    }) =>
+                if signature.is_none_or(|signature| {
+                    self.validate_foreign_resource_result(function, signature, &value, None)
+                        .is_ok()
+                }) =>
             {
-                self.settle_native(
-                    function,
-                    NativeInvocation::Result(value, resources),
-                    signature,
-                    None,
-                )
-                .map_err(|_| {
-                    failure(NativeInvocation::ContractViolation(alloc::format!(
-                        "native `{}` could not be settled",
-                        function.qualified_name()
-                    )))
-                })
+                self.native_resources.register(resources);
+                self.track_native_result(&value);
+                Ok(value)
             }
             invocation => Err(failure(invocation)),
         })

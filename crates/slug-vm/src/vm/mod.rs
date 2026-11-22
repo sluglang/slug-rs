@@ -2510,7 +2510,10 @@ impl Vm {
             .program()
             .chunk(frame.closure.chunk)
             .map_or(0, |chunk| chunk.arity);
-        if !(0..parameters).all(|slot| frame.provided.is_provided(slot)) {
+        if !(0..parameters).all(|slot| frame.provided.is_provided(slot))
+            || frame.scope_depth != 1
+            || !frame.scopes.is_empty()
+        {
             return Ok(NativeEntry::Declined);
         }
         let mut locals = core::mem::take(&mut self.native_arguments);
@@ -2540,8 +2543,11 @@ impl Vm {
                 stack,
                 frames,
                 failure,
+                scopes,
+                unwinding,
             } => {
                 let frame = self.frames.last_mut().expect("active frame was checked");
+                (frame.scope_depth, frame.scopes) = cleanup::native_scopes(scopes, unwinding);
                 if locals.len() != frame.locals.len() {
                     return Err(self.error(
                         RuntimeErrorKind::InvalidBytecode,
@@ -2554,9 +2560,7 @@ impl Vm {
                 }
                 frame.ip = ip;
                 self.stack.extend(stack);
-                for frame in frames {
-                    self.push_native_frame(frame)?;
-                }
+                self.push_native_frames(frames, unwinding)?;
                 if let Some(failure) = failure {
                     return Err(self.native_raise(failure));
                 }
@@ -2623,6 +2627,8 @@ impl Vm {
                 stack,
                 frames,
                 failure,
+                scopes,
+                unwinding,
             } => {
                 if locals.len() != local_count {
                     return Err(self.error(
@@ -2633,6 +2639,8 @@ impl Vm {
                 }
                 #[cfg(feature = "metrics")]
                 self.record_frame(local_count);
+                let (scope_depth, scopes) = cleanup::native_scopes(scopes, unwinding);
+                let locals = self.native_frame_locals(locals);
                 self.push_frame(Frame {
                     closure,
                     call_span: if cleanup.is_some() {
@@ -2642,18 +2650,16 @@ impl Vm {
                     },
                     ip,
                     stack_base,
-                    locals: locals.into_iter().map(LocalSlot::from_native).collect(),
+                    locals,
                     provided: ProvidedArguments::All,
-                    scope_depth: 1,
-                    scopes: Vec::new(),
+                    scope_depth,
+                    scopes,
                     cleanup_action: cleanup.is_some(),
                     cleanup_recovers: cleanup.is_some_and(|cleanup| cleanup.recovers),
                     cleanup_owner_depth: cleanup.map(|cleanup| cleanup.owner_depth),
                 });
                 self.stack.extend(stack);
-                for frame in frames {
-                    self.push_native_frame(frame)?;
-                }
+                self.push_native_frames(frames, unwinding)?;
                 if self.frames.last().is_some_and(|frame| frame.ip == 0) {
                     self.native_resumed = true;
                 }
@@ -2665,16 +2671,51 @@ impl Vm {
         }
     }
 
-    /// Pushes the frame of a call native code was making when it exited,
-    /// as an exact positional call would have entered it.
+    /// Pushes the frames of the calls native code was making when it
+    /// exited, outermost first, above the active frame, which left while
+    /// running its deferred actions when `unwinding`.
     #[cfg(feature = "native-hooks")]
-    fn push_native_frame(&mut self, frame: crate::tiering::NativeFrame) -> VmResult<()> {
+    fn push_native_frames(
+        &mut self,
+        frames: Vec<crate::tiering::NativeFrame>,
+        unwinding: bool,
+    ) -> VmResult<()> {
+        // A frame left while running its deferred actions queues their
+        // cleanup before the action's frame, the next, is pushed above.
+        if unwinding {
+            self.queue_native_unwinding()?;
+        }
+        let mut owner = unwinding.then(|| self.frames.len() - 1);
+        for frame in frames {
+            let unwinding = frame.unwinding;
+            self.push_native_frame(frame, owner)?;
+            if unwinding {
+                self.queue_native_unwinding()?;
+            }
+            owner = unwinding.then(|| self.frames.len() - 1);
+        }
+        Ok(())
+    }
+
+    /// Pushes the frame of a call native code was making when it exited,
+    /// as an exact positional call would have entered it, or, a deferred
+    /// action of the frame at depth `owner`, as
+    /// [`cleanup::Vm::call_cleanup`] would have.
+    #[cfg(feature = "native-hooks")]
+    fn push_native_frame(
+        &mut self,
+        frame: crate::tiering::NativeFrame,
+        owner: Option<usize>,
+    ) -> VmResult<()> {
         let crate::tiering::NativeFrame {
             closure,
             ip,
             locals,
             stack,
+            scopes,
+            unwinding,
         } = frame;
+        let (scope_depth, scopes) = cleanup::native_scopes(scopes, unwinding);
         let Value::Closure(closure) = closure else {
             return Err(self.error(
                 RuntimeErrorKind::InvalidBytecode,
@@ -2693,19 +2734,23 @@ impl Vm {
                 None,
             ));
         }
-        let locals = locals.into_iter().map(LocalSlot::from_native).collect();
+        let locals = self.native_frame_locals(locals);
         self.push_frame(Frame {
             closure,
-            call_span: self.frame_call_span(),
+            call_span: if owner.is_some() {
+                None
+            } else {
+                self.frame_call_span()
+            },
             ip,
             stack_base: self.stack.len(),
             locals,
             provided: ProvidedArguments::All,
-            scope_depth: 1,
-            scopes: Vec::new(),
-            cleanup_action: false,
+            scope_depth,
+            scopes,
+            cleanup_action: owner.is_some(),
             cleanup_recovers: false,
-            cleanup_owner_depth: None,
+            cleanup_owner_depth: owner,
         });
         self.stack.extend(stack);
         Ok(())
@@ -2763,8 +2808,8 @@ impl Vm {
     }
 
     /// The value native code in `caller` calls as module-level name
-    /// `name`, when `caller` has resolved it, outside a task with its own
-    /// view of the variables (the interpreter reads it through that).
+    /// `name`, when `caller` has resolved it, as
+    /// [`Vm::native_value_callee`] reads it.
     #[cfg(feature = "native-hooks")]
     #[doc(hidden)]
     #[must_use]
@@ -2777,18 +2822,23 @@ impl Vm {
     }
 
     /// The value native code calls as `callee`, as `CallPositional` calls
-    /// it: a module binding's value, read outside a task with its own view
-    /// of the variables.
+    /// it: a module binding's value, read through the task's view of the
+    /// variables when it has one, as `native_global` reads it. Module
+    /// functions are `val`s, which every view sees as they are.
     #[cfg(feature = "native-hooks")]
     #[doc(hidden)]
     #[must_use]
     pub fn native_value_callee(&self, callee: &Value) -> Option<Value> {
         match callee {
-            Value::Binding { cell, .. } => {
+            Value::Binding { cell, name } => {
                 #[cfg(feature = "concurrency")]
-                if self.view.is_some() {
-                    return None;
+                if self.view.is_some()
+                    && let Some(value) = self.viewed_binding(cell, name).ok()?
+                {
+                    return Some(value);
                 }
+                #[cfg(not(feature = "concurrency"))]
+                let _ = name;
                 Some(cell.borrow().clone())
             }
             value => Some(value.clone()),
@@ -2796,7 +2846,9 @@ impl Vm {
     }
 
     /// `target` and its native code, when it is a closure an exact
-    /// positional call of `count` arguments enters, counting the call.
+    /// positional call of `count` arguments enters, counting the call. A
+    /// call that leaves out parameters with plain defaults enters too, with
+    /// [`Vm::native_default`]s for them.
     /// `None` for anything else: native code then leaves to the
     /// interpreter, which makes the call.
     #[cfg(feature = "native-hooks")]
@@ -2815,11 +2867,30 @@ impl Vm {
             return None;
         }
         let chunk = closure.program.chunk(closure.chunk)?;
-        if chunk.arity != count || !chunk.binds_full_positional_calls || chunk.locals < count {
+        if !(chunk.fewest_positional()..=chunk.arity).contains(&count)
+            || !chunk.binds_full_positional_calls
+            || chunk.locals < chunk.arity
+        {
             return None;
         }
         let code = chunk.native.tick(&closure.program, closure.chunk)?.clone();
         Some((Value::Closure(closure), code))
+    }
+
+    /// The default of parameter `slot` of `closure`, a closure
+    /// [`Vm::native_entry`] entered for a call that left it out.
+    #[cfg(feature = "native-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_default(closure: &Value, slot: usize) -> Value {
+        let Value::Closure(closure) = closure else {
+            unreachable!("native_entry gives a closure");
+        };
+        closure
+            .program
+            .chunk(closure.chunk)
+            .expect("native_entry checked the chunk")
+            .plain_default(slot)
     }
 
     /// Whether this thread needs attention: native code leaves to the
@@ -3976,6 +4047,13 @@ impl Vm {
     #[cold]
     #[inline(never)]
     fn leave_scope_with_cleanup(&mut self) -> VmResult<Option<Value>> {
+        self.queue_leave_scope();
+        self.drive_cleanup()
+    }
+
+    /// Queues the cleanup of the active frame's innermost scope, as
+    /// [`Self::leave_scope_with_cleanup`] runs it.
+    fn queue_leave_scope(&mut self) {
         let frame = self.frames.last_mut().expect("frame was checked");
         frame.scope_depth -= 1;
         let actions = frame.scopes.pop().unwrap_or_default();
@@ -3989,7 +4067,6 @@ impl Vm {
             success: true,
             frame_depth: self.frames.len() - 1,
         });
-        self.drive_cleanup()
     }
 
     #[inline(never)]
@@ -4304,6 +4381,17 @@ impl Vm {
         locals.extend(arguments.into_iter().map(LocalSlot::Direct));
         locals.resize_with(local_count, || LocalSlot::Direct(Value::Nil));
         (locals, reused)
+    }
+
+    /// A frame's locals for those native code left, in a vector from the
+    /// pool, as an interpreted call takes one: a frame's return gives its
+    /// vector back, so one native code made would grow the pool.
+    #[cfg(feature = "native-hooks")]
+    fn native_frame_locals(&mut self, locals: Vec<crate::tiering::NativeLocal>) -> Vec<LocalSlot> {
+        let mut slots = self.local_slot_pool.pop().unwrap_or_default();
+        slots.clear();
+        slots.extend(locals.into_iter().map(LocalSlot::from_native));
+        slots
     }
 
     pub(in crate::vm) fn recycle_frame_locals(&mut self, mut locals: Vec<LocalSlot>) {
@@ -5451,8 +5539,16 @@ impl Vm {
             let other_domain = closure.domain != self.domain && !closure.captures.is_empty();
             #[cfg(not(feature = "concurrency"))]
             let other_domain = false;
-            if chunk.arity != count || !chunk.binds_full_positional_calls || other_domain {
+            if !(chunk.fewest_positional()..=chunk.arity).contains(&count)
+                || !chunk.binds_full_positional_calls
+                || other_domain
+            {
                 return Ok(Some(closure));
+            }
+            // The parameters left out have plain defaults, which the call
+            // supplies itself.
+            for slot in count..chunk.arity {
+                self.stack.push(chunk.plain_default(slot));
             }
             if chunk.locals < chunk.arity {
                 return Err(self.error_at(
@@ -5469,6 +5565,7 @@ impl Vm {
         let Some(closure) = self.enter_native_call(closure, stack_base, arguments, None)? else {
             return Ok(None);
         };
+        let count = self.stack.len() - arguments;
         let (mut locals, reused) = self.take_frame_locals(Vec::new(), local_count);
         for (local, value) in locals.iter_mut().zip(self.stack.drain(arguments..)) {
             *local = LocalSlot::Direct(value);
@@ -6267,6 +6364,16 @@ impl Vm {
         invocation
     }
 
+    /// Watches a channel a native returned that a native producer feeds,
+    /// for progress wakeups.
+    pub(super) fn track_native_result(&mut self, value: &Value) {
+        if let Value::Channel(channel) = value
+            && channel.has_native_producer()
+        {
+            self.progress.track_native_channel(channel);
+        }
+    }
+
     /// What a call of `function` gave: its result, or the error it reports.
     pub(super) fn settle_native(
         &mut self,
@@ -6278,25 +6385,22 @@ impl Vm {
         match invocation {
             NativeInvocation::Result(value, resources) => {
                 self.native_resources.register(resources);
-                if value.contains_non_finite_number() {
-                    return Err(self.error(
-                        RuntimeErrorKind::NativeContract,
-                        format!(
-                            "native `{}` returned a non-finite number",
-                            function.qualified_name()
-                        ),
-                        self.owned_span(span),
-                    ));
-                }
                 if let Some(signature) = resource_signature {
                     self.validate_foreign_resource_result(function, signature, &value, span)?;
                 }
-                if let Value::Channel(channel) = &value
-                    && channel.has_native_producer()
-                {
-                    self.progress.track_native_channel(channel);
-                }
+                self.track_native_result(&value);
                 Ok(value)
+            }
+            NativeInvocation::NonFinite(resources) => {
+                self.native_resources.register(resources);
+                Err(self.error(
+                    RuntimeErrorKind::NativeContract,
+                    format!(
+                        "native `{}` returned a non-finite number",
+                        function.qualified_name()
+                    ),
+                    self.owned_span(span),
+                ))
             }
             NativeInvocation::Error(error, resources) => {
                 self.native_resources.register(resources);

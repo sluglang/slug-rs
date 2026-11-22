@@ -486,11 +486,12 @@ fn compiled_matches_defaults_throws_and_maps_match_the_interpreter() {
 fn compiled_calls_move_last_reads_and_restore_them_when_declined() {
     // `add` takes the map its caller reads for the last time, and adds to
     // it in place; `keep` reads its map again after the call, so `add` must
-    // not change it. `grow`, called without its default, is declined, and
-    // its moved argument goes back for the interpreter to pass.
+    // not change it. `grow`, called without a default that runs code, is
+    // declined, and its moved argument goes back for the interpreter to
+    // pass.
     let trace = same_with_and_without_native_code(
         "moved-arguments",
-        "val grow = fn(m, k, extra = 0) { m + {[k]: k + extra} }\n\
+        "val grow = fn(m, k, extra = k - k) { m + {[k]: k + extra} }\n\
          val add = fn(m, k) { m + {[k]: k} }\n\
          val fill = fn(n, m) {\n\
              if (n == 0) { m } else { recur(n - 1, add(grow(m, n), n + 1000)) }\n\
@@ -594,6 +595,94 @@ fn compiled_cleanup_actions_match_the_interpreter() {
              println(log)\n\
              println(counts(3), counts(4))\n\
              rethrows(5)\n\
+         }\n",
+    );
+}
+
+#[test]
+fn compiled_parameter_matches_and_pipelines_match_the_interpreter() {
+    // A `match` on a function's parameters, as std's `map` and `filter`
+    // are written: list items, literals that bind nothing, guards, a map
+    // pattern, a pinned operand, and a failure to the interpreter's error.
+    // Pipelines with positional arguments call the callee directly, a
+    // closure, a module function, or a builtin.
+    same_with_and_without_native_code(
+        "parameter-matches",
+        "val sum = fn(xs, acc) match {\n\
+             [[], ...] => acc\n\
+             [[h, ...t], ...] => recur(t, acc + h)\n\
+         }\n\
+         val classify = fn(a, b) match {\n\
+             [0, 0] => \"origin\"\n\
+             [0, _] => \"y-axis\"\n\
+             [_, 0] => \"x-axis\"\n\
+             [x, y] if x == y => \"diagonal\"\n\
+             [{kind: \"p\", v}, n] => \"point \" + v + \" \" + n\n\
+             _ => \"other\"\n\
+         }\n\
+         val pinned = fn(x, want) match {\n\
+             [^want, ...] => \"same\"\n\
+             _ => \"different\"\n\
+         }\n\
+         val add = fn(a, b, c) { a * 100 + b * 10 + c }\n\
+         val pipes = fn(n, acc) {\n\
+             if (n == 0) { acc } else {\n\
+                 recur(n - 1, acc + (n /> add(2, 3)) + ([n, n] /> len()) + (n /> fn(v) { v * 2 }()))\n\
+             }\n\
+         }\n\
+         val main = fn() {\n\
+             var out = []\n\
+             val go = fn(i) {\n\
+                 if (i < 3) {\n\
+                     out = out :+ [sum([1, 2, 3, i], 0), classify(0, 0), classify(0, i), classify(i, 0)]\n\
+                     out = out :+ [classify(i, i), classify({kind: \"p\", v: i}, 7), classify(\"a\", 1)]\n\
+                     out = out :+ [pinned(i, 1), pinned(i, \"1\"), pipes(20, 0)]\n\
+                     recur(i + 1)\n\
+                 }\n\
+             }\n\
+             go(0)\n\
+             println(out)\n\
+             println(sum([1, \"x\"], 0))\n\
+         }\n",
+    );
+}
+
+#[test]
+fn calls_that_leave_out_plain_defaults_match_the_interpreter() {
+    // Calls that leave out parameters whose defaults are constants or `[]`
+    // supply them themselves, from the interpreter and from native code:
+    // each call gets its own `[]`, a default that runs code (`b = a + 1`)
+    // keeps the general path, a site that alternates full and short calls
+    // calls both correctly, and a function with more parameters than
+    // native code fills stays correct.
+    same_with_and_without_native_code(
+        "plain-defaults",
+        "val {filter, map} = import(\"slug.std\")\n\
+         val grow = fn(n, acc = []) { if (n == 0) { acc } else { recur(n - 1, acc :+ n) } }\n\
+         val kinds = fn(a, b = 1, c = \"c\", d = nil, e = true, f = false) { [a, b, c, d, e, f] }\n\
+         val computed = fn(a, b = a + 1, c = 0) { [a, b, c] }\n\
+         val wide = fn(a, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0, j = 9) {\n\
+             a + b + c + d + e + f + g + h + i + j\n\
+         }\n\
+         val main = fn() {\n\
+             var out = []\n\
+             val go = fn(i, total) {\n\
+                 if (i < 300) {\n\
+                     val xs = [i, i + 1, i + 2]\n\
+                     val kept = xs /> filter(fn(x) { x % 2 == 0 }) /> map(fn(x) { x * 10 })\n\
+                     val k = if (i % 2 == 0) { kinds(i) } else { kinds(i, 2, \"z\") }\n\
+                     val w = if (i % 3 == 0) { wide(i) } else { wide(i, 1, 1, 1, 1, 1, 1, 1, 1, 1) }\n\
+                     val first = grow(3)\n\
+                     val second = grow(2)\n\
+                     if (i % 100 == 0) {\n\
+                         out = out :+ [kept, k, w, first, second, computed(i), computed(i, 5)]\n\
+                         out = out :+ [kinds(i, c: \"kw\"), grow(1, [0])]\n\
+                     }\n\
+                     recur(i + 1, total + len(kept) + len(first) + len(second) + w)\n\
+                 } else { total }\n\
+             }\n\
+             println(go(0, 0))\n\
+             println(out)\n\
          }\n",
     );
 }
@@ -772,6 +861,257 @@ fn recursion_deeper_than_native_calls_go_continues_in_the_interpreter() {
         "deep",
         "val sum = fn(n) { if (n == 0) { 0 } else { n + sum(n - 1) } }\n\
          val main = fn() { println(sum(3000)) }\n",
+    );
+}
+
+#[test]
+fn compiled_module_variable_updates_match_the_interpreter() {
+    // Module `var`s updated in place by compiled code: a number, a map
+    // merge, a list append, a struct's and a map's field copied with an
+    // update, from a spawned task too, and an update that fails.
+    same_with_and_without_native_code(
+        "module-updates",
+        "val Player = struct { name:str, memory:map, steps:num }\n\
+         var total = 0\n\
+         var seen = {}\n\
+         var log = []\n\
+         var player = Player { name: \"p\", memory: {}, steps: 0 }\n\
+         var record = {count: 0, tags: []}\n\
+         val tick = fn(i) {\n\
+             total = total + i\n\
+             seen = seen + {[\"k\" + i % 13]: i}\n\
+             log = log :+ (i % 7)\n\
+             player = player copy {memory: player.memory + {[\"m\" + i % 5]: i}}\n\
+             record = record copy {tags: record.tags :+ (i % 3)}\n\
+             total\n\
+         }\n\
+         val loop = fn(i, acc) { if (i == 0) { acc } else { recur(i - 1, acc + tick(i)) } }\n\
+         val bad = fn(v) { log = log + v }\n\
+         val main = fn() {\n\
+             println(loop(400, 0))\n\
+             println(total, len(seen), len(log), player.memory, len(record.tags))\n\
+             val forked = spawn { loop(5, 0) }\n\
+             println(select { await forked }, total)\n\
+             println(bad(\"x\"))\n\
+         }\n",
+    );
+}
+
+#[test]
+fn compiled_deferred_actions_match_the_interpreter() {
+    // Functions with deferred actions of each kind: an `onerror` that
+    // recovers, one dropped on success,
+    // actions in nested blocks, a `return` from inside one, `recur` with
+    // actions deferred each iteration, an error passing through a caller's
+    // `onerror`, and an error nothing recovers, its cleanup run in each
+    // frame it leaves.
+    same_with_and_without_native_code(
+        "deferred",
+        "val log = fn(acc, text) { acc :+ text }\n\
+var events = []\n\
+val note = fn(text) { events = events :+ text }\n\
+val guarded = fn(n) {\n\
+    defer onerror(err) { \"recovered \" + err.code }\n\
+    if (n % 5 == 0) { throw {code: n} }\n\
+    n * 2\n\
+}\n\
+val counted = fn(n) {\n\
+    var done = 0\n\
+    defer { done = done + 1 }\n\
+    defer onsuccess { note(\"ok \" + n) }\n\
+    defer onerror(err) { note(\"failed \" + n) }\n\
+    if (n % 7 == 0) { throw {code: n} }\n\
+    n + done\n\
+}\n\
+val nested = fn(n) {\n\
+    val inner = {\n\
+        if (n % 2 == 0) { defer { note(\"even block \" + n) }; note(\"in block \" + n) }\n\
+        n + 1\n\
+    }\n\
+    defer onerror(err) { 0 }\n\
+    if (n % 3 == 0) { return inner * 10 }\n\
+    inner\n\
+}\n\
+val looping = fn(i, total) {\n\
+    defer onerror(err) { -1 }\n\
+    if (i == 0) { total } else { recur(i - 1, total + guarded(i)) }\n\
+}\n\
+val loopingAlways = fn(i, total) {\n\
+    defer { note(\"iteration \" + i) }\n\
+    if (i == 0) { total } else { recur(i - 1, total + i) }\n\
+}\n\
+val caught = fn(n) {\n\
+    defer onerror(err) { \"caught \" + err.code }\n\
+    counted(n)\n\
+}\n\
+val boom = fn(n) {\n\
+    defer { note(\"boom cleanup \" + n) }\n\
+    if (n > 2) { throw {code: n} }\n\
+    n\n\
+}\n\
+val deep = fn(n) { defer { note(\"deep \" + n) }; boom(n) + 1 }\n\
+val main = fn() {\n\
+    val go = fn(i, out) {\n\
+        if (i < 300) {\n\
+            val row = [guarded(i), nested(i), caught(i), looping(4, 0)]\n\
+            recur(i + 1, if (i % 50 == 0) { out :+ row } else { out })\n\
+        } else { out }\n\
+    }\n\
+    println(go(0, []))\n\
+    println(loopingAlways(3, 0), deep(1))\n\
+    println(len(events), events[0:12])\n\
+    println(events[len(events) - 3:])\n\
+    println(deep(3))\n\
+}\n\
+",
+    );
+}
+
+#[test]
+fn compiled_deferred_actions_that_leave_match_the_interpreter() {
+    // Native code runs deferred actions itself; these leave to the
+    // interpreter partway, as one that waits on a task does, with others
+    // still to run: at a block's end, a `return`, a `recur`, inside an
+    // action with actions of its own, in an `onerror` that recovers, and
+    // one that throws, past the actions after it and a caller's
+    // `onerror`. The interpreter carries on with the cleanup native code
+    // was running.
+    let trace = same_with_and_without_native_code(
+        "deferred-leaving",
+        r#"var events = []
+val note = fn(text) { events = events :+ text }
+val interpreted = fn(text) {
+    val t = spawn { text }
+    note(select { await t })
+}
+val blocks = fn(n) {
+    val a = {
+        defer { note("block " + n) }
+        defer onsuccess { note("block ok " + n) }
+        n + 1
+    }
+    a * 2
+}
+val early = fn(n) {
+    defer { note("outer " + n) }
+    {
+        defer { note("inner " + n) }
+        if (n % 2 == 0) { return n }
+    }
+    n + 100
+}
+val looping = fn(i, total) {
+    defer { note("iteration " + i) }
+    if (i == 0) { total } else { recur(i - 1, total + i) }
+}
+val leaving = fn(n) {
+    defer { note("after " + n) }
+    defer { interpreted("leaves " + n) }
+    defer onsuccess { note("first " + n) }
+    n
+}
+val leavingBlock = fn(n) {
+    val v = {
+        defer { note("block after " + n) }
+        defer { interpreted("block leaves " + n) }
+        n * 3
+    }
+    v + 1
+}
+val leavingLoop = fn(i) {
+    defer { interpreted("loop leaves " + i) }
+    defer { note("loop after " + i) }
+    if (i == 0) { "done" } else { recur(i - 1) }
+}
+val nestedAction = fn(n) {
+    defer { note("outer after " + n) }
+    defer {
+        defer { note("inner after " + n) }
+        defer { interpreted("inner leaves " + n) }
+        note("inner body " + n)
+    }
+    n
+}
+val throwing = fn(n) {
+    defer onerror(err) { note("onerror " + n) }
+    defer { note("still runs " + n) }
+    defer { throw {code: n} }
+    n
+}
+val recovering = fn(n) {
+    defer onerror(err) {
+        defer { note("recover after " + n) }
+        defer { interpreted("recover leaves " + n) }
+        "recovered " + err.code
+    }
+    throw {code: n}
+}
+val caller = fn(n) {
+    defer onerror(err) { note("caller onerror " + n); "caller " + err.code }
+    throwing(n)
+}
+val main = fn() {
+    val go = fn(i, out) {
+        if (i < 60) {
+            val row = [blocks(i), early(i), looping(2, 0), leaving(i), leavingBlock(i), leavingLoop(2), nestedAction(i), recovering(i), caller(i)]
+            recur(i + 1, if (i % 20 == 0) { out :+ row } else { out })
+        } else { out }
+    }
+    println(go(0, []))
+    println(len(events))
+    println(events[0:40])
+    println(events[len(events) - 30:])
+}
+"#,
+    );
+    let left = trace
+        .split("deferred actions run, ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|left| left.parse::<u64>().ok())
+        .expect("the trace counts deferred actions that left");
+    assert!(left > 0, "no action left native code:\n{trace}");
+}
+
+#[test]
+fn a_function_too_large_for_a_native_frame_stays_interpreted() {
+    // A native frame has a slot per value, and the stack budget is checked
+    // only at calls, so a frame must stay well within it: with 100,000
+    // values, as one diagnostics test has, it was over 2 MiB, past the
+    // 1 MiB of a Windows main thread's stack.
+    let source = format!("val main = fn() {{ println({}true) }}\n", "!".repeat(5000));
+    let trace = same_with_and_without_native_code("too-large", &source);
+    assert!(
+        trace.contains("a native frame holds"),
+        "the function compiled:\n{trace}"
+    );
+}
+
+#[test]
+fn compiled_calls_in_tasks_with_their_own_view_match_the_interpreter() {
+    // A spawned task with a `task var` and a fork each have their own view
+    // of the module variables. Their compiled loops call module functions,
+    // `val`s every view sees as they are, directly; what they read of the
+    // `task var` and the `var` stays each task's own. (How many calls are
+    // direct depends on when the background compiler finishes.)
+    same_with_and_without_native_code(
+        "task-views",
+        "task var who = \"main\"\n\
+         var shared = 10\n\
+         val step = fn(n) { n * 3 + 1 }\n\
+         val tag = fn(n) { who + \":\" + n }\n\
+         val loop = fn(i, total) {\n\
+             if (i == 0) { total } else { recur(i - 1, total + step(i) % 7 + shared) }\n\
+         }\n\
+         val main = fn() {\n\
+             val child = spawn {\n\
+                 who = \"child\"\n\
+                 [loop(2000, 0), tag(1)]\n\
+             }\n\
+             val forked = fork { [loop(2000, 0), tag(2)] }\n\
+             shared = 20\n\
+             println(select { await child }, select { await forked }, loop(2000, 0), tag(3))\n\
+         }\n",
     );
 }
 

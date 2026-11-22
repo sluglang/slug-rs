@@ -7,8 +7,9 @@
 
 #include "slug_producer.h"
 
-/* Statuses. With SLUG_TCP_ERROR, a `detail` out parameter holds the errno;
- * with SLUG_TCP_ADDRESS, the getaddrinfo error. */
+/* Statuses. With SLUG_TCP_ERROR, a `detail` out parameter holds the errno,
+ * or on Windows the Winsock error; with SLUG_TCP_ADDRESS, the getaddrinfo
+ * error. */
 #define SLUG_TCP_OK 0
 #define SLUG_TCP_ADDRESS 1
 #define SLUG_TCP_REFUSED 2

@@ -177,3 +177,47 @@ val waitingOnTheDiskLetsOtherTasksRun = fn() {
         assertEqual((fs.stat(path) ?? {}).size, 64 * 65536)
     })
 }
+
+@test
+val joinBuildsPathsWithTheSeparator = fn() {
+    val s = fs.separator
+    assertTrue(s == "/" || s == "\\")
+    assertEqual(fs.join(["logs", "2026", "today.txt"]), "logs" + s + "2026" + s + "today.txt")
+    assertEqual(fs.join(["logs/", "today.txt"]), "logs/today.txt")
+    assertEqual(fs.join(["", "a", "", "b"]), "a" + s + "b")
+    assertEqual(fs.join([]), "")
+    inDirectory(fn(root) {
+        val path = fs.join([root, "joined.txt"])
+        fs.close(fs.openWrite(path))
+        assertEqual(fs.list(root), ["joined.txt"])
+    })
+}
+
+@test
+val pathsLongerThanWindowsOldLimitWork = fn() {
+    // Windows' file functions stop at 260 characters without the extended
+    // path form, which the clutch gives every path there.
+    inDirectory(fn(root) {
+        val part = "a-directory-name-long-enough-that-a-few-make-a-long-path-0123456789"
+        val deep = fs.join([root, part, part, part, part, part])
+        fs.makeDirectory(deep, true)
+        val name = "file-" + part + ".txt"
+        val path = fs.join([deep, name])
+        assertTrue(len(path) > 400)
+        val out = fs.openWrite(path)
+        fs.write(out, "deep")
+        fs.close(out)
+        val input = fs.openRead(path)
+        val line = fs.readLine(input)
+        fs.close(input)
+        assertEqual(line, "deep")
+        assertEqual((fs.stat(path) ?? {}).kind, "file")
+        assertEqual(fs.list(deep), [name])
+        fs.rename(path, path + ".moved")
+        assertEqual(fs.list(deep), [name + ".moved"])
+        fs.remove(path + ".moved")
+        fs.removeAll(fs.join([root, part]))
+        assertEqual(fs.list(root), [])
+    })
+}
+

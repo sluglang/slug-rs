@@ -31,8 +31,43 @@ pub(super) enum Cleanup {
     Error(RuntimeError),
 }
 
+/// A frame's `scope_depth` and `scopes` for the scopes native code left:
+/// no list of scopes when nothing is deferred, as the interpreter keeps
+/// a frame until its first `defer`, unless `unwinding`.
+#[cfg(feature = "native-hooks")]
+pub(super) fn native_scopes(
+    scopes: crate::tiering::NativeScopes,
+    unwinding: bool,
+) -> (u32, Vec<Vec<Deferred>>) {
+    let crate::tiering::NativeScopes { depth, deferred } = scopes;
+    let depth = depth.max(1);
+    // A frame left while its deferred actions run has a list for each
+    // scope, which the cleanup it queues takes.
+    if deferred.is_empty() && !unwinding {
+        return (depth, Vec::new());
+    }
+    let mut lists: Vec<Vec<Deferred>> = (0..depth).map(|_| Vec::new()).collect();
+    for crate::tiering::NativeDeferred {
+        action,
+        mode,
+        depth: scope,
+    } in deferred
+    {
+        let index = (scope.clamp(1, depth) - 1) as usize;
+        lists[index].push(Deferred { action, mode });
+    }
+    (depth, lists)
+}
+
 impl Vm {
     pub(super) fn begin_return(&mut self, value: Value) -> VmResult<Option<Value>> {
+        self.queue_return(value)?;
+        self.drive_cleanup()
+    }
+
+    /// Queues the cleanup of the active frame's return of `value`, as
+    /// [`Self::begin_return`] runs it.
+    pub(super) fn queue_return(&mut self, value: Value) -> VmResult<()> {
         let frame_depth = self.frames.len().checked_sub(1).ok_or_else(|| {
             self.error(
                 RuntimeErrorKind::InvalidBytecode,
@@ -77,7 +112,7 @@ impl Vm {
                 success: true,
                 frame_depth,
             }));
-        self.drive_cleanup()
+        Ok(())
     }
 
     /// Returns to the caller directly when no cleanup can observe the
@@ -105,6 +140,16 @@ impl Vm {
         program: &Program,
         kinds: &[crate::CallArgumentKind],
     ) -> VmResult<()> {
+        let (arguments, provided) = self.recur_arguments(program, kinds)?;
+        self.restart_recur(arguments, provided, program)
+    }
+
+    /// Pops and binds a `recur`'s arguments, whose kinds are `kinds`.
+    fn recur_arguments(
+        &mut self,
+        program: &Program,
+        kinds: &[crate::CallArgumentKind],
+    ) -> VmResult<(Vec<Value>, Option<Vec<bool>>)> {
         let values = self.pop_values(kinds.len())?;
         let (positional, named) = self.expand_call_arguments(values, kinds)?;
         let closure = self
@@ -119,13 +164,23 @@ impl Vm {
             })?;
         let (arguments, provided) =
             self.bind_call_arguments(program, &closure, positional, named)?;
-        self.restart_recur(arguments, Some(provided), program)
+        Ok((arguments, Some(provided)))
     }
 
     pub(super) fn recur_positional(&mut self, program: &Program, count: usize) -> VmResult<()> {
         if self.restart_exact_recur_in_place(program, count) {
             return Ok(());
         }
+        let (arguments, provided) = self.recur_positional_arguments(program, count)?;
+        self.restart_recur(arguments, provided, program)
+    }
+
+    /// Pops and binds a positional `recur`'s `count` arguments.
+    fn recur_positional_arguments(
+        &mut self,
+        program: &Program,
+        count: usize,
+    ) -> VmResult<(Vec<Value>, Option<Vec<bool>>)> {
         let values = self.pop_values(count)?;
         let closure = self
             .frames
@@ -144,13 +199,13 @@ impl Vm {
         if exact {
             #[cfg(feature = "metrics")]
             self.record_exact_positional_recur_restart();
-            return self.restart_recur(values, None, program);
+            return Ok((values, None));
         }
         #[cfg(feature = "metrics")]
         self.record_generic_recur_argument_binding();
         let (arguments, provided) =
             self.bind_call_arguments(program, &closure, values, Vec::new())?;
-        self.restart_recur(arguments, Some(provided), program)
+        Ok((arguments, Some(provided)))
     }
 
     /// Restarts an exact positional `recur` by moving its stack arguments
@@ -232,16 +287,7 @@ impl Vm {
             }
         };
         if !nested_scopes.is_empty() {
-            self.cleanup.push(Cleanup::Recur {
-                arguments,
-                provided: provided.unwrap_or_else(|| vec![true; arity]),
-            });
-            self.cleanup
-                .extend(nested_scopes.into_iter().map(|actions| Cleanup::Actions {
-                    actions,
-                    success: true,
-                    frame_depth: self.frames.len() - 1,
-                }));
+            self.queue_recur(arguments, provided, arity, nested_scopes);
             self.drive_cleanup()?;
             return Ok(());
         }
@@ -251,6 +297,82 @@ impl Vm {
             self.finish_recur_positional(arguments, local_count, stack_base);
         }
         Ok(())
+    }
+
+    /// Queues a `recur` of the active frame that runs the actions of its
+    /// `nested_scopes` first.
+    fn queue_recur(
+        &mut self,
+        arguments: Vec<Value>,
+        provided: Option<Vec<bool>>,
+        arity: usize,
+        nested_scopes: Vec<Vec<Deferred>>,
+    ) {
+        self.cleanup.push(Cleanup::Recur {
+            arguments,
+            provided: provided.unwrap_or_else(|| vec![true; arity]),
+        });
+        self.cleanup
+            .extend(nested_scopes.into_iter().map(|actions| Cleanup::Actions {
+                actions,
+                success: true,
+                frame_depth: self.frames.len() - 1,
+            }));
+    }
+
+    /// Queues the cleanup of the instruction at the active frame's ip, a
+    /// `Return`, `LeaveScope` or `recur` whose deferred actions native
+    /// code was running when one of them left to the interpreter, without
+    /// running it: the action's frame, pushed next, finishes it.
+    #[cfg(feature = "native-hooks")]
+    pub(super) fn queue_native_unwinding(&mut self) -> VmResult<()> {
+        use crate::bytecode::PackedOpcode;
+        let frame = self.frames.last().expect("an unwinding frame was pushed");
+        let program = frame.closure.program.clone();
+        let ip = frame.ip;
+        let instruction = program
+            .chunk(frame.closure.chunk)
+            .and_then(|chunk| chunk.code.get(ip))
+            .map(|instruction| (instruction.opcode, instruction.a));
+        match instruction {
+            Some((PackedOpcode::Return, _)) => {
+                let value = self.pop()?;
+                self.queue_return(value)
+            }
+            Some((PackedOpcode::LeaveScope, _)) => {
+                self.frames.last_mut().expect("frame was checked").ip = ip + 1;
+                self.queue_leave_scope();
+                Ok(())
+            }
+            Some((opcode @ (PackedOpcode::Recur | PackedOpcode::RecurPositional), operand)) => {
+                let (arguments, provided) = if opcode == PackedOpcode::Recur {
+                    let kinds = self
+                        .pooled_call_arguments(
+                            &program,
+                            crate::bytecode::CallArgumentsId::new(operand),
+                        )?
+                        .to_vec();
+                    self.recur_arguments(&program, &kinds)?
+                } else {
+                    self.recur_positional_arguments(&program, operand as usize)?
+                };
+                let arity = self.current_chunk(&program)?.arity;
+                let frame = self.frames.last_mut().expect("frame was checked");
+                frame.scope_depth = 1;
+                let nested_scopes = if frame.scopes.len() > 1 {
+                    frame.scopes.split_off(1)
+                } else {
+                    Vec::new()
+                };
+                self.queue_recur(arguments, provided, arity, nested_scopes);
+                Ok(())
+            }
+            _ => Err(self.error(
+                RuntimeErrorKind::InvalidBytecode,
+                "native code left cleanup at an instruction without any".into(),
+                None,
+            )),
+        }
     }
 
     pub(super) fn finish_recur(

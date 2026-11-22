@@ -118,6 +118,12 @@ impl Group {
     }
 }
 
+/// The control of the fork running on this thread: what its waits and
+/// the forks it starts belong to. `None` on a thread no fork runs on.
+pub(crate) fn current_island() -> Option<Arc<IslandControl>> {
+    ISLAND.with(|island| island.borrow().clone())
+}
+
 /// [`Inbox::attention`]: host calls are queued.
 const REQUESTED: u8 = 1;
 /// [`Inbox::attention`]: the fork on this island is cancelled.
@@ -128,6 +134,9 @@ std::thread_local! {
     /// Set on a worker whose island could not be cleaned up after a panic:
     /// it ends rather than take another.
     static RETIRE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// The control of the fork whose island runs on this thread, if one does.
+    static ISLAND: core::cell::RefCell<Option<Arc<IslandControl>>> =
+        const { core::cell::RefCell::new(None) };
 }
 
 impl Inbox {
@@ -319,13 +328,33 @@ impl Drop for Inbox {
 pub(crate) struct IslandControl {
     cancelled: AtomicBool,
     inbox: OnceLock<Arc<Inbox>>,
+    /// The control of the fork that started this one, if a fork did.
+    parent: Option<Arc<IslandControl>>,
 }
 
 impl IslandControl {
-    fn new() -> Self {
+    fn new(parent: Option<Arc<IslandControl>>) -> Self {
         Self {
             cancelled: AtomicBool::new(false),
             inbox: OnceLock::new(),
+            parent,
+        }
+    }
+
+    /// Whether this fork or one it runs inside was cancelled: what it waits
+    /// for can never reach it, even before its island has stopped and left
+    /// the queues it waits in, or before a cancelled fork's island has
+    /// cancelled this one.
+    pub(crate) fn abandoned(&self) -> bool {
+        let mut control = self;
+        loop {
+            if control.cancelled() {
+                return true;
+            }
+            match &control.parent {
+                Some(parent) => control = parent,
+                None => return false,
+            }
         }
     }
 
@@ -389,7 +418,7 @@ fn release_place() {
 /// thread. Returns whether it took the task: shipped, or failed because no
 /// fork may start now; `false` leaves a fork not yet admitted queued.
 pub(super) fn ship(task: &Rc<Task>) -> bool {
-    let control = Arc::new(IslandControl::new());
+    let control = Arc::new(IslandControl::new(current_island()));
     let Some(execution) = task.take_for_island(&control) else {
         return false;
     };
@@ -604,6 +633,7 @@ fn run(inputs: ForkInputs, link: ParentLink) {
     if link.control.cancelled() {
         inbox.attention.fetch_or(CANCELLED, Ordering::Release);
     }
+    let previous = ISLAND.with(|island| island.replace(Some(link.control.clone())));
     let mut vm = inputs.island_vm(&link, &inbox);
     let ParentLink {
         host,
@@ -646,6 +676,7 @@ fn run(inputs: ForkInputs, link: ParentLink) {
     #[cfg(feature = "metrics")]
     counts.merge_from(&vm, &parent);
     drop(vm);
+    ISLAND.with(|island| *island.borrow_mut() = previous);
     #[cfg(all(debug_assertions, feature = "threads", not(target_os = "none")))]
     crate::sync::solo_check::fork_ended();
     // Free before the spawner can see the fork settle, which may lead it to

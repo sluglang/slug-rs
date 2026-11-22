@@ -35,8 +35,8 @@ pub use sync::{Code, SoloCell};
 #[cfg(feature = "native-hooks")]
 #[doc(hidden)]
 pub use tiering::{
-    HotChunk, NativeCell, NativeCode, NativeFailure, NativeFrame, NativeLocal, NativeOutcome,
-    NativeTier, install_native_tier,
+    HotChunk, NativeCell, NativeCode, NativeDeferred, NativeFailure, NativeFrame, NativeLocal,
+    NativeOutcome, NativeScopes, NativeTier, install_native_tier,
 };
 mod value;
 mod variables;

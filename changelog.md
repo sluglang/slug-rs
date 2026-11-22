@@ -2,15 +2,68 @@
 
 ## Unreleased
 
+- `slug.io.fs` handles paths longer than 260 characters on Windows, where
+  Windows' file functions otherwise stop: each path is made absolute and
+  given Windows' extended form, as Rust's standard library does.
+
+- `slug.net.tcp` is ported to Windows, on Winsock: one I/O thread still
+  serves every connection, polling their sockets with `WSAPoll`. On Windows
+  a failure's message is the system's own description, in the user's
+  language.
+
+- `slug.io.fs` is ported to Windows. It also gains `separator`, the system's
+  path separator (`\` on Windows, `/` elsewhere), and `join`, which builds
+  a path from a list of parts with it. On Windows a failure's `errno` is
+  the Windows error code, and its `code` is the same portable name as
+  elsewhere.
+
+- `slug test` finds a clutch's name and its test modules on Windows, where
+  the clutch's path is written with `\`.
+
+- A send on a channel no longer hands its value to a task in a fork that
+  was just cancelled, or in one of that fork's own forks, before the fork
+  has stopped waiting: the value was lost, and a live receiver waited
+  forever. A cancelled fork's pending send is no longer received either.
+
+- Calls to native and foreign functions no longer scan their result for
+  non-finite numbers twice: a result is known not to hold one unless the
+  function made a float that is not finite, which is still refused. A
+  long HTTP server run is about 5% faster.
+
+- Functions with `defer`, `onsuccess` and `onerror` actions, and
+  functions that update module variables (`total = total + i`, `:+`,
+  copying a struct with one field changed), now run as machine code,
+  which also runs the deferred actions itself. A function whose action
+  is a short closure runs about 2.7 times as fast; `defer-errors` runs
+  18% faster. Leaving machine code no longer grows the interpreter's
+  pool of local-variable storage without bound, which had cost a few
+  MB in long runs.
+
+- Code running inside a task with its own view of the module variables,
+  such as a `spawn` with `task var`s or a `fork`, calls module functions
+  directly from machine code instead of returning to the interpreter
+  for each call: Crawl's web front end, whose handlers run that way, is
+  3% faster with a crowd of players. A function that left machine code
+  on most of its first calls, as one may while the functions it calls
+  are still being compiled, is tried again later instead of staying
+  interpreted for the rest of the run.
+
+- More functions run as machine code: those written as `fn(...) match`,
+  as std's `map`, `filter` and `find` are, and pipelines such as
+  `x /> f(y)`. A call that leaves out trailing parameters whose defaults
+  are constants, `[]`, `nil`, `true` or `false` (`xs /> filter(f)`)
+  supplies them itself and is as fast as a full call, interpreted or
+  not. A list passed on through a branch is no longer copied, which had
+  made appending to it in a loop quadratic in native code. Of the
+  benchmarks, `closure-accumulate` runs 13% faster and Crawl's game 12%.
+
 - The `slug` runner compiles hot functions to machine code by default, on
-  macOS and Linux: a recursive integer function such as `fib` runs about 10
-  times faster than interpreted; of the benchmark programs, Invaders runs
-  29% faster, the HTTP server 13%, and Crawl's workloads 7-17%, and the
-  rest about as fast as before. Output and errors are the same either way.
-  `SLUG_NATIVE=off` interprets everything; on Windows that stays the
-  default until native code has been tested there, and `SLUG_NATIVE=on`
-  turns it on. The binary is about 2.5 MB larger, and a program uses a few
-  MB more memory.
+  macOS, Linux, and Windows: a recursive integer function such as `fib`
+  runs about 10 times faster than interpreted; of the benchmark programs,
+  Invaders runs 29% faster, the HTTP server 13%, and Crawl's workloads
+  7-17%, and the rest about as fast as before. Output and errors are the
+  same either way. `SLUG_NATIVE=off` interprets everything. The binary is
+  about 2.5 MB larger, and a program uses a few MB more memory.
 
 - A new hold-out benchmark, `queens-knapsack`, counts the eight queens'
   solutions by backtracking and fills a 0/1 knapsack table one list at a

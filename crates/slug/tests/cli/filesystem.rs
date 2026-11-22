@@ -55,9 +55,9 @@ fn reads_writes_appends_and_explicitly_closes_opaque_file_resources() {
              val appended = fs.openAppend(\"{}\")\n\
              defer fs.close(appended)\n\
              println(fs.write(appended, \" two\"))\n",
-            input.display(),
-            output.display(),
-            output.display(),
+            slug_path(&input),
+            slug_path(&output),
+            slug_path(&output),
         ),
     )
     .expect("write filesystem source");
@@ -92,7 +92,7 @@ fn resource_annotations_check_foreign_results_and_arguments() {
         &program,
         format!(
             "val fs = import(\"slug.io.fs\")\nval file = fs.openRead(\"{}\")\nfs.readLine(\"not a file\")\n",
-            input.display()
+            slug_path(&input)
         ),
     )
     .expect("write resource-type source");
@@ -126,7 +126,7 @@ fn preserves_nominal_file_types_from_foreign_results() {
              defer fs.close(file)\n\
              val files:list<fs.File> = [file, file]\n\
              println(len(files))\n",
-            input.display()
+            slug_path(&input)
         ),
     )
     .expect("write file-inference source");
@@ -161,8 +161,8 @@ fn infers_conditional_file_results_inside_lists() {
              val files:list<fs.File> = [if (true) {{ fs.openRead(\"{}\") }} else {{ fs.openRead(\"{}\") }}]\n\
              defer fs.close(files[0])\n\
              println(len(files))\n",
-            input.display(),
-            input.display(),
+            slug_path(&input),
+            slug_path(&input),
         ),
     )
     .expect("write conditional file inference source");
@@ -195,7 +195,7 @@ fn match_constraints_check_exact_nominal_file_handles() {
              defer fs.close(file)\n\
              val classify = fn(value) match {{ _:fs.File => \"file\"; _ => \"other\" }}\n\
              println(classify(file), classify(\"not a file\"))\n",
-            input.display(),
+            slug_path(&input),
         ),
     )
     .expect("write resource-match source");
@@ -247,7 +247,7 @@ fn rejects_file_operations_after_explicit_close() {
         &program,
         format!(
             "val fs = import(\"slug.io.fs\")\nval file = fs.openRead(\"{}\")\nfs.close(file)\nfs.readLine(file)\n",
-            input.display()
+            slug_path(&input)
         ),
     )
     .expect("write closed-file source");
@@ -289,6 +289,12 @@ fn run_filesystem_program(
         .expect("run filesystem error program");
     fs::remove_dir_all(root).expect("remove filesystem error fixture root");
     output
+}
+
+/// `path` as text for a Slug string literal: with `/` separators, which
+/// Windows accepts too, since `\` begins an escape in Slug text.
+fn slug_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Prepares files in a fixture root before its program runs.

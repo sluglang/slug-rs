@@ -6,7 +6,7 @@
 
 #include "slug_producer.h"
 
-/* An open file: its descriptor and read buffer, shared by the VM and the I/O
+/* An open file: its system handle and read buffer, shared by the VM and the I/O
  * thread until both have let it go. */
 typedef struct slug_fs_file slug_fs_file;
 
@@ -17,7 +17,7 @@ typedef struct slug_fs_file slug_fs_file;
  *
  *   [SLUG_FS_OK, ...results]
  *   [SLUG_FS_END]                  end of file, or nothing at the path
- *   [SLUG_FS_SYSTEM, errno, code, message]
+ *   [SLUG_FS_SYSTEM, error, code, message]   errno, or a Windows error code
  *   [SLUG_FS_ALLOC]                memory ran out
  *   [SLUG_FS_LINE_TOO_LONG], [SLUG_FS_LINE_HAS_NUL], [SLUG_FS_LINE_NOT_UTF8]
  *
@@ -94,7 +94,11 @@ int32_t slug_fs_remove(const char *path, slug_producer *reply);
 int32_t slug_fs_remove_all(const char *path, slug_producer *reply);
 
 /* Makes a new directory, readable only by its owner, named `prefix` and six
- * random characters under $TMPDIR or /tmp: [SLUG_FS_OK, path]. */
+ * random characters under $TMPDIR or /tmp, or on Windows the user's
+ * temporary directory: [SLUG_FS_OK, path]. */
 int32_t slug_fs_temporary_directory(const char *prefix, slug_producer *reply);
+
+/* The system's path separator: "\\" on Windows, "/" elsewhere. */
+const char *slug_fs_separator(void);
 
 #endif

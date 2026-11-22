@@ -1,7 +1,6 @@
 //! `slug.net.tcp` on typed native bindings, built as clutch staging builds
 //! it. Every test serves and connects on loopback with port 0, so tests run
-//! in parallel without colliding. Unix-only, as the clutch is.
-#![cfg(unix)]
+//! in parallel without colliding.
 
 use std::{
     env,
@@ -29,6 +28,7 @@ fn platform() -> &'static str {
         ("macos", "aarch64") => "macos-aarch64",
         ("macos", "x86_64") => "macos-x86_64",
         ("linux", "x86_64") => "linux-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
         (os, architecture) => panic!("unsupported native test platform {os}-{architecture}"),
     }
 }
@@ -505,9 +505,8 @@ fn closing_a_connection_first_sends_what_is_queued() {
 /// broken, or gone before the server has it: 200 clients connecting at
 /// once overflow a listen queue of 128 (macOS's default) while the server
 /// is busy, and the kernel then turns some away, at the connect or after
-/// it, without the server seeing them. The server never resets a
-/// connection it accepted, so a client turned away is not one of the 200
-/// it counts.
+/// it. macOS resets some of those even after the server accepts them, so
+/// a server counts the clients it echoed in full, not its accepts.
 #[cfg(feature = "concurrency")]
 fn echo_retrying(port: u16, sent: &[u8]) -> Vec<u8> {
     use std::{io::ErrorKind, net::Shutdown};
@@ -552,7 +551,12 @@ fn serves_200_concurrent_clients_each_their_own_data() {
     let server = Server::start(
         "val listener = tcp.listen(\"127.0.0.1\", 0)\n\
          println(tcp.localPort(listener))\n\
+         val {send, recv} = import(\"slug.channel\")\n\
+         // Whether each connection echoed everything: one the system\n\
+         // reset under the server fails, and its client tries again.\n\
+         val done:chan<bool> = chan(1000)\n\
          val serve = fn(connection) {\n\
+             defer onerror(_) { send(done, false) }\n\
              defer tcp.close(connection)\n\
              val echo = fn() {\n\
                  match tcp.read(connection) {\n\
@@ -561,19 +565,28 @@ fn serves_200_concurrent_clients_each_their_own_data() {
                  }\n\
              }\n\
              echo()\n\
+             send(done, true)\n\
          }\n\
-         val loop = fn(count:num, tasks:list):list {\n\
-             if (count == 200) { return tasks }\n\
+         val acceptAll = fn(tasks:list):list {\n\
              match tcp.accept(listener) {\n\
                  nil => tasks\n\
-                 connection => recur(count + 1, tasks :+ spawn { serve(connection) })\n\
+                 connection => recur(tasks :+ spawn { serve(connection) })\n\
              }\n\
          }\n\
-         val tasks = loop(0, [])\n\
+         val acceptor = spawn { acceptAll([]) }\n\
+         val count = fn(served:num):num {\n\
+             if (served == 200) { return served }\n\
+             match recv(done) {\n\
+                 true => recur(served + 1)\n\
+                 _ => recur(served)\n\
+             }\n\
+         }\n\
+         val served = count(0)\n\
+         tcp.close(listener)\n\
+         val tasks = await(acceptor)\n\
          val join = fn(i:num) { if (i < len(tasks)) { await(tasks[i]); recur(i + 1) } }\n\
          join(0)\n\
-         tcp.close(listener)\n\
-         println(len(tasks))\n",
+         println(served)\n",
     );
     let port = server.port;
     let clients = (0..200)

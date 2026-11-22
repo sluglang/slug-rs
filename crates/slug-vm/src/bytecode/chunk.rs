@@ -254,6 +254,10 @@ pub struct CompiledChunk {
     /// them straight into their slots: true unless a parameter is variadic.
     /// Defaults do not matter, since every parameter is supplied.
     pub(crate) binds_full_positional_calls: bool,
+    /// The defaults of the last parameters, when each is a constant the
+    /// call can supply itself: a positional call that leaves some of them
+    /// out supplies them and binds as a full one.
+    pub(crate) plain_defaults: alloc::boxed::Box<[PlainDefault]>,
     pub(crate) callable_identity: Option<usize>,
     pub(crate) locals: usize,
     pub(crate) constants: Vec<Constant>,
@@ -273,12 +277,99 @@ pub struct CompiledChunk {
     pub(crate) native: crate::tiering::NativeSlot,
 }
 
+/// A parameter default that runs no code, which a call can supply.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PlainDefault {
+    Constant(usize),
+    EmptyList,
+    Nil,
+    True,
+    False,
+}
+
+/// The plain defaults of the last of `arity` parameters, as the prologue of
+/// `code` sets them: each default is `JumpIfProvided` over its value and
+/// the `SetLocal` of its slot. Empty unless every default of those
+/// parameters is plain and nothing else tests whether one was provided.
+pub(crate) fn plain_defaults(
+    code: &[PackedInstruction],
+    constants: &[Constant],
+    arity: usize,
+    binds_full_positional_calls: bool,
+) -> alloc::boxed::Box<[PlainDefault]> {
+    let mut found: Vec<Option<PlainDefault>> = alloc::vec![None; arity];
+    let mut ip = 0;
+    while let Some(instruction) = code.get(ip)
+        && instruction.opcode == PackedOpcode::JumpIfProvided
+    {
+        let (slot, target) = (instruction.a as usize, instruction.b as usize);
+        if target <= ip {
+            return alloc::boxed::Box::default();
+        }
+        if let [value, set, ..] = &code[ip + 1..]
+            && target == ip + 3
+            && slot < arity
+            && set.opcode == PackedOpcode::SetLocal
+            && set.a as usize == slot
+        {
+            found[slot] = match value.opcode {
+                PackedOpcode::Constant
+                    if matches!(constants.get(value.a as usize), Some(Constant::Value(_))) =>
+                {
+                    Some(PlainDefault::Constant(value.a as usize))
+                }
+                PackedOpcode::List if value.a == 0 => Some(PlainDefault::EmptyList),
+                PackedOpcode::Nil => Some(PlainDefault::Nil),
+                PackedOpcode::True => Some(PlainDefault::True),
+                PackedOpcode::False => Some(PlainDefault::False),
+                _ => None,
+            };
+        }
+        ip = target;
+    }
+    if !binds_full_positional_calls
+        || code[ip.min(code.len())..]
+            .iter()
+            .any(|instruction| instruction.opcode == PackedOpcode::JumpIfProvided)
+    {
+        return alloc::boxed::Box::default();
+    }
+    let plain = found
+        .iter()
+        .rev()
+        .take_while(|value| value.is_some())
+        .count();
+    found[arity - plain..].iter().flatten().copied().collect()
+}
+
 /// One unused hint per constant.
 pub(crate) fn index_hints(constants: usize) -> alloc::boxed::Box<[crate::sync::Hint]> {
     (0..constants).map(|_| crate::sync::Hint::new(0)).collect()
 }
 
 impl CompiledChunk {
+    /// The fewest arguments a positional call can pass and bind as a full
+    /// one, the rest being [`CompiledChunk::plain_defaults`].
+    pub(crate) fn fewest_positional(&self) -> usize {
+        self.arity - self.plain_defaults.len()
+    }
+
+    /// The default of parameter `slot`, one of the plain ones.
+    pub(crate) fn plain_default(&self, slot: usize) -> Value {
+        match self.plain_defaults[slot - self.fewest_positional()] {
+            PlainDefault::Constant(index) => match &self.constants[index] {
+                Constant::Value(value) => value.clone(),
+                Constant::Function(_) => unreachable!("a plain default is a value"),
+            },
+            PlainDefault::EmptyList => {
+                Value::List(crate::collections::List::from_values(Vec::new()))
+            }
+            PlainDefault::Nil => Value::Nil,
+            PlainDefault::True => Value::Bool(true),
+            PlainDefault::False => Value::Bool(false),
+        }
+    }
+
     /// The chunk's function name, for the native tier's reports.
     #[cfg(feature = "native-hooks")]
     #[must_use]
@@ -303,6 +394,12 @@ impl CompiledChunk {
             name,
             arity,
             binds_full_positional_calls: !parameters.iter().any(|parameter| parameter.variadic),
+            plain_defaults: plain_defaults(
+                &code,
+                &constants,
+                arity,
+                !parameters.iter().any(|parameter| parameter.variadic),
+            ),
             parameters,
             callable_identity,
             locals,

@@ -137,12 +137,15 @@ impl Tier {
         let compiling = count(&self.compiling) as f64 / 1e6;
         format!(
             "native: {} hot, {} compiled, {compiling:.1} ms lifting and compiling; \
-             {} entries, {} activations left early, {} calls to functions without native code",
+             {} entries, {} activations left early, {} calls to functions without native code; \
+             {} deferred actions run, {} of them left early",
             self.hot_chunks(),
             self.compiled_chunks(),
             count(&runtime::stats::ENTRIES),
             count(&runtime::stats::EXITS),
             count(&runtime::stats::UNCOMPILED_CALLS),
+            count(&runtime::stats::ACTIONS),
+            count(&runtime::stats::ACTIONS_LEFT),
         )
     }
 
