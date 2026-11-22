@@ -4,10 +4,10 @@
  * trimming, classifying ASCII characters, changing ASCII case, sorting, and
  * joining.
  *
- * Out-of-range arguments throw `Error` values whose `type` is `string.range`;
- * a list element that is not a string throws one whose `type` is
- * `string.type`; bytes that are not UTF-8 throw one whose `type` is
- * `string.utf8`.
+ * Out-of-range arguments throw `Error` values whose `type` is `string.range`,
+ * and bytes that are not UTF-8 throw one whose `type` is `string.utf8`. A
+ * list given where a `list<str>` is annotated, with an element that is not a
+ * string, fails that annotation's check.
  */
 
 // Typed native bindings, declared in this clutch's manifest.
@@ -73,18 +73,6 @@ export val toBytes = fn(text:str):bytes {
     toBytesRaw(text)[0]
 }
 
-val requireStrings = fn(values, operation) {
-    val check = fn(i) {
-        if (i < len(values)) {
-            match values[i] {
-                _:str => recur(i + 1)
-                _ => throw Error {type: "string.type", msg: "$operation requires a list of strings"}
-            }
-        }
-    }
-    check(0)
-}
-
 // `values` sorted, bottom up: each pass merges neighbouring sorted runs of
 // `width` into runs of twice that, with no slicing until a run's rest is
 // appended whole. Equal values keep their order.
@@ -120,12 +108,9 @@ val mergeSort = fn(values:list):list {
  * Returns `strings` in ascending order by Slug's string ordering, the order of
  * `<`: lexicographic by UTF-8 bytes, so `"B"` sorts before `"a"`. Equal
  * strings keep their original order. `strings` is unchanged.
- *
- * Throws a `string.type` error when an element is not a string.
  */
 @testWith([["pear", "Apple", "fig", "apple"]], ["Apple", "apple", "fig", "pear"], [[]], [])
 export val sort = fn(strings:list<str>):list<str> {
-    requireStrings(strings, "sort")
     mergeSort(strings)
 }
 
@@ -133,12 +118,9 @@ export val sort = fn(strings:list<str>):list<str> {
  * Returns the elements of `strings` concatenated, with `separator` between
  * each adjacent pair: `join(["a", "b", "c"], ", ")` is `"a, b, c"`. An empty
  * list joins to `""`.
- *
- * Throws a `string.type` error when an element is not a string.
  */
 @testWith([["x", "y"]], "xy", [["c", "a"], ", "], "c, a", [[]], "")
 export val join = fn(strings:list<str>, separator:str = ""):str {
-    requireStrings(strings, "join")
     val go = fn(i:num, out:str):str {
         if (i == len(strings)) {
             out

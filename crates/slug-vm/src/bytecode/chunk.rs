@@ -107,6 +107,7 @@ pub enum PackedOpcode {
     UpdateCapture,
     ReadIndex,
     ReadIndexConstant,
+    CheckFailed,
 }
 
 impl PackedOpcode {
@@ -203,6 +204,7 @@ impl PackedOpcode {
             PackedOpcode::UpdateCapture,
             PackedOpcode::ReadIndex,
             PackedOpcode::ReadIndexConstant,
+            PackedOpcode::CheckFailed,
         ];
         OPCODES.get(usize::from(tag)).copied()
     }

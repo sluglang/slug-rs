@@ -3397,6 +3397,9 @@ impl Vm {
                     "destructuring pattern did not match".into(),
                 ));
             }
+            PackedOpcode::CheckFailed => {
+                return Err(self.check_failed(chunk, instruction.a as usize));
+            }
             PackedOpcode::Throw => {
                 let value = self.pop()?;
                 return Err(self.thrown(value, self.owned_span(None)));
@@ -3756,6 +3759,34 @@ impl Vm {
 
     #[cold]
     #[inline(never)]
+    /// The error of a failed annotation check of the value on the stack.
+    /// The message constant at `index` is the expected type, a NUL, and the
+    /// place the check guards; the error reads `expected T, got U: place`.
+    fn check_failed(
+        &self,
+        chunk: &crate::bytecode::CompiledChunk,
+        index: usize,
+    ) -> crate::vm::RuntimeError {
+        let Some(crate::Constant::Value(Value::Str(message))) = chunk.constants.get(index) else {
+            return self.error_at(
+                RuntimeErrorKind::InvalidBytecode,
+                "check message constant is missing".into(),
+            );
+        };
+        let (expected, place) = message.split_once('\0').unwrap_or((message.as_ref(), ""));
+        let actual = match self.stack.last() {
+            Some(Value::Enum(value)) => value.name.to_string(),
+            Some(value) => value.type_name().into(),
+            None => "nothing".into(),
+        };
+        let mut text = alloc::format!("expected {expected}, got {actual}");
+        if !place.is_empty() {
+            text.push_str(": ");
+            text.push_str(place);
+        }
+        self.error_at(RuntimeErrorKind::Type, text)
+    }
+
     fn combine_overloads(&mut self) -> VmResult<()> {
         let existing = self.pop_unresolved()?;
         let new = self.pop_unresolved()?;

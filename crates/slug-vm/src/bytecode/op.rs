@@ -211,6 +211,10 @@ pub enum Op {
         target: usize,
     },
     MatchFailure,
+    /// Fails an annotation check of the value on the stack: a runtime type
+    /// error whose message is the string constant at the index, followed by
+    /// the value's type.
+    CheckFailed(usize),
     Throw,
     EnterScope,
     LeaveScope,

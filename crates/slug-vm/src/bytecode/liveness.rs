@@ -121,6 +121,7 @@ fn live_before(
         PackedOpcode::Return
         | PackedOpcode::Throw
         | PackedOpcode::MatchFailure
+        | PackedOpcode::CheckFailed
         | PackedOpcode::NotImplemented
         | PackedOpcode::Recur
         | PackedOpcode::RecurPositional => {}

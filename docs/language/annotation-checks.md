@@ -6,16 +6,18 @@ verifies it where the value comes from code the checker could not type. The
 rationale is in [Annotations are guarantees](../decisions/2026-11-22-annotations-are-guarantees.md)
 and [the transient soundness model](../decisions/2026-11-22-transient-soundness-model.md).
 
-Status: specified, and being implemented in
-[stage 6 of the typed-Slug plan](../planning/typed-slug.md#6-sound-boundaries).
-Until then, annotations add no runtime validation.
+Status: implemented for declarations, assignments, parameters, results and
+`return`, struct fields, and calls; [stage 6 of the typed-Slug
+plan](../planning/typed-slug.md#6-sound-boundaries) lists what is not yet:
+`foreign` results, structs of unknown schema, a recovering `defer onerror`'s
+result, dispatch of a dynamic overload call by type, and deep checks of
+struct type arguments and recursive types.
 
 ```slug
 val parse = fn(text) { text }        // unannotated: its result is not known
 val port:num = parse("80")           // checked here: "80" is a str
 
-// runtime error: expected num, got str
-//   the value of `port`, annotated `num` at main.slug:2:10
+// runtime error: expected num, got str: the value of `port`
 ```
 
 ## The static rule
@@ -132,25 +134,32 @@ constraints cannot yet go.
 
 A failed check is a checked runtime error, of kind `type`, raised where the
 value reaches the place. It unwinds as any runtime fault does, so `defer
-onerror` sees it. Its diagnostic has the code `annotation_mismatch` and
-reports:
+onerror` sees it, with its `type` field `"type"`. It reads `expected T, got
+U: place`, where `U` is the shallow type of the value, as `str`, `list`, or
+an enum's name, and the place is one of:
 
-- the expected type and the value's type, `expected num, got str`;
-- the place: a binding, an assignment, a parameter and its function, a
-  function's result, a struct field, or a received or awaited value;
-- the annotation's location;
-- for a deep check, the first part that failed, as the static record mismatch
-  does: `element 3 is str, but must be num`, or `field "name" is missing`.
+| Place | Named as |
+| --- | --- |
+| A declaration | the value of `name` |
+| An assignment | the value assigned to `name` |
+| A parameter | the argument `name`, with "whose type the function's body relies on" for an inferred type |
+| A result or `return` | the function's result |
+| A struct field | the field `name` |
+| A call's result | the call's result |
+
+Its location is the declaration, assignment, `return`, struct, or call; for
+a parameter or a body's result, the function, with the call in the frames.
 
 ```text
-runtime error: expected list<num>, got list: element 3 is str, but must be num
-  --> main.slug:9:12
-  = the argument `xs` of `total`, annotated `list<num>` at lib.slug:4:20
-  = code: annotation_mismatch
+runtime error: expected list<num>, got list: the argument `xs`
+  --> lib.slug:4:13
+  in <fn #1> at main.slug:9:12
 ```
 
-A value's type in the message is the shallow type of what it holds, as a
-match constraint names it: `str`, `list`, `struct<Pet>`, `fn`.
+Still to come: a diagnostic code of its own, `annotation_mismatch`; the
+annotation's location where it differs from the place's; and, for a deep
+check, the first part that failed, as the static record mismatch names it:
+`element 3 is str, but must be num`.
 
 ## Not checked
 

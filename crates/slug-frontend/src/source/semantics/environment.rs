@@ -299,6 +299,9 @@ pub(super) enum CheckPlace {
 pub(super) struct BoundaryCheck {
     pub(super) expected: Type,
     pub(super) place: CheckPlace,
+    /// `expected` as the runtime tests it: an enum with payload cases is
+    /// its fieldless cases or the structs of its payload cases.
+    pub(super) runtime: Type,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -315,7 +318,6 @@ pub(super) struct SemanticAnalysis {
     /// `return`, a `defer`, a function literal for its parameters and its
     /// body's result, a struct construction or copy for its fields, or a
     /// call through a function value for its result.
-    #[allow(dead_code, reason = "the compiler emits these checks in the next step")]
     pub(super) boundary_checks: HashMap<SourceSpan, Vec<BoundaryCheck>>,
     /// The names `{*}` declarations define, or `None` when one selects from
     /// a map whose entries are not known until it runs.
@@ -544,6 +546,42 @@ impl Environment {
         }
     }
 
+    /// `expected` as a runtime check tests it, with each enum that has
+    /// payload cases as the union of the enum, for its fieldless cases, and
+    /// its payload cases' structs, which is what its values are.
+    fn runtime_check_type(&self, expected: &Type) -> Type {
+        let part = |value: &Type| self.runtime_check_type(value);
+        match expected {
+            Type::Enum(identity, arguments) => {
+                let payloads = self.enum_payloads(identity);
+                if payloads.is_empty() {
+                    return expected.clone();
+                }
+                Type::Union(
+                    std::iter::once(expected.clone())
+                        .chain(payloads.iter().map(|case| {
+                            Type::Struct(Some(identity.enum_case(case)), arguments.clone())
+                        }))
+                        .collect(),
+                )
+            }
+            Type::List(Some(element)) => Type::List(Some(Box::new(part(element)))),
+            Type::Map(Some((key, value))) => {
+                Type::Map(Some((Box::new(part(key)), Box::new(part(value)))))
+            }
+            Type::Union(members) => Type::Union(members.iter().map(part).collect()),
+            Type::Tuple(elements) => Type::Tuple(elements.iter().map(part).collect()),
+            Type::Record { fields, map } => Type::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| (name.clone(), part(field)))
+                    .collect(),
+                map: *map,
+            },
+            other => other.clone(),
+        }
+    }
+
     /// Records that a runtime check is made at `site` whatever the checker
     /// knows, as `place` says: one against a type known only when it runs.
     pub(super) fn record_runtime_check(&self, site: &SourceSpan, place: CheckPlace) {
@@ -553,6 +591,7 @@ impl Environment {
         let check = BoundaryCheck {
             expected: Type::Unknown,
             place,
+            runtime: Type::Unknown,
         };
         let mut records = self.records.borrow_mut();
         let checks = records.boundary_checks.entry(site.clone()).or_default();
@@ -1095,6 +1134,7 @@ impl Environment {
         let check = BoundaryCheck {
             expected: expected.clone(),
             place,
+            runtime: self.runtime_check_type(expected),
         };
         let mut records = self.records.borrow_mut();
         let checks = records.boundary_checks.entry(site.clone()).or_default();
@@ -1128,6 +1168,7 @@ impl Environment {
                 let check = BoundaryCheck {
                     expected: result.clone(),
                     place: CheckPlace::CallResult,
+                    runtime: result.clone(),
                 };
                 let checks = boundary_checks.entry(site.clone()).or_default();
                 if !checks.contains(&check) {

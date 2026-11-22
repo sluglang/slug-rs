@@ -995,6 +995,7 @@ impl Program {
                 operand(*operands),
             ),
             Op::MatchFailure => (PackedOpcode::MatchFailure, 0, 0, 0),
+            Op::CheckFailed(message) => (PackedOpcode::CheckFailed, operand(*message), 0, 0),
             Op::Throw => (PackedOpcode::Throw, 0, 0, 0),
             Op::EnterScope => (PackedOpcode::EnterScope, 0, 0, 0),
             Op::LeaveScope => (PackedOpcode::LeaveScope, 0, 0, 0),
@@ -1186,6 +1187,7 @@ impl Program {
                 operands: n(instruction.c),
             },
             PackedOpcode::MatchFailure => Op::MatchFailure,
+            PackedOpcode::CheckFailed => Op::CheckFailed(n(instruction.a)),
             PackedOpcode::Throw => Op::Throw,
             PackedOpcode::EnterScope => Op::EnterScope,
             PackedOpcode::LeaveScope => Op::LeaveScope,
@@ -1433,6 +1435,17 @@ impl Program {
                 "{} references missing constant {index}",
                 location()
             )),
+            Op::CheckFailed(index)
+                if !matches!(
+                    chunk.constants.get(*index),
+                    Some(Constant::Value(crate::Value::Str(_)))
+                ) =>
+            {
+                Err(format!(
+                    "{} references missing check message constant {index}",
+                    location()
+                ))
+            }
             Op::GetIndexConstant(index)
                 if !matches!(chunk.constants.get(*index), Some(Constant::Value(_))) =>
             {
@@ -1827,7 +1840,9 @@ impl Program {
         next: Option<(usize, usize)>,
     ) -> Option<Vec<(usize, usize)>> {
         Some(match op {
-            Op::Return | Op::Throw | Op::MatchFailure | Op::NotImplemented => Vec::new(),
+            Op::Return | Op::Throw | Op::MatchFailure | Op::CheckFailed(_) | Op::NotImplemented => {
+                Vec::new()
+            }
             Op::Recur(_) | Op::RecurPooled(_) | Op::RecurPositional(_) => return None,
             Op::Jump(target) => vec![(*target, height)],
             Op::JumpIfFalse(target)
@@ -1919,7 +1934,11 @@ impl Program {
             if successors.is_empty()
                 && !matches!(
                     instruction.op,
-                    Op::Return | Op::Throw | Op::MatchFailure | Op::NotImplemented
+                    Op::Return
+                        | Op::Throw
+                        | Op::MatchFailure
+                        | Op::CheckFailed(_)
+                        | Op::NotImplemented
                 )
             {
                 return Err(format!(
@@ -2145,6 +2164,7 @@ impl Program {
             | Op::EnterScope
             | Op::LeaveScope
             | Op::MatchFailure
+            | Op::CheckFailed(_)
             | Op::NotImplemented => (0, 0),
             Op::Call(count) | Op::CallPositional(count) => (count.checked_add(1).unwrap_or(0), 1),
             Op::CallSpread(kinds) | Op::CallSelected { kinds, .. } => (kinds.len() + 1, 1),

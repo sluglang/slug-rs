@@ -473,9 +473,32 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   the way, a type
   parameter now conforms to `any|nil`, which it did not: `fn<T>(x:T) {
   show(x) }` was rejected for a `show` with an unannotated parameter.
-- [ ] Implement the checks in the compiler and the VM, inserting them only
+- [x] Implement the checks in the compiler and the VM, inserting them only
   where the checker recorded one; with native-tier support, since a
-  function with an op the tier does not compile runs interpreted.
+  function with an op the tier does not compile runs interpreted. A check
+  is the match test a match constraint makes, `_: T`, which leaves the
+  value, and on failure one new op, `CheckFailed`, whose message constant
+  names the type and place; the native tier ends its block there and the
+  interpreter raises the error, so a checked function stays native. Every
+  clutch suite passes with the checks. They caught three conformance
+  fixtures assigning a map or function to a `var` that began as `0`, which
+  the spec's `var` rule forbids, and made `slug.string`'s own element check
+  in `sort` and `join` redundant, so it is gone.
+- [ ] Finish the checks:
+  - A `foreign` function's result, which the VM checks when the host
+    returns; and fields of structs of unknown schema, which needs schemas to
+    carry field types at runtime.
+  - A recovering `defer onerror`'s result.
+  - Dynamic overload dispatch by type, as the amended decision requires:
+    the binder needs each member's parameter checks.
+  - Deep checks of struct and enum type arguments, `Box<num>`, of recursive
+    types, and of tuples by position, which are now checked as lists of the
+    union of their elements.
+  - A schema the check cannot name, as one private to another module, is
+    checked only to be a struct: schemas need an identity the runtime can
+    compare.
+  - The diagnostic code `annotation_mismatch`, the annotation's location,
+    and the failing part of a deep check.
 - [ ] Keep a checked-element summary with immutable collections, and mark
   values built in typed code as checked.
 - [ ] Measure the cost on every benchmark (interleaved PGO A/B, hold-outs

@@ -3276,3 +3276,81 @@ fn a_type_parameter_reaches_a_parameter_of_any_value() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn a_value_the_checker_could_not_prove_is_checked_where_it_reaches_an_annotation() {
+    let prelude = "val dynamic = fn(x) { x }\n";
+    for (source, message) in [
+        (
+            "val port:num = dynamic(\"80\")",
+            "expected num, got str: the value of `port`",
+        ),
+        (
+            "var n:num = 0\nn = dynamic(\"s\")",
+            "expected num, got str: the value assigned to `n`",
+        ),
+        (
+            "val inc = fn(x:num):num { x + 1 }\ninc(dynamic(\"s\"))",
+            "expected num, got str: the argument `x`",
+        ),
+        (
+            "val tenth = fn(v) { v / 10 }\ntenth(dynamic(\"s\"))",
+            "expected num, got str: the argument `v`, whose type the function's body relies on",
+        ),
+        (
+            "val name = fn(x):str { dynamic(x) }\nname(3)",
+            "expected str, got num: the function's result",
+        ),
+        (
+            "val name = fn(x):str { if (x == 0) { return dynamic(x) }\n\"s\" }\nname(0)",
+            "expected str, got num: the function's result",
+        ),
+        (
+            "val Pet = struct { name: str }\nPet { name: dynamic(3) }",
+            "expected str, got num: the field `name`",
+        ),
+        (
+            "val total = fn(xs:list<num>):num { len(xs) }\ntotal(dynamic([1, \"a\"]))",
+            "expected list<num>, got list: the argument `xs`",
+        ),
+        (
+            "val launder = fn<T>(x:T):T { dynamic(x) }\nval n:num = launder(1)\nval s:str = launder(\"s\")\nprintln(s)",
+            "",
+        ),
+    ] {
+        let path = fixture_path("annotation-check");
+        fs::write(&path, format!("{prelude}{source}\n")).expect("write annotation check");
+        let output = slug().arg(&path).output().expect("run annotation check");
+        fs::remove_file(&path).expect("remove annotation check");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if message.is_empty() {
+            assert!(output.status.success(), "{source}: {stderr}");
+        } else {
+            assert_eq!(output.status.code(), Some(1), "{source}: {stderr}");
+            assert!(stderr.contains(message), "{source}: {stderr}");
+        }
+    }
+}
+
+#[test]
+fn a_proven_value_and_a_conforming_one_pass_their_checks() {
+    let path = fixture_path("passing-annotation-checks");
+    fs::write(
+        &path,
+        "val dynamic = fn(x) { x }\n\
+         val inc = fn(x:num):num { x + 1 }\n\
+         val {map} = import(\"slug.std\")\n\
+         val Pet = struct { name: str }\n\
+         val r:{name: str} = dynamic({name: \"a\", age: 2})\n\
+         println(inc(1), inc(dynamic(2)), map([\"a\", \"bb\"], fn(s) { len(s) }), Pet { name: dynamic(\"Rex\") }.name, r.name)\n",
+    )
+    .expect("write passing checks");
+    let output = slug().arg(&path).output().expect("run passing checks");
+    fs::remove_file(&path).expect("remove passing checks");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "2 3 [1, 2] Rex a\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

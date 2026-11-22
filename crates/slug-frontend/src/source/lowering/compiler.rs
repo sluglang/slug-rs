@@ -14,7 +14,7 @@ use super::{
         MapPatternKey, MatchCase, Parameter, Pattern, Prefix, RestPattern, SelectCaseKind,
         StringPart, Tag, TypeAnnotation,
     },
-    environment::SemanticAnalysis,
+    environment::{BoundaryCheck, CheckPlace, SemanticAnalysis},
     state::{Binding, State},
 };
 
@@ -34,6 +34,8 @@ pub(super) struct Compiler {
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
     match_constraints: HashMap<SourceSpan, Vec<Option<super::semantic::Type>>>,
     expression_types: HashMap<SourceSpan, super::semantic::Type>,
+    /// The runtime checks the checker recorded, by the site that makes them.
+    boundary_checks: HashMap<SourceSpan, Vec<BoundaryCheck>>,
     callable_identities: Vec<CallableIdentity>,
     guard_comparisons: bool,
     /// The names the runtime provides to every module, when they are known
@@ -117,6 +119,7 @@ impl Compiler {
             foreign_resource_signatures: analysis.foreign_resource_signatures.clone(),
             match_constraints: analysis.match_constraints.clone(),
             expression_types: analysis.expression_types.clone(),
+            boundary_checks: analysis.boundary_checks.clone(),
             callable_identities: Vec::new(),
             guard_comparisons: false,
             implicit_globals: None,
@@ -583,8 +586,81 @@ impl Compiler {
     fn expression(&mut self, state: &mut State, expression: &Expr) -> Result<(), SourceError> {
         super::stack::grow(|| {
             self.expression_inner(state, expression)
-                .map_err(|error| error.claimed_by(expression))
+                .map_err(|error| error.claimed_by(expression))?;
+            if matches!(expression.kind, ExprKind::Call { .. }) {
+                self.emit_checks(state, &expression.span, |place| {
+                    matches!(place, CheckPlace::CallResult)
+                })?;
+            }
+            Ok(())
         })
+    }
+
+    /// Emits the runtime checks the checker recorded at `site` whose places
+    /// `wanted` selects, of the value on the stack, which stays there.
+    fn emit_checks(
+        &mut self,
+        state: &mut State,
+        site: &SourceSpan,
+        wanted: impl Fn(&CheckPlace) -> bool,
+    ) -> Result<(), SourceError> {
+        let Some(checks) = self.boundary_checks.get(site) else {
+            return Ok(());
+        };
+        let checks = checks
+            .iter()
+            .filter(|check| wanted(&check.place))
+            .cloned()
+            .collect::<Vec<_>>();
+        for check in checks {
+            self.emit_check(state, &check, site)?;
+        }
+        Ok(())
+    }
+
+    /// Emits one check of the value on the stack: a match against
+    /// `_: expected`, leaving the value, whose failure is a runtime error
+    /// naming the place.
+    fn emit_check(
+        &mut self,
+        state: &mut State,
+        check: &BoundaryCheck,
+        site: &SourceSpan,
+    ) -> Result<(), SourceError> {
+        let mut operands = Vec::new();
+        // A schema the check cannot name from here, as one private to
+        // another module, is checked only to be some struct's.
+        let mut reachable = |name: &str| {
+            let first = name.split('.').next().unwrap_or(name);
+            state.lookup(first).is_some()
+                || self.globals.contains_key(first)
+                || self.is_builtin(first)
+        };
+        let Some(constraint) = lower_check_type(&check.runtime, &mut operands, &mut reachable)
+        else {
+            return Ok(());
+        };
+        for operand in &operands {
+            self.emit_pattern_operand(state, operand, site)?;
+        }
+        let failed = state.match_case(
+            MatchPattern::Constrained {
+                pattern: Box::new(MatchPattern::Wildcard),
+                constraint,
+            },
+            operands.len(),
+            site,
+        );
+        let end = state.jump(site);
+        state.patch(failed);
+        let message = state.constant(Value::string(format!(
+            "{}\0{}",
+            check.expected,
+            check_place_text(&check.place)
+        )));
+        state.emit(Op::CheckFailed(message), site);
+        state.patch(end);
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -711,6 +787,7 @@ impl Compiler {
                         }
                     });
                     self.tags(state, tags, declaration, &expression.span)?;
+                    let declaration_span = expression.span.clone();
                     // A local function is bound before its body is compiled, so
                     // the body can call it by name; captures are live, so the
                     // slot holds the function by the time the body runs. Module
@@ -723,6 +800,9 @@ impl Compiler {
                                 .unwrap_or_else(|| state.declare(name.clone(), *mutable, true))
                         });
                     self.expression(state, value)?;
+                    self.emit_checks(state, &declaration_span, |place| {
+                        matches!(place, CheckPlace::Binding(_))
+                    })?;
                     if let Some(slot) = own_slot {
                         state.emit(Op::SetLocal(slot), &expression.span);
                     } else if let Some(binding) = existing_callable {
@@ -813,6 +893,9 @@ impl Compiler {
                         .with_extent(expression));
                     }
                     self.expression(state, value)?;
+                    self.emit_checks(state, &expression.span, |place| {
+                        matches!(place, CheckPlace::Assignment(_))
+                    })?;
                     // A module-level binding or a captured `var` updated by
                     // `+`, `-`, `:+`, or `copy` assigns in the operator, so
                     // the collection can change in place.
@@ -850,6 +933,9 @@ impl Compiler {
                         .with_extent(expression));
                     }
                     self.tail_expression(state, value)?;
+                    self.emit_checks(state, &expression.span, |place| {
+                        matches!(place, CheckPlace::Result)
+                    })?;
                     state.emit(Op::Return, &expression.span);
                 }
                 ExprKind::Throw { value } => {
@@ -1023,6 +1109,9 @@ impl Compiler {
                             } else {
                                 self.expression(state, left)?;
                                 self.compile_pipeline_call(state, right)?;
+                                self.emit_checks(state, &right.span, |place| {
+                                    matches!(place, CheckPlace::CallResult)
+                                })?;
                             }
                         }
                         Binary::And => {
@@ -1327,8 +1416,13 @@ impl Compiler {
                 }
                 ExprKind::StructInit { schema, fields } => {
                     self.expression(state, schema)?;
-                    for (_, value) in fields {
+                    for (name, value) in fields {
                         self.expression(state, value)?;
+                        self.emit_checks(
+                            state,
+                            &expression.span,
+                            |place| matches!(place, CheckPlace::Field(field) if field == name),
+                        )?;
                     }
                     state.emit(
                         Op::Struct(fields.iter().map(|(name, _)| name.clone()).collect()),
@@ -1337,8 +1431,13 @@ impl Compiler {
                 }
                 ExprKind::StructCopy { value, fields } => {
                     self.expression(state, value)?;
-                    for (_, replacement) in fields {
+                    for (name, replacement) in fields {
                         self.expression(state, replacement)?;
+                        self.emit_checks(
+                            state,
+                            &expression.span,
+                            |place| matches!(place, CheckPlace::Field(field) if field == name),
+                        )?;
                     }
                     state.emit(
                         Op::StructCopy(fields.iter().map(|(name, _)| name.clone()).collect()),
@@ -1444,7 +1543,8 @@ impl Compiler {
                         self.tags(state, &parameter.tags, None, &expression.span)?;
                     }
                     let names = plain_parameters(parameters, &expression.span)?;
-                    let (mut chunk, captures) = self.function(&names, parameters, body, state)?;
+                    let (mut chunk, captures) =
+                        self.function(&names, parameters, body, state, &expression.span)?;
                     if let Some(identity) = self.function_identity(&expression.span) {
                         chunk.callable_identity = Some(identity);
                     }
@@ -1979,6 +2079,7 @@ impl Compiler {
         parameter_metadata: &[Parameter],
         body: &Expr,
         parent: &mut State,
+        span: &SourceSpan,
     ) -> Result<(Chunk, Vec<Capture>), SourceError> {
         super::stack::grow(|| {
             let mut state = State::function(parameters, parent.visible());
@@ -1991,7 +2092,26 @@ impl Compiler {
                     state.patch(end);
                 }
             }
+            // Each parameter is checked on entry, after its default: any
+            // caller may call the function. `recur` restarts here, so its
+            // arguments are checked too.
+            for slot in 0..parameter_metadata.len() {
+                if self.boundary_checks.get(span).is_some_and(|checks| {
+                    checks.iter().any(|check| {
+                        matches!(check.place, CheckPlace::Parameter { index, .. } if index == slot)
+                    })
+                }) {
+                    state.emit(Op::GetLocal(slot), span);
+                    self.emit_checks(&mut state, span, |place| {
+                        matches!(place, CheckPlace::Parameter { index, .. } if *index == slot)
+                    })?;
+                    state.emit(Op::Pop, span);
+                }
+            }
             self.tail_function_body(&mut state, body)?;
+            self.emit_checks(&mut state, span, |place| {
+                matches!(place, CheckPlace::Result)
+            })?;
             state.emit(Op::Return, &body.span);
             let captures = parent.resolve_child_captures(state.captures());
             Ok((state.finish("<fn>", parameters.len()), captures))
@@ -2336,6 +2456,100 @@ fn member_path(path: &str) -> Expr {
             )
         },
     )
+}
+
+/// What a check of a value against `value_type` tests, or `None` when it
+/// tests nothing: `unknown`, a type parameter, whose check is erased, and a
+/// type every value conforms to. A function, task, or channel type tests the
+/// value's kind; a tuple, that it is a list of the tuple's element types.
+/// Recursive types are not yet checked.
+fn lower_check_type(
+    value_type: &super::semantic::Type,
+    operands: &mut Vec<PatternOperand>,
+    reachable: &mut dyn FnMut(&str) -> bool,
+) -> Option<MatchType> {
+    use super::semantic::Type;
+
+    if value_type.accepts_every_value() {
+        return None;
+    }
+    let anything = || MatchType::Union(vec![MatchType::Any, MatchType::Nil]);
+    match value_type {
+        Type::Unknown
+        | Type::Generic(_)
+        | Type::Never
+        | Type::Recursive { .. }
+        | Type::RecursionVar(_)
+        | Type::AliasApplication(..) => None,
+        Type::Function(_) => Some(MatchType::Function),
+        Type::Task(_) => Some(MatchType::Task),
+        Type::Channel(_) => Some(MatchType::Channel),
+        Type::List(Some(element)) => Some(MatchType::List(
+            lower_check_type(element, operands, reachable).map(Box::new),
+        )),
+        Type::Map(Some((key, value))) => {
+            let key = lower_check_type(key, operands, reachable);
+            let value = lower_check_type(value, operands, reachable);
+            Some(MatchType::Map((key.is_some() || value.is_some()).then(
+                || {
+                    (
+                        Box::new(key.unwrap_or_else(anything)),
+                        Box::new(value.unwrap_or_else(anything)),
+                    )
+                },
+            )))
+        }
+        Type::Tuple(elements) => {
+            let elements = elements
+                .iter()
+                .map(|element| {
+                    lower_check_type(element, operands, reachable).unwrap_or_else(anything)
+                })
+                .collect();
+            Some(MatchType::List(Some(Box::new(MatchType::Union(elements)))))
+        }
+        Type::Union(members) => members
+            .iter()
+            .map(|member| lower_check_type(member, operands, reachable))
+            .collect::<Option<Vec<_>>>()
+            .map(MatchType::Union),
+        Type::Record { fields, .. } => Some(MatchType::Record(
+            fields
+                .iter()
+                .map(|(name, field)| {
+                    (
+                        name.clone(),
+                        lower_check_type(field, operands, reachable).unwrap_or_else(anything),
+                    )
+                })
+                .collect(),
+        )),
+        Type::Struct(Some(identity), _) if !reachable(&identity.name) => {
+            Some(MatchType::Struct(None))
+        }
+        other => lower_match_type(other, operands).ok(),
+    }
+}
+
+/// The place a check guards, as its failure names it.
+fn check_place_text(place: &CheckPlace) -> String {
+    match place {
+        CheckPlace::Binding(Some(name)) => format!("the value of `{name}`"),
+        CheckPlace::Binding(None) => "the declared value".into(),
+        CheckPlace::Assignment(name) => format!("the value assigned to `{name}`"),
+        CheckPlace::Result => "the function's result".into(),
+        CheckPlace::Parameter {
+            name,
+            inferred: false,
+            ..
+        } => format!("the argument `{name}`"),
+        CheckPlace::Parameter { name, .. } => {
+            format!("the argument `{name}`, whose type the function's body relies on")
+        }
+        CheckPlace::Field(name) | CheckPlace::SchemaField(name) => format!("the field `{name}`"),
+        CheckPlace::CallResult => "the call's result".into(),
+        CheckPlace::ForeignResult => "the foreign function's result".into(),
+    }
 }
 
 fn lower_match_type(

@@ -1069,12 +1069,14 @@ line. Top-level declaration documentation and tags are observable through
 
 Slug always performs semantic validation, including `recur` tail-position
 validation, struct-schema checks, program-entrypoint signature validation,
-and resolution of statically known overloads. Type annotations do not introduce
-runtime validation or coercion. Parameter annotations and body-derived
+and resolution of statically known overloads. Type annotations never coerce.
+Where a value whose type the checker could not prove reaches an annotated or
+inferred type, a runtime check verifies it there, as
+[Annotation checks](annotation-checks.md) specifies; where the checker proved
+the type, nothing is checked. Parameter annotations and body-derived
 parameter types participate in mandatory resolution of statically known
 overloads. Semantic analysis uses these facts for additional diagnostics during
-every compilation. Those diagnostics prevent execution; they do not change
-runtime coercion or validation.
+every compilation. Those diagnostics prevent execution.
 
 Because a call spread has runtime-determined arity, a call to a statically known
 overload set with one or more `...spread` arguments is a semantic error. This

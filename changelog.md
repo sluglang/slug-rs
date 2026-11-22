@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Annotations are checked when the program runs. Where a value the checker
+  could not prove reaches an annotated type, it is checked there: a
+  declaration, an assignment, a parameter on entry, a function's result or
+  `return`, a struct field, and a call through a function value or a generic
+  call whose result its callee cannot vouch for. `val port:num =
+  parse("80")`, for an unannotated `parse`, now fails with `expected num, got
+  str` for the value of `port`, where before `port` held a string. The checks
+  also cover types the checker inferred and relied on: a parameter's type
+  from how its body uses it, and an unannotated `var`'s first value's type,
+  which its assignments must keep. Where the checker proved a type, nothing
+  is checked. `slug.string`'s `sort` and `join` now reject a non-string
+  element by their `list<str>` annotation, with a `type` error, rather than
+  their own `string.type` one.
+
 - A generic function may pass a value of its type parameter to a function
   that takes any value: `fn<T>(x:T):T { log(x); x }` was rejected with
   `expected any|nil, got T` when `log`'s parameter was unannotated or

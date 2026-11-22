@@ -448,7 +448,7 @@ impl<'a> Lifter<'a> {
                 self.end_block(Terminator::Recur(arguments));
                 return Ok(true);
             }
-            Op::Throw | Op::MatchFailure | Op::NotImplemented => {
+            Op::Throw | Op::MatchFailure | Op::CheckFailed(_) | Op::NotImplemented => {
                 self.emit(ip, instruction, Vec::new(), state, snapshot)?;
                 self.end_block(Terminator::Stop);
                 return Ok(true);

@@ -129,6 +129,7 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                 | Op::Return
                 | Op::Throw
                 | Op::MatchFailure
+                | Op::CheckFailed(_)
                 | Op::NotImplemented
                 | Op::Not
                 | Op::BitNot
@@ -683,7 +684,11 @@ impl<'a> Lowering<'a> {
             Op::Return => self.unwind(inst, 1),
             // A `recur` is lowered with its block's terminator, and the
             // others' block ends leave to the interpreter, which runs them.
-            Op::RecurPositional(_) | Op::Throw | Op::MatchFailure | Op::NotImplemented => {}
+            Op::RecurPositional(_)
+            | Op::Throw
+            | Op::MatchFailure
+            | Op::CheckFailed(_)
+            | Op::NotImplemented => {}
             Op::CallGlobalPooled { name, count } => {
                 self.lower_call(inst, Callee::Global(name.get()), *count, position)?;
             }

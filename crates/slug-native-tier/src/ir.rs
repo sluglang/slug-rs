@@ -125,7 +125,7 @@ pub enum Terminator {
     /// which restarts the entry block with fresh locals.
     Recur(Vec<ValueId>),
     /// The block's last instruction does not continue: `Throw`,
-    /// `MatchFailure`, or `NotImplemented`.
+    /// `MatchFailure`, `CheckFailed`, or `NotImplemented`.
     Stop,
 }
 
