@@ -1,5 +1,10 @@
 # Propagate known calls and nil partitions in body-derived inference
 
+## Amended by
+
+[Annotations are guarantees](2026-11-22-annotations-are-guarantees.md), where
+this record says annotations add no runtime validation.
+
 ## Context
 
 Body-derived parameter inference currently records direct numeric requirements

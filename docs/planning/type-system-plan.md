@@ -20,6 +20,13 @@ that capability over adding more annotation forms.
 
 ## Scope and invariants
 
+[Toward a Statically Typed Slug](typed-slug.md) replaces the first and second
+invariants below for annotated code: [annotations are
+guarantees](../decisions/2026-11-22-annotations-are-guarantees.md), checked at
+run time where unannotated values reach them, and an annotated place whose
+inferred type is wider than its annotation is a source error. They still
+hold for unannotated code until that plan's stage 6 lands.
+
 - Semantic type checking is part of every source compilation. Programs that
   formerly required `-type-check` retain its diagnostics under normal
   compilation.
@@ -121,7 +128,7 @@ new abstractions materially improve Slug programs.
 - [x] Evaluate named closed variants (enums/sum types) as the next candidate
   for typed domain modelling. The proposed constructor, payload, match,
   nominal-identity, coverage, import, and runtime design is recorded in
-  [the deferred ADR](../decisions/2026-08-29-named-closed-variants.md); no
+  [the deferred ADR](../decisions/2026-08-29-named-closed-variants-superseded.md); no
   implementation is scheduled by this plan.
 - [ ] Evaluate type aliases as a readability feature independently of nominal
   types; define expansion, diagnostics, export behavior, and cycle handling

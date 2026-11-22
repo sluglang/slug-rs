@@ -38,7 +38,7 @@ Assessed on 2026-11-22.
 | Generics | `fn<T>` with call-site inference and explicit application. | No generic aliases, structs, or enums; no bounds. |
 | Narrowing | Nil tests, `&&`/`\|\|`, match constraints, branch joins. | Broader predicates stay conservative. |
 | Records | Nominal schemas, `struct<S>`, checked construction, copies, field reads. | No structural record types; maps (most programs' records) are `map<K, V>` only. |
-| Enums | Fieldless, nominal, closed-match coverage. | No payloads; [the variants ADR](../decisions/2026-08-29-named-closed-variants.md) is proposed, deferred. |
+| Enums | Fieldless, nominal, closed-match coverage. | No payloads; [the variants ADR](../decisions/2026-08-29-named-closed-variants-superseded.md) is proposed, deferred. |
 | Aliases | Transparent, exported, non-recursive. | Not generic, not recursive. |
 | Inference | Body-derived parameter facts, return unions, structural `fn` types, generic arguments at calls. | Local and partial; a binding keeps a value's dynamic part ([decision](../decisions/2026-10-18-a-binding-keeps-a-values-dynamic-type.md)). |
 | Runtime type tests | Match constraints test value categories, nominal types, unions, and `list<T>`/`map<K, V>` recursively. | Function types, tuples, task/channel payloads, and generic parameters are not runtime-checkable. |
@@ -166,7 +166,7 @@ soundness lands.
   with enums.
 - **Payload-bearing and generic enums.** `enum Result<T, E> { Ok { value: T }
   Error { error: E } }`, constructed as `Result.Ok { value: 3 }`. This
-  revives [the variants ADR](../decisions/2026-08-29-named-closed-variants.md),
+  revives [the variants ADR](../decisions/2026-08-29-named-closed-variants-superseded.md),
   whose record-shaped payloads it keeps, for consistency with struct
   construction, and extends with generics. A variant is a distinct nominal
   identity, coverage is exhaustive, and construction reuses schemas at run
@@ -255,15 +255,18 @@ require.
 
 ### 0. Decisions
 
-- [ ] Decision record: annotations are guarantees (replace rule 1 above),
-  and accurate and complete (an annotated place's inferred type must
-  conform), keeping rule 2 for unannotated code and rule 3.
-- [ ] Decision record: the soundness model (transient, deep checks for
-  immutable collections, erased generics), with what is and is not checked.
-- [ ] Decision record: no dynamic source type; unannotated code is the
-  dynamic part, and `any|nil` with narrowing types unknown data.
-- [ ] Update [the type-system plan](type-system-plan.md)'s invariants to
-  point here.
+- [x] [Annotations are guarantees](../decisions/2026-11-22-annotations-are-guarantees.md):
+  checked where unannotated values reach them, and accurate and complete,
+  keeping rule 2 for unannotated code and rule 3.
+- [x] [Transient soundness with checked immutable collections](../decisions/2026-11-22-transient-soundness-model.md):
+  what is and is not checked.
+- [x] [No dynamic source type](../decisions/2026-11-22-no-dynamic-source-type.md).
+- [x] [Structural record types](../decisions/2026-11-22-structural-record-types.md).
+- [x] [Payload-bearing and generic enum variants](../decisions/2026-11-22-payload-enum-variants.md),
+  superseding named closed variants.
+- [x] [Recursive type aliases](../decisions/2026-11-22-recursive-type-aliases.md).
+- [x] Point [the type-system plan](type-system-plan.md)'s invariants here, and
+  mark the records these amend.
 
 ### 1. Generic type aliases
 
@@ -290,8 +293,8 @@ require.
 
 ### 4. Payload-bearing and generic enums
 
-- [ ] Supersede [the variants ADR](../decisions/2026-08-29-named-closed-variants.md):
-  braced named payloads, generics, construction, patterns, and coverage.
+- [ ] Specify [payload and generic variants](../decisions/2026-11-22-payload-enum-variants.md)
+  in the language documents, and decide constructor-shaped patterns.
 - [ ] Implement variants as distinct schema identities under the enum's
   namespace, as the ADR proposed; extend coverage to payload variants.
 - [ ] Type `Result`-style returns in one clutch as the test of the design,
@@ -358,7 +361,7 @@ require.
 
 ## Decisions so far
 
-Taken on 2026-11-22, to be recorded in `decisions/` in stage 0:
+Taken on 2026-11-22 and recorded in stage 0's decision records:
 
 - **No dynamic source type.** Unannotated code is the dynamic part during
   the gradual phase; under strict typing, unknown data is `any|nil`,
