@@ -175,12 +175,15 @@ expressions run during module initialization, so each decoded tag begins with
 an empty runtime argument list.
 
 Version-1 values are only `nil`, booleans, signed 64-bit integers,
-finite IEEE-754 binary64 numbers, UTF-8 strings, and byte strings. Signed
-integers use ZigZag-transformed canonical ULEB128. A float is its eight
-little-endian IEEE-754 bytes and must be finite. Lists, maps, schemas, structs,
-enums, closures, bindings, host callables, channels, tasks, resources, and
-overload groups are not valid encoded values; source lowering represents their
-construction through bytecode rather than constants.
+finite IEEE-754 binary64 numbers, UTF-8 strings, byte strings, and enum
+values. Signed integers use ZigZag-transformed canonical ULEB128. A float is
+its eight little-endian IEEE-754 bytes and must be finite. An enum value is
+tag 7 followed by three strings: its module, its enum's name, and its case.
+It is immutable and equal to any enum value with the same three, so a
+constant is enough. Lists, maps, schemas, structs, closures, bindings, host
+callables, channels, tasks, resources, and overload groups are not valid
+encoded values; source lowering represents their construction through
+bytecode rather than constants.
 
 Packed instructions are `opcode:u8`, `a:uleb128`, `b:uleb128`,
 `c:uleb128`, and `span_index_plus_one:uleb128`, where zero means no span. The

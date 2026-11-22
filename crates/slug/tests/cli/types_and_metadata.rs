@@ -2144,7 +2144,7 @@ fn enforces_any_nil_and_canonical_type_rules() {
     assert!(
         String::from_utf8(output.stderr)
             .expect("stderr is UTF-8")
-            .starts_with("slug: semantic error: expected any, got T0")
+            .starts_with("slug: semantic error: expected any, got T")
     );
 
     fs::write(&path, "val invalid:nmu = 1\n").expect("write unknown annotation source");

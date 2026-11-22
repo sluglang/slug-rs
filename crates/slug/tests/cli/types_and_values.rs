@@ -440,15 +440,39 @@ fn payload_enum_cases_construct_match_and_cover() {
     )
     .expect("write payload enums");
     let output = slug().arg(&path).output().expect("run payload enums");
+    let expected = "4 7 true false\n\
+                    4 9 0 sq\n\
+                    shape shape shapes ? 2 5 3 -1\n";
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "4 7 true false\n\
-         4 9 0 sq\n\
-         shape shape shapes ? 2 5 3 -1\n",
+        expected,
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // Enum values are constants, which a compiled artifact keeps.
+    let artifact = path.with_extension("cslug");
+    let compile = slug()
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            artifact.to_str().unwrap(),
+        ])
+        .output()
+        .expect("compile payload enums");
+    assert!(compile.status.success(), "{compile:?}");
+    let run = slug()
+        .args(["run", artifact.to_str().unwrap()])
+        .output()
+        .expect("run payload enums artifact");
+    assert_eq!(String::from_utf8(run.stdout).unwrap(), expected);
+    fs::remove_file(&artifact).expect("remove payload enums artifact");
 
+    fs::remove_file(&path).expect("remove payload enum source");
+}
+
+#[test]
+fn payload_enum_mistakes_are_named() {
+    let path = fixture_path("payload-enum-errors");
     let prelude = "enum Result<T, E> {\n  Ok { value: T }\n  Error { error: E }\n}\n\
                    enum Shape { Circle { radius: num }, Empty }\n";
     for (source, message) in [
@@ -475,6 +499,14 @@ fn payload_enum_cases_construct_match_and_cover() {
         (
             "val r:Result<num> = Result.Ok { value: 1 }",
             "enum `Result` takes 2 type argument(s)",
+        ),
+        (
+            "val pick = fn<Left, Right>(a:Left, b:Left, c:Right) { a }\npick(1, \"s\", 2)",
+            "expected num, got str (generic Left was inferred as num)",
+        ),
+        (
+            "val f = fn<Item>(value:Item):any { value }",
+            "expected any, got Item",
         ),
         (
             "val s:Shape = Result.Ok { value: 1 }",

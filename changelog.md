@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A program with an enum compiles to a `.cslug` artifact: enum values are now
+  valid artifact constants. Before, `slug compile` failed on any enum with
+  "non-source literal value".
+
+- Diagnostics name a generic's type parameters as written: `expected any,
+  got Item` and `(generic Left was inferred as num)`, where they said `T0`.
+
 - `slug.std` has a `Result` for operations that can fail: `Ok { value }` or
   `Error { error }`. `or`, `orElse`, and `orThrow` take the value out and
   read well through the pipeline: `read(path) /> or(defaults)`, `open(path)

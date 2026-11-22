@@ -1156,6 +1156,14 @@ fn encode_value(value: &Value, output: &mut Vec<u8>) -> Result<(), Error> {
             uleb(value.len(), output);
             output.extend(value.iter());
         }
+        // An enum value is immutable and is identified by its module, enum,
+        // and case, so it is a constant like a literal.
+        Value::Enum(value) => {
+            output.push(7);
+            string(&value.module, output);
+            string(&value.name, output);
+            string(&value.case, output);
+        }
         Value::Float(_) => return Err(Error::UnsupportedValue("non-finite number".into())),
         _ => return Err(Error::UnsupportedValue("non-source literal value".into())),
     }
@@ -1773,6 +1781,11 @@ impl<'a> Reader<'a> {
                 let length = self.usize(context)?;
                 Ok(Value::Bytes(Rc::new(self.bytes(length, context)?.to_vec())))
             }
+            7 => Ok(Value::Enum(Rc::new(crate::EnumValue {
+                module: self.string(context)?.into(),
+                name: self.string(context)?.into(),
+                case: self.string(context)?.into(),
+            }))),
             _ => Err(Error::UnsupportedValue("value tag".into())),
         }
     }

@@ -262,6 +262,25 @@ impl Clone for Type {
 }
 
 std::thread_local! {
+    /// The names of the type parameters in scope where the checker is, so a
+    /// diagnostic shows `T` rather than its index.
+    static TYPE_PARAMETER_NAMES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `work` with `names` as the type parameters diagnostics name; with
+/// none, the names around it stay, for a function inside a generic one.
+pub(super) fn with_type_parameter_names<R>(names: &[String], work: impl FnOnce() -> R) -> R {
+    if names.is_empty() {
+        return work();
+    }
+    let outer = TYPE_PARAMETER_NAMES.with(|scope| scope.replace(names.to_vec()));
+    let result = work();
+    TYPE_PARAMETER_NAMES.with(|scope| scope.replace(outer));
+    result
+}
+
+std::thread_local! {
     /// Pairs of types being compared while one of them is recursive: a pair
     /// met again is assumed to conform, as recursive types are compared
     /// coinductively.
@@ -1230,7 +1249,12 @@ impl fmt::Display for Type {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Self::Generic(index) => write!(formatter, "T{index}"),
+            Self::Generic(index) => {
+                TYPE_PARAMETER_NAMES.with(|names| match names.borrow().get(*index) {
+                    Some(name) => formatter.write_str(name),
+                    None => write!(formatter, "T{index}"),
+                })
+            }
             Self::Recursive { name, .. } | Self::RecursionVar(name) => formatter.write_str(name),
             Self::AliasApplication(name, arguments) => write!(
                 formatter,

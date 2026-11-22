@@ -19,6 +19,8 @@ pub(super) struct CallableParameter {
 #[derive(Clone, Debug)]
 pub(super) struct CallableSignature {
     pub(super) generic_arity: usize,
+    /// A generic signature's type parameters' names, for diagnostics.
+    pub(super) type_parameter_names: Vec<String>,
     pub(super) parameters: Vec<CallableParameter>,
     pub(super) result: Type,
     pub(super) inferred_alternatives: Vec<InferredAlternative>,
@@ -967,6 +969,7 @@ mod tests {
     fn signature(input: Type, result: Type) -> CallableSignature {
         CallableSignature {
             generic_arity: 0,
+            type_parameter_names: Vec::new(),
             parameters: vec![CallableParameter {
                 label: Some("value".into()),
                 value_type: input,

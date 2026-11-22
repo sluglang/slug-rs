@@ -2379,6 +2379,7 @@ fn function_type(
 ) -> Result<CallableSignature, SourceError> {
     Ok(CallableSignature {
         generic_arity: type_parameters.len(),
+        type_parameter_names: type_parameters.to_vec(),
         parameters: parameters
             .iter()
             .map(|parameter| {
@@ -2451,6 +2452,27 @@ fn callable_signature(
 }
 
 fn check_function_body(
+    parameters: &[Parameter],
+    signature: &CallableSignature,
+    return_annotation: Option<&TypeAnnotation>,
+    body: &Expr,
+    environment: &Environment,
+    type_parameters: &[String],
+) -> Result<Type, SourceError> {
+    // Diagnostics in the body name its type parameters as written.
+    super::semantic::with_type_parameter_names(type_parameters, || {
+        check_function_body_in_scope(
+            parameters,
+            signature,
+            return_annotation,
+            body,
+            environment,
+            type_parameters,
+        )
+    })
+}
+
+fn check_function_body_in_scope(
     parameters: &[Parameter],
     signature: &CallableSignature,
     return_annotation: Option<&TypeAnnotation>,
@@ -5399,8 +5421,13 @@ fn instantiate_candidate(
                 if let Some(index) = first_generic_parameter(&parameter.value_type)
                     && let Some(inferred) = substitutions.get(&index)
                 {
+                    let name = signature
+                        .type_parameter_names
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("T{index}"));
                     let message = format!(
-                        "{} (generic T{index} was inferred as {})",
+                        "{} (generic {name} was inferred as {})",
                         error.message,
                         inferred.diagnostic_display()
                     );
@@ -6471,6 +6498,7 @@ mod tests {
             result: Type::Unknown,
             identity: CallableSignature {
                 generic_arity: 0,
+                type_parameter_names: Vec::new(),
                 parameters: Vec::new(),
                 result: Type::Unknown,
                 inferred_alternatives: Vec::new(),
@@ -7146,6 +7174,7 @@ mod tests {
     fn generic_list_element_inference_preserves_known_result_types() {
         let signature = CallableSignature {
             generic_arity: 1,
+            type_parameter_names: Vec::new(),
             parameters: vec![CallableParameter {
                 label: Some("values".into()),
                 value_type: Type::List(Some(Box::new(Type::Generic(0)))),
@@ -7315,6 +7344,7 @@ mod tests {
     fn explicit_generic_arguments_match_inferred_substitutions() {
         let signature = CallableSignature {
             generic_arity: 1,
+            type_parameter_names: Vec::new(),
             parameters: vec![CallableParameter {
                 label: Some("values".into()),
                 value_type: Type::List(Some(Box::new(Type::Generic(0)))),
@@ -7447,6 +7477,7 @@ mod tests {
     fn generic_mismatch_diagnostics_include_the_inferred_type() {
         let signature = CallableSignature {
             generic_arity: 1,
+            type_parameter_names: Vec::new(),
             parameters: vec![
                 CallableParameter {
                     label: None,
