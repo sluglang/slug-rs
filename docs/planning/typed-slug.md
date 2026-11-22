@@ -307,8 +307,31 @@ require.
   constraint `{value}: Result.Ok` is the form.
 - [x] Implement variants as distinct schema identities under the enum's
   namespace, as the ADR proposed; extend coverage to payload variants.
-- [ ] Type `Result`-style returns in one clutch as the test of the design,
-  and revisit positional payloads then.
+- [x] Type `Result`-style returns in one clutch as the test of the design,
+  and revisit positional payloads then. Crawl's store (`slug.games.crawl.store`)
+  now returns `Result<T, StoreError>` from `open` and `read`, with `enum
+  StoreError { Missing, WrongLayout { found: num, expected: num } }`.
+  Findings:
+  - The trial found a checker bug: a payload case constraint on a subject
+    of type `Result|nil` was reported as unable to match, since general
+    union coverage did not know a case is part of its enum. Fixed; such a
+    subject, as with fieldless enums in a union, needs a catch-all case,
+    since no type says "`Result` without `Ok`".
+  - Taking a value out is the most common use and the wordiest: every
+    caller but one wrote the same two-armed `match`, `{value}:
+    store.Result.Ok => value` and `{error}: store.Result.Error => throw
+    ...`. A way to unwrap or propagate an error is the clearest gap.
+  - `Result.Ok { value: db }` is long for a one-field payload, and `value`
+    names nothing; a single positional payload as sugar for one named
+    field would read better in construction. Patterns read well as they
+    are. The named form suited `WrongLayout { found, expected }`.
+  - Each module's `Result` is its own type, so two modules' results do not
+    mix; a shared `Result` belongs in the standard library once the design
+    settles.
+  - `Result` replaced a `has` check before `read` in the web server, so the
+    absence of a world is handled where the world is read. Crawl's other
+    "nothing here" returns, such as `addToPack`'s `str|nil`, are better as
+    `T|nil`, as the decision record expected.
 
 ### 5. Inference
 

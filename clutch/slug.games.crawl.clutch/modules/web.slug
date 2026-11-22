@@ -873,12 +873,17 @@ val fresh = fn(options:map) {
 export val serve = fn(listener:tcp.Listener, options:map = {}) {
     val db = options.db
     match db {
-        d: sqlite.Database => if (!(options.new ?? false) && store.has(d)) {
-            resume(store.read(d))
-        } else {
-            store.clear(d)
-            fresh(options)
-            store.write(d, game.changes())
+        d: sqlite.Database => {
+            // A new world is asked for, or there is none saved to carry on.
+            val saved = if (options.new ?? false) { nil } else { store.read(d) }
+            match saved {
+                {value}: store.Result.Ok => resume(value)
+                _ => {
+                    store.clear(d)
+                    fresh(options)
+                    store.write(d, game.changes())
+                }
+            }
         }
         _ => fresh(options)
     }

@@ -64,6 +64,21 @@ pub(super) fn type_intersection(left: &Type, right: &Type) -> Option<Type> {
             Type::Record { map: false, .. },
             Type::Map(_) | Type::Struct(..) | Type::Record { .. },
         ) if may_conform_to_record(right, left) => Some(left.clone()),
+        // An enum's values include its payload cases' structs, which take
+        // the enum's type arguments.
+        (Type::Enum(identity, enum_arguments), Type::Struct(Some(case), arguments))
+        | (Type::Struct(Some(case), arguments), Type::Enum(identity, enum_arguments))
+            if case.case_enum().as_ref() == Some(identity) =>
+        {
+            Some(Type::Struct(
+                Some(case.clone()),
+                if arguments.is_empty() {
+                    enum_arguments.clone()
+                } else {
+                    arguments.clone()
+                },
+            ))
+        }
         // A tuple is a list of its elements.
         (Type::Tuple(_), Type::List(_)) if left.is_assignable_to(right) => Some(left.clone()),
         (Type::List(_), Type::Tuple(_)) if right.is_assignable_to(left) => Some(right.clone()),
@@ -77,6 +92,15 @@ pub(super) fn union_intersections(members: &[Type], other: &Type) -> Option<Type
         .filter_map(|member| type_intersection(member, other))
         .collect::<Vec<_>>();
     (!intersections.is_empty()).then(|| Type::union(intersections))
+}
+
+/// Whether `case` is a payload case's struct type of the enum `enum_type`.
+fn is_payload_case_of(case: &Type, enum_type: &Type) -> bool {
+    matches!(
+        (case, enum_type),
+        (Type::Struct(Some(case), _), Type::Enum(identity, _))
+            if case.case_enum().as_ref() == Some(identity)
+    )
 }
 
 /// Whether some value of `value_type`, a map, struct, or record type, may
@@ -130,10 +154,17 @@ pub(super) fn type_subtract(left: &Type, right: &Type) -> Option<Type> {
             type_subtract(&remaining, member)
         });
     }
+    // No type is an enum without one of its cases, so taking a payload case
+    // away leaves the enum; closed coverage of its cases is by case.
+    if is_payload_case_of(right, left) {
+        return Some(left.clone());
+    }
     if let Type::Union(members) = left {
         let remaining = members
             .iter()
-            .filter(|member| type_intersection(member, right).is_none())
+            .filter(|member| {
+                is_payload_case_of(right, member) || type_intersection(member, right).is_none()
+            })
             .cloned()
             .collect::<Vec<_>>();
         return (!remaining.is_empty()).then(|| Type::union(remaining));

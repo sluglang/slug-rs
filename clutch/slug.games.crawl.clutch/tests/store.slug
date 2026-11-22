@@ -33,9 +33,50 @@ val twoPlaying = fn(seed:num):list {
     ["a", "b"]
 }
 
+// A database in memory; opening one never finds another layout.
+val opened = fn() {
+    match store.open(":memory:") {
+        {value}: store.Result.Ok => value
+        {error}: store.Result.Error => throw Error {type: "test", msg: store.describe(error)}
+    }
+}
+
+// The world `db` holds, which the test saved there.
+val saved = fn(db) {
+    match store.read(db) {
+        {value}: store.Result.Ok => value
+        {error}: store.Result.Error => throw Error {type: "test", msg: store.describe(error)}
+    }
+}
+
+@test
+val aMissingWorldIsAnError = fn() {
+    val db = opened()
+    defer store.close(db)
+    val result = store.read(db)
+    assertEqual(result, store.Result.Error { error: store.StoreError.Missing })
+    assertEqual(match result { {error}: store.Result.Error => store.describe(error); _ => "" }, "no world saved")
+}
+
+@test
+val anotherLayoutIsRefused = fn() {
+    val fs = import("slug.io.fs")
+    val sqlite = import("slug.db.sqlite")
+    val root = fs.temporaryDirectory("crawl-store-test-")
+    defer fs.removeAll(root)
+    val path = fs.join([root, "crawl.db"])
+    val raw = sqlite.open(path)
+    sqlite.exec(raw, "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    sqlite.exec(raw, "INSERT OR REPLACE INTO meta VALUES ('version', '99')")
+    sqlite.close(raw)
+    val result = store.open(path)
+    assertEqual(result, store.Result.Error { error: store.StoreError.WrongLayout { found: 99, expected: 1 } })
+    assertEqual(match result { {error}: store.Result.Error => store.describe(error); _ => "" }, "a world saved in layout 99, not 1")
+}
+
 @test
 val aSavedWorldReadsBackAsItWas = fn() {
-    val db = store.open(":memory:")
+    val db = opened()
     defer store.close(db)
     assertTrue(!store.has(db))
     val ids = twoPlaying(3)
@@ -43,7 +84,7 @@ val aSavedWorldReadsBackAsItWas = fn() {
     store.write(db, game.changes())
     assertTrue(store.has(db))
     assertEqual(store.seed(db), 3)
-    val saved = store.read(db)
+    val saved = saved(db)
     val now = game.snapshot()
     assertTrue(len(keys(now.levels)) > 1)
     assertEqual(saved.world, now.world)
@@ -54,21 +95,21 @@ val aSavedWorldReadsBackAsItWas = fn() {
 
 @test
 val aResumedWorldGoesOnAsIfItNeverStopped = fn() {
-    val db = store.open(":memory:")
+    val db = opened()
     defer store.close(db)
     val ids = twoPlaying(4)
     play(ids, 0, 100, db)
     store.write(db, game.changes())
     play(ids, 100, 150)
     val unbroken = game.snapshot()
-    game.load(store.read(db))
+    game.load(saved(db))
     play(ids, 100, 150)
     assertEqual(game.snapshot(), unbroken)
 }
 
 @test
 val onlyWhatChangedIsWrittenAgain = fn() {
-    val db = store.open(":memory:")
+    val db = opened()
     defer store.close(db)
     val ids = twoPlaying(5)
     play(ids, 0, 50, db)
@@ -86,26 +127,26 @@ val onlyWhatChangedIsWrittenAgain = fn() {
 
 @test
 val aNewCharacterRemembersNothingOfTheOldOne = fn() {
-    val db = store.open(":memory:")
+    val db = opened()
     defer store.close(db)
     val ids = twoPlaying(6)
     play(ids, 0, 200, db)
     // A chunk far from where new characters start, remembered.
     store.write(db, game.changes() copy {memories: [{id: "a", key: "0,0,9", rows: ["#"]}]})
-    assertEqual(store.read(db).players.a.memory["0,0,9"], ["#"])
+    assertEqual(saved(db).players.a.memory["0,0,9"], ["#"])
     val s = game.snapshot()
     game.load(s copy {players: s.players + {a: s.players.a copy {dead: true}}})
     game.tick([{id: "a", key: "enter"}], ids)
     store.write(db, game.changes())
     val memory = game.playerOf("a").memory
-    val stored = store.read(db).players.a.memory
+    val stored = saved(db).players.a.memory
     assertEqual(stored, memory)
     assertEqual(stored["0,0,9"], nil)
 }
 
 @test
 val clearingForgetsTheWorld = fn() {
-    val db = store.open(":memory:")
+    val db = opened()
     defer store.close(db)
     twoPlaying(7)
     store.write(db, game.changes())
@@ -116,14 +157,14 @@ val clearingForgetsTheWorld = fn() {
 
 @test
 val playersWhoJoinAResumedWorldAreNumberedOn = fn() {
-    val db = store.open(":memory:")
+    val db = opened()
     defer store.close(db)
     web.start(8)
     val first = web.newPlayer()
     web.newPlayer()
     store.write(db, game.changes())
     web.start(9)
-    web.resume(store.read(db))
+    web.resume(saved(db))
     assertEqual(game.playerOf(first).name, "Player 1")
     assertEqual(game.playerOf(web.newPlayer()).name, "Player 3")
 }

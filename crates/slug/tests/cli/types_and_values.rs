@@ -431,10 +431,11 @@ fn payload_enum_cases_construct_match_and_cover() {
          val kind = fn(v) match { _: Shape => \"shape\"; _: list<Shape> => \"shapes\"; _ => \"?\" }\n\
          val named = fn(r:{radius: num}):num { r.radius }\n\
          val circle = Shape.Circle { radius: 2 }\n\
+         val maybe = fn(r:Result<num, str>|nil):num { match r { {value}: Result.Ok => value; _ => -1 } }\n\
          val main = fn() {\n\
            println(unwrapOr(parsed, 0) + 1, unwrapOr(failed, 7), parsed == Result.Ok { value: 3 }, parsed == failed)\n\
            println(area(circle), area(Shape.Square { side: 3 }), area(Shape.Empty), Shape.Square { side: 1 }.label)\n\
-           println(kind(circle), kind(Shape.Empty), kind([Shape.Empty, circle]), kind(3), named(circle), (circle copy { radius: 5 }).radius)\n\
+           println(kind(circle), kind(Shape.Empty), kind([Shape.Empty, circle]), kind(3), named(circle), (circle copy { radius: 5 }).radius, maybe(parsed), maybe(nil))\n\
          }\n",
     )
     .expect("write payload enums");
@@ -443,7 +444,7 @@ fn payload_enum_cases_construct_match_and_cover() {
         String::from_utf8(output.stdout).unwrap(),
         "4 7 true false\n\
          4 9 0 sq\n\
-         shape shape shapes ? 2 5\n",
+         shape shape shapes ? 2 5 3 -1\n",
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

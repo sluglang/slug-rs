@@ -38,7 +38,10 @@ val main = fn() {
     val host = cfg("host", "127.0.0.1")
     val listener = tcp.listen(host, cfg("port", 8080))
     val path = cfg("db", "crawl.db")
-    val db = store.open(path)
+    val db = match store.open(path) {
+        {value}: store.Result.Ok => value
+        {error}: store.Result.Error => throw Error {type: "crawl.store", msg: path + " holds " + store.describe(error)}
+    }
     defer store.close(db)
     val fresh = cfg("new", false) || !store.has(db)
     val seed = cfg("seed", -1)

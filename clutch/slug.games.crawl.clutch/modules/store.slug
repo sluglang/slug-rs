@@ -12,12 +12,21 @@
  * change, and `populations` the monster counts of chunks not made yet. `write` takes the engine's `changes`, and `read` gives back a
  * snapshot for the engine's `load`.
  *
+ * `open` and `read` return a `Result`: `Result.Ok` with what they give, or
+ * `Result.Error` with a `StoreError` saying why they could not.
+ *
  * ```slug
  * val game = import("slug.games.crawl")
  * val store = import("slug.games.crawl.store")
  *
- * val db = store.open("crawl.db")
- * if (store.has(db)) { game.load(store.read(db)) } else { game.newGame(7) }
+ * val db = match store.open("crawl.db") {
+ *     {value}: store.Result.Ok => value
+ *     {error}: store.Result.Error => throw Error {type: "crawl.store", msg: store.describe(error)}
+ * }
+ * match store.read(db) {
+ *     {value}: store.Result.Ok => game.load(value)
+ *     _: store.Result.Error => game.newGame(7)
+ * }
  * store.write(db, game.changes())
  * ```
  */
@@ -29,6 +38,35 @@ val {map, filter, reduce} = import("slug.std")
 
 // The layout of the tables; a database written with another is refused.
 val VERSION = 1
+
+/**
+ * What a store operation gives: `Ok` with its `value`, or `Error` with why
+ * it could not.
+ */
+export enum Result<T, E> {
+    Ok { value: T }
+    Error { error: E }
+}
+
+/**
+ * Why a store operation could not: the database holds no world, or holds
+ * one saved in a layout of tables, `found`, other than this one's,
+ * `expected`.
+ */
+export enum StoreError {
+    Missing
+    WrongLayout { found: num, expected: num }
+}
+
+/**
+ * A sentence saying what `error` means, for a person to read.
+ */
+export val describe = fn(error:StoreError):str {
+    match error {
+        StoreError.Missing => "no world saved"
+        {found, expected}: StoreError.WrongLayout => "a world saved in layout ${found}, not ${expected}"
+    }
+}
 
 val TABLES = [
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -48,10 +86,10 @@ val metaOf = fn(db:sqlite.Database, key:str) {
 /**
  * Opens the database at `path` (`":memory:"` for one that lasts only as
  * long as the handle), creating its tables when they are not there yet.
- * Throws an `Error` of type `crawl.store` when the database was written
- * with a different layout of tables.
+ * Gives `StoreError.WrongLayout`, and closes the database, when it was
+ * written with a different layout of tables.
  */
-export val open = fn(path:str):sqlite.Database {
+export val open = fn(path:str):Result<sqlite.Database, StoreError> {
     val db = sqlite.open(path)
     // Writes go to a log beside the database, so a save is quick and a
     // reader never waits.
@@ -59,13 +97,17 @@ export val open = fn(path:str):sqlite.Database {
     sqlite.exec(db, "PRAGMA synchronous = NORMAL")
     map(TABLES, fn(sql) { sqlite.exec(db, sql) })
     match metaOf(db, "version") {
-        nil => sqlite.exec(db, "INSERT INTO meta VALUES ('version', ?)", json.stringify(VERSION))
-        v => if (v != VERSION) {
+        nil => {
+            sqlite.exec(db, "INSERT INTO meta VALUES ('version', ?)", json.stringify(VERSION))
+            Result.Ok { value: db }
+        }
+        v => if (v == VERSION) {
+            Result.Ok { value: db }
+        } else {
             sqlite.close(db)
-            throw Error {type: "crawl.store", msg: path + " holds a world saved in layout " + v + ", not " + VERSION}
+            Result.Error { error: StoreError.WrongLayout { found: v, expected: VERSION } }
         }
     }
-    db
 }
 
 /**
@@ -132,11 +174,11 @@ export val write = fn(db:sqlite.Database, changes:map) {
 }
 
 /**
- * The world `db` holds as a snapshot for the engine's `load`; throws an
- * `Error` of type `crawl.store` when it holds none.
+ * The world `db` holds as a snapshot for the engine's `load`, or
+ * `StoreError.Missing` when it holds none.
  */
-export val read = fn(db:sqlite.Database):map {
-    if (!has(db)) { throw Error {type: "crawl.store", msg: "no world saved"} }
+export val read = fn(db:sqlite.Database):Result<map, StoreError> {
+    if (!has(db)) { return Result.Error { error: StoreError.Missing } }
     val levels = reduce(sqlite.query(db, "SELECT key, state FROM chunks"), {}, fn(acc, row) {
         acc + {[row.key]: json.parse(row.state)}
     })
@@ -149,5 +191,5 @@ export val read = fn(db:sqlite.Database):map {
     val populations = reduce(sqlite.query(db, "SELECT key, counts FROM populations"), {}, fn(acc, row) {
         acc + {[row.key]: json.parse(row.counts)}
     })
-    {world: metaOf(db, "world"), rng: metaOf(db, "rng"), levels: levels, players: players, populations: populations}
+    Result.Ok { value: {world: metaOf(db, "world"), rng: metaOf(db, "rng"), levels: levels, players: players, populations: populations} }
 }

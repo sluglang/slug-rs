@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Crawl's store returns its failures as values: `store.open` and
+  `store.read` give a `store.Result`, `Ok` with the database or the saved
+  world, or `Error` with a `StoreError`: `Missing` when no world is saved,
+  or `WrongLayout` with the layout found and the one expected.
+  `store.describe` says what an error means. They threw `crawl.store`
+  errors before. A match on a `Result|nil` value no longer rejects a payload
+  case as unable to match.
+
 - Enum cases can carry data: `enum Result<T, E> { Ok { value: T } Error {
   error: E } }`. `Result.Ok { value: 3 }` builds a case as a struct is built,
   and is a `Result<num, str>`; a match takes it apart with `{value}:
