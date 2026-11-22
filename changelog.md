@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `slug.std`'s `map`, `filter`, `reduce`, `each`, `flatMap`, `find`, `any`,
+  `all`, and `times` have generic signatures, so a function passed to them
+  takes its parameter's type from the list, and their results say what they
+  hold: `map(names, fn(s) { len(s) })` over a `list<str>` is a `list<num>`,
+  and `filter` keeps its list's element type. `keys` gives a `list<K>` for a
+  `map<K, V>`. A new `compact` drops the `nil`s from a `list<T|nil>`, giving
+  a `list<T>`, which `filter` cannot say: `held /> compact() /> filter(...)`.
+
 - A function whose body is a `match` on its arguments, as `fn(xs:list<num>,
   n:num) match { [[h, ...], m] => h - m }`, binds its patterns with the
   parameters' types: `h` is a `num`. They were unknown before.

@@ -54,7 +54,8 @@ val fromBytesRejectsWhatIsNotUtf8 = fn() {
 
 @test
 val sortAndJoinRejectNonStrings = fn() {
-    val mixed = keys({a: 1, [2]: 2})
+    // A bare `list`, so the checker leaves the runtime check to be tested.
+    val mixed:list = keys({a: 1, [2]: 2})
     assertEqual(failure(fn() { sort(mixed) }), ["string.type", "sort requires a list of strings"])
     assertEqual(failure(fn() { join(mixed, "-") }), ["string.type", "join requires a list of strings"])
 }

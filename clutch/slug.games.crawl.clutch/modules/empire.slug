@@ -52,7 +52,7 @@
 val rng = import("slug.games.crawl.rng")
 val math = import("slug.math")
 val string = import("slug.string")
-val {map, each, filter, reduce, range, any, remove} = import("slug.std")
+val {map, each, filter, reduce, range, any, remove, compact} = import("slug.std")
 
 /**
  * How many chunks across and down a region is.
@@ -918,7 +918,9 @@ export val bounties = fn(empire:map, rx:num, ry:num):list {
         f: map => f.traits.greedy
         _ => 0
     }
-    val below = filter(map([1, 2, 3], fn(b) { holder(empire, "" + rx + "," + ry + "," + b) }), fn(f) { f != nil && people(f.people).side == "below" })
+    val below = map([1, 2, 3], fn(b) { holder(empire, "" + rx + "," + ry + "," + b) })
+        /> compact()
+        /> filter(fn(f) { people(f.people).side == "below" })
     val kinds = reduce(below, [], fn(acc, f) { acc + filter(people(f.people).kinds, fn(k) { !any(acc, fn(a) { a == k }) }) })
     map(kinds, fn(k) { {kind: k, price: math.max(1, math.div(HEADS[k] * (100 - 15 * greed), 100))} })
 }

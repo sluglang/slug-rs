@@ -13,13 +13,14 @@ export val remove = fn(m:map, k):map {
 /**
  * applies `f` to each element of `vs` and returns the resulting list.
  *
- * `vs` may contain `nil`. The result's elements are whatever `f` returns, so
- * the result is an unparameterized `list`.
+ * `vs` may contain `nil`. The result's elements are what `f` returns, so
+ * `map(names, fn(s) { len(s) })` over a `list<str>` is a `list<num>`, and `f`'s
+ * parameter takes the type of `vs`'s elements.
  */
 @testWith(
 	[[1,2], fn(n) {n * 2}], [2,4]
 )
-export val map = fn(vs:list, f:fn, acc:list = []):list match {
+export val map = fn<T, U>(vs:list<T>, f:fn<U, T>, acc:list<U> = []):list<U> match {
 	[[], ...] => acc
 	[[h, ...t], ...] => recur(t, f, acc :+ h /> f())
 }
@@ -37,12 +38,39 @@ export val map = fn(vs:list, f:fn, acc:list = []):list match {
 	[[1,2], fn(n) {n * 2}], nil,
 	[[], fn(n) {n}], nil
 )
-export val each = fn(vs:list, f:fn):nil match {
+export val each = fn<T>(vs:list<T>, f:fn<any|nil, T>):nil match {
 	[[], ...] => nil
 	[[h, ...t], ...] => {
 		f(h)
 		recur(t, f)
 	}
+}
+
+/**
+ * returns a new list containing only elements for which `f` returns true,
+ * of the same element type as `vs`.
+ */
+@testWith(
+	[[1,2,3,4], fn(v) { v % 2 == 0 }], [2,4]
+)
+export val filter = fn<T>(vs:list<T>, f:fn<bool, T>, acc:list<T> = []):list<T> match {
+	[[], ...] => acc
+	[[h, ...t], ...] if h /> f() => recur(t, f, acc :+ h)
+	[[h, ...t], ...] => recur(t, f, acc)
+}
+
+/**
+ * folds `vs` left with `f`, starting from initial value `v`: `f` is given
+ * the value so far and an element, and returns the next value.
+ */
+@testWith(
+	[[], 0, fn(a,b) {a+b}],    0,
+	[[1,2,3], 0, fn(a,b) {a+b}], 6,
+	[[1,2,3], 9, fn(a,b) {a+b}], 15,
+)
+export val reduce = fn<T, A>(vs:list<T>, v:A, f:fn<A, A, T>):A match {
+	[[], ...] => v
+	[[h, ...t], ...] => recur(t, f(v, h), f)
 }
 
 /**
@@ -54,7 +82,7 @@ export val each = fn(vs:list, f:fn):nil match {
 	[[1, 2, 3], fn(n) { [n, n] }],                              [1, 1, 2, 2, 3, 3],
 	[[1, 2, 3], fn(n) { if (n % 2 == 0) { [n] } else { [] } }], [2]
 )
-export val flatMap = fn(vs:list, f:fn):list {
+export val flatMap = fn<T>(vs:list<T>, f:fn<any|nil, T>):list {
 	vs /> reduce([], fn(acc, v) {
 		match f(v) {
 			[...items] => acc + items
@@ -64,28 +92,19 @@ export val flatMap = fn(vs:list, f:fn):list {
 }
 
 /**
- * returns a new list containing only elements for which `f` returns true.
+ * returns the elements of `xs` that are not `nil`, in order: a `list<T>` from
+ * a `list<T|nil>`, which `filter` cannot say.
+ *
+ *     val found = map(keys, lookup) /> compact()
  */
 @testWith(
-	[[1,2,3,4], fn(v) { v % 2 == 0 }], [2,4]
+	[[1, nil, 2]], [1, 2],
+	[[nil]], [],
+	[[]], []
 )
-export val filter = fn(vs:list, f:fn, acc:list = []):list match {
+export val compact = fn<T>(xs:list<T|nil>, acc:list<T> = []):list<T> match {
 	[[], ...] => acc
-	[[h, ...t], ...] if h /> f() => recur(t, f, acc :+ h)
-	[[h, ...t], ...] => recur(t, f, acc)
-}
-
-/**
- * folds `vs` left with `f`, starting from initial value `v`.
- */
-@testWith(
-	[[], 0, fn(a,b) {a+b}],    0,
-	[[1,2,3], 0, fn(a,b) {a+b}], 6,
-	[[1,2,3], 9, fn(a,b) {a+b}], 15,
-)
-export val reduce = fn(vs:list, v, f:fn) match {
-	[[], ...] => v
-	[[h, ...t], ...] => recur(t, f(v, h), f)
+	[[h, ...t], ...] => if (h == nil) { recur(t, acc) } else { recur(t, acc :+ h) }
 }
 
 /**
@@ -94,7 +113,7 @@ export val reduce = fn(vs:list, v, f:fn) match {
  * `xs` may contain `nil`; a `nil` element is never distinguishable from no
  * match.
  */
-export val find = fn<T>(xs:list<T|nil>, f:fn):T|nil match {
+export val find = fn<T>(xs:list<T>, f:fn<bool, T>):T|nil match {
 	[[], ...] => nil
 	[[h, ...t], ...] => {
 		if (f(h)) { h } else { recur(t, f) }
@@ -133,7 +152,7 @@ export val contains = fn(xs:list, v):bool {
 	[[], fn(n) { true }],         false,
 	[[nil], fn(v) { v == nil }],  true
 )
-export val any = fn(xs:list, f:fn):bool {
+export val any = fn<T>(xs:list<T>, f:fn<bool, T>):bool {
 	val go = fn(i:num):bool {
 		if (i == len(xs)) { false } else if (f(xs[i])) { true } else { recur(i + 1) }
 	}
@@ -150,7 +169,7 @@ export val any = fn(xs:list, f:fn):bool {
 	[[1, 2, 3], fn(n) { n > 1 }], false,
 	[[], fn(n) { false }],        true
 )
-export val all = fn(xs:list, f:fn):bool {
+export val all = fn<T>(xs:list<T>, f:fn<bool, T>):bool {
 	val go = fn(i:num):bool {
 		if (i == len(xs)) { true } else if (f(xs[i])) { recur(i + 1) } else { false }
 	}
@@ -193,7 +212,7 @@ export val range = fn(end:num):list<num> {
  * and returns `nil`: `times(3, f)` calls `f(0)`, `f(1)`, then `f(2)`. Use it
  * for effects; `map(range(n), f)` collects results instead.
  */
-export val times = fn(n:num, f:fn):nil {
+export val times = fn(n:num, f:fn<any|nil, num>):nil {
 	val go = fn(i:num):nil {
 		if (i < n) {
 			f(i)

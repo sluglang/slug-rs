@@ -396,6 +396,18 @@ The order this suggests: type the builtins, with the body-derived fix;
 check function literals against expected function types; give
 `slug.std`'s higher-order functions generic signatures; then measure again.
 
+Measured again after those three, 2026-11-22: unknown expressions fell in
+Crawl from 20% to 17%, in http from 14% to 8%, in mustache from 19% to 13%,
+and in markdown from 6% to 4%. Crawl's unknown unannotated parameters fell
+from 253 to 153: 150 function literal parameters are now typed, 84 fully.
+Most of the 141 still unknown are over values Crawl annotates as a bare
+`map` or `list`, so `keys(world.players)` or `region.items` gives nothing
+to flow; typing `keys` as `fn<K, V>(m:map<K, V>):list<K>` changed nothing
+there. The rest of the gain is the annotation work of stage 8, with record
+types and generic schemas, not inference. Typing `slug.std` found one place
+in Crawl whose types the code relied on without saying, a `filter` that
+removed `nil`s, now written with `compact`, and one wrong annotation.
+
 ### 6. Sound boundaries
 
 - [ ] Specify where checks occur: binding, argument, result, field, element

@@ -7,7 +7,7 @@ val rng = import("slug.games.crawl.rng")
 val {assertEqual, assertTrue} = import("slug.test")
 val {filter, map, range, reduce, all, any} = import("slug.std")
 
-val named = fn(name:str):map { filter(bestiary.monsters, fn(m) { m.name == name })[0] }
+val named = fn(name:str):struct { filter(bestiary.monsters, fn(m) { m.name == name })[0] }
 
 val indexOf = fn(name:str):num { filter(range(len(bestiary.monsters)), fn(i) { bestiary.monsters[i].name == name })[0] }
 
