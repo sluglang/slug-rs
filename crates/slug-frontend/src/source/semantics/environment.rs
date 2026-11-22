@@ -272,6 +272,9 @@ pub(super) struct SemanticAnalysis {
 
 #[derive(Clone, Debug, Default)]
 struct SemanticRecords {
+    /// For a function body that is a `match` without a subject, the type of
+    /// the arguments it matches.
+    implicit_subjects: HashMap<SourceSpan, Type>,
     /// For a function literal that is an argument, the parameter types its
     /// callee expects of it.
     expected_parameters: HashMap<SourceSpan, Vec<Type>>,
@@ -886,6 +889,20 @@ impl Environment {
             .borrow_mut()
             .match_constraints
             .insert(span, constraints);
+    }
+
+    /// Records the type of the arguments the subject-less `match` at `span`
+    /// matches, as a function's body.
+    pub(super) fn record_implicit_subject(&self, span: SourceSpan, value_type: Type) {
+        self.records
+            .borrow_mut()
+            .implicit_subjects
+            .insert(span, value_type);
+    }
+
+    /// The type of the arguments the subject-less `match` at `span` matches.
+    pub(super) fn implicit_subject(&self, span: &SourceSpan) -> Option<Type> {
+        self.records.borrow().implicit_subjects.get(span).cloned()
     }
 
     /// Records the parameter types expected of the function literal at

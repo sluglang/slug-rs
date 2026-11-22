@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A function whose body is a `match` on its arguments, as `fn(xs:list<num>,
+  n:num) match { [[h, ...], m] => h - m }`, binds its patterns with the
+  parameters' types: `h` is a `num`. They were unknown before.
+
 - A function literal takes its parameters' types from where it is used: as
   an argument, from the function type the callee expects there, so with a
   generic `map(xs:list<T>, f:fn<U, T>)`, `fn(n) { n * 2 }` over a `list<num>`

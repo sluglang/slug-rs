@@ -2524,8 +2524,14 @@ fn check_function_body_in_scope(
         let mut scoped = environment.clone();
         scoped.forget_mutable_facts();
         scoped.enter_scope();
+        // A body that is a `match` without a subject matches the arguments,
+        // a tuple of the parameters' types as the body sees them.
+        let mut arguments = Vec::new();
         for (parameter, signature_parameter) in parameters.iter().zip(&signature.parameters) {
             let parameter_type = &signature_parameter.value_type;
+            if parameter.discard {
+                arguments.push(Type::Unknown);
+            }
             if !parameter.discard {
                 // An unannotated parameter whose body supplies no type accepts
                 // `any|nil`, but inside the body that is the checker's uncertainty,
@@ -2544,6 +2550,7 @@ fn check_function_body_in_scope(
                 } else {
                     element_type
                 };
+                arguments.push(binding_type.clone());
                 scoped.declare(parameter.name.clone(), SemanticBinding::value(binding_type));
             }
             if let Some(default) = &parameter.default {
@@ -2557,6 +2564,9 @@ fn check_function_body_in_scope(
             })
             .transpose()?;
         scoped.enter_function(expected.clone());
+        if let ExprKind::Match { subject: None, .. } = &body.kind {
+            scoped.record_implicit_subject(body.span.clone(), Type::Tuple(arguments));
+        }
         let completed = check_expression_with_flow(body, &mut scoped, type_parameters)?.value_type;
         if let Some(expected) = &expected {
             let result = result_expression(body);
@@ -3253,6 +3263,7 @@ fn check_expression_inner(
                     .as_ref()
                     .map(|subject| check_expression(subject, environment, type_parameters))
                     .transpose()?
+                    .or_else(|| environment.implicit_subject(&expression.span))
                     .unwrap_or_else(Type::universal);
                 let mut enum_remaining = enum_cases(&subject_type, environment);
                 let coverage_enabled =
@@ -5147,13 +5158,23 @@ fn bind_case_pattern(pattern: &Pattern, value_type: &Type, environment: &mut Env
                 bind_case_pattern(pattern, value_type, environment);
             }
             Pattern::List { items, rest } => {
-                // Without a rest, a tuple's items bind its elements in order.
+                // A tuple's items bind its elements in order, and a rest the
+                // ones after them.
                 if let Type::Tuple(elements) = value_type
-                    && rest.is_none()
-                    && elements.len() == items.len()
+                    && (if rest.is_none() {
+                        elements.len() == items.len()
+                    } else {
+                        elements.len() >= items.len()
+                    })
                 {
                     for (item, element) in items.iter().zip(elements) {
                         bind_case_pattern(item, element, environment);
+                    }
+                    if let Some(super::ast::RestPattern::Binding(name)) = rest {
+                        environment.declare(
+                            name.clone(),
+                            SemanticBinding::value(Type::Tuple(elements[items.len()..].to_vec())),
+                        );
                     }
                     return;
                 }

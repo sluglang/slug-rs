@@ -641,6 +641,44 @@ fn function_literals_take_parameter_types_from_where_they_are_used() {
 }
 
 #[test]
+fn a_match_body_binds_its_arguments_with_their_types() {
+    let path = fixture_path("typed-match-body");
+    let prelude = "val mapped = fn<T, U>(xs:list<T>, f:fn<U, T>, acc:list<U> = []):list<U> match {\n\
+                     [[], ...] => acc\n\
+                     [[h, ...t], ...] => recur(t, f, acc :+ f(h))\n\
+                   }\n";
+    fs::write(
+        &path,
+        format!(
+            "{prelude}\
+             val names = mapped([1, 2, 3], fn(n) {{ \"#\" + n }})\n\
+             println(names, mapped(names, fn(s) {{ len(s) }}))\n"
+        ),
+    )
+    .expect("write typed match body");
+    let output = slug().arg(&path).output().expect("run typed match body");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "[\"#1\", \"#2\", \"#3\"] [2, 2, 2]\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::write(
+        &path,
+        "val t = fn(xs:list<str>, n:num):num match {\n  [[h, ...rest], m] => h - m\n  _ => 0\n}\n",
+    )
+    .expect("write mistyped match body");
+    let output = slug().arg(&path).output().expect("run mistyped match body");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("expected num, got str")
+    );
+    fs::remove_file(&path).expect("remove typed match body source");
+}
+
+#[test]
 fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
     // A generic alias's closing `>` ends a line as `list<num>`'s does, while
     // a trailing comparison still continues onto the next line.

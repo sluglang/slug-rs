@@ -467,7 +467,9 @@ default, and variadic binding has completed.
 
 Cases use the ordinary pattern, guard, result, and first-match rules. Generic
 parameters and parameter or return annotations have the same meaning as for a
-block-bodied function. `recur(...)` remains valid in a tail-position case
+block-bodied function. The checker types the subject as the parameters are
+typed in the body: a list subject is a tuple of their types, so in
+`[[head, ...], mean]` above, `head` is a `num`. `recur(...)` remains valid in a tail-position case
 result.
 
 ```slug
