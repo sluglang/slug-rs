@@ -1952,7 +1952,7 @@ fn analyze_expressions(
         }
     }
     for expression in expressions {
-        if let ExprKind::Enum { name, cases, .. } = &expression.kind {
+        if let ExprKind::Enum { name, .. } = &expression.kind {
             if !enum_names.insert(name.clone()) || resource_names.contains(name) {
                 return Err(SourceError::semantic(
                     SourceErrorCode::DuplicateName,
@@ -1961,28 +1961,11 @@ fn analyze_expressions(
                 )
                 .with_extent(expression));
             }
-            let identity = in_module(super::semantic::EnumIdentity::declared(
-                expression.span.path.as_ref(),
-                name.clone(),
-            ));
-            environment.declare_type(
-                name.clone(),
-                super::environment::TypeMember::Enum {
-                    identity: identity.clone(),
-                    cases: cases.clone(),
-                },
-            );
-            let mut binding = SemanticBinding::value(Type::Map(None));
-            for case in cases {
-                binding.members.insert(
-                    case.clone(),
-                    SemanticBinding::value(Type::Enum(identity.clone())),
-                );
-            }
-            environment.declare(name.clone(), binding);
+            declare_enum(&mut environment, expression, module_name);
         }
     }
     resolve_type_aliases(expressions, &mut environment, &resource_names, &enum_names)?;
+    declare_enum_payloads(expressions, &mut environment)?;
     for expression in expressions {
         let name = match &expression.kind {
             ExprKind::Declare {
@@ -2633,6 +2616,8 @@ fn record_exports(
             exported: true,
             name,
             cases,
+            type_parameters,
+            payloads,
             ..
         } => {
             if let Some(binding) = environment.lookup(name) {
@@ -2646,6 +2631,8 @@ fn record_exports(
                     super::environment::TypeMember::Enum {
                         identity: identity.clone(),
                         cases: cases.clone(),
+                        arity: type_parameters.len(),
+                        payloads: payloads.iter().map(|(case, _)| case.clone()).collect(),
                     },
                 );
             }
@@ -3204,7 +3191,10 @@ fn check_expression_inner(
                     let mut irrefutable_constraints = Vec::new();
                     for pattern in &case.patterns {
                         let constraint =
-                            check_case_pattern(pattern, &mut scoped, type_parameters, &case.span)?;
+                            check_case_pattern(pattern, &mut scoped, type_parameters, &case.span)?
+                                .map(|constraint| {
+                                    with_subject_arguments(&constraint, &reaching_type)
+                                });
                         constraints.push(constraint.clone());
                         if is_irrefutable_pattern(&pattern.pattern) {
                             irrefutable_constraints.push(constraint.clone());
@@ -3281,7 +3271,17 @@ fn check_expression_inner(
                             case_subject_type = Some(reaching_type.clone());
                         }
                     }
-                    environment.record_match_constraints(case.span.clone(), constraints.clone());
+                    environment.record_match_constraints(
+                        case.span.clone(),
+                        constraints
+                            .iter()
+                            .map(|constraint| {
+                                constraint
+                                    .as_ref()
+                                    .map(|constraint| runtime_constraint(constraint, environment))
+                            })
+                            .collect(),
+                    );
                     if let Some(remaining_cases) = &mut enum_remaining {
                         if remaining_cases.is_empty() {
                             return Err(SourceError::semantic(
@@ -3292,7 +3292,16 @@ fn check_expression_inner(
                             .unreachable_case(case));
                         }
                         let mut covered = Vec::new();
+                        // Payload cases a refutable pattern may match, but
+                        // does not cover, as `{value: 0}: Result.Ok`.
+                        let mut reachable = Vec::new();
                         for (pattern, constraint) in case.patterns.iter().zip(&constraints) {
+                            let payload_schema = constraint
+                                .as_ref()
+                                .filter(|constraint| {
+                                    matches!(constraint, Type::Struct(Some(schema), _) if schema.case_enum().is_some())
+                                })
+                                .and_then(|constraint| known_struct_schema(constraint, environment));
                             match &pattern.pattern {
                                 Pattern::EnumCase {
                                     path,
@@ -3303,6 +3312,21 @@ fn check_expression_inner(
                                     environment,
                                     &case.span,
                                 )?),
+                                pattern if payload_schema.is_some() => {
+                                    let cases = enum_cases_for_constraint(
+                                        constraint.as_ref(),
+                                        &subject_type,
+                                        environment,
+                                    );
+                                    if payload_schema
+                                        .as_ref()
+                                        .is_some_and(|schema| covers_struct(pattern, schema))
+                                    {
+                                        covered.extend(cases);
+                                    } else {
+                                        reachable.extend(cases);
+                                    }
+                                }
                                 pattern if is_irrefutable_pattern(pattern) => {
                                     covered.extend(enum_cases_for_constraint(
                                         constraint.as_ref(),
@@ -3320,7 +3344,11 @@ fn check_expression_inner(
                             .filter(|candidate| remaining_cases.contains(candidate))
                             .cloned()
                             .collect::<Vec<_>>();
-                        if matching.is_empty() {
+                        if matching.is_empty()
+                            && !reachable
+                                .iter()
+                                .any(|candidate| remaining_cases.contains(candidate))
+                        {
                             return Err(SourceError::semantic(
                                 SourceErrorCode::UnreachableMatchCase,
                                 "match case cannot match remaining enum cases",
@@ -4244,7 +4272,7 @@ fn is_closed_coverage_type(value_type: &Type) -> bool {
         | Type::Str
         | Type::Bytes
         | Type::Resource(_)
-        | Type::Enum(_)
+        | Type::Enum(..)
         | Type::Schema
         | Type::Struct(Some(_), _)
         | Type::Function(None)
@@ -4273,7 +4301,7 @@ type EnumCase = (super::semantic::EnumIdentity, String);
 
 fn enum_cases(value_type: &Type, environment: &Environment) -> Option<Vec<EnumCase>> {
     match value_type {
-        Type::Enum(identity) => environment.enum_cases(identity).map(|cases| {
+        Type::Enum(identity, _) => environment.enum_cases(identity).map(|cases| {
             cases
                 .into_iter()
                 .map(|case| (identity.clone(), case))
@@ -4294,8 +4322,9 @@ fn enum_case(
     environment: &Environment,
     span: &SourceSpan,
 ) -> Result<EnumCase, SourceError> {
-    let Some(super::environment::TypeMember::Enum { identity, cases }) =
-        environment.type_member(path)
+    let Some(super::environment::TypeMember::Enum {
+        identity, cases, ..
+    }) = environment.type_member(path)
     else {
         return Err(SourceError::semantic(
             SourceErrorCode::UnknownType,
@@ -4320,17 +4349,125 @@ fn enum_cases_for_constraint(
 ) -> Vec<EnumCase> {
     match constraint {
         None => enum_cases(subject, environment).unwrap_or_default(),
-        Some(Type::Enum(identity)) => environment
+        Some(Type::Enum(identity, _)) => environment
             .enum_cases(identity)
             .unwrap_or_default()
             .into_iter()
             .map(|case| (identity.clone(), case))
             .collect(),
+        // A payload case's constraint, as `{value}: Result.Ok`, is that case.
+        Some(Type::Struct(Some(schema), _)) => schema
+            .case_enum()
+            .and_then(|identity| {
+                let (_, case) = schema.name.rsplit_once('.')?;
+                Some(vec![(identity, case.to_owned())])
+            })
+            .unwrap_or_default(),
         Some(Type::Union(members)) => members
             .iter()
             .flat_map(|member| enum_cases_for_constraint(Some(member), subject, environment))
             .collect(),
         Some(_) => Vec::new(),
+    }
+}
+
+/// `constraint` as the runtime checks it: an enum with payload cases is its
+/// fieldless values or a struct of one of its cases' schemas. The union is
+/// built as is, since normalizing it would fold the cases back into the enum.
+fn runtime_constraint(constraint: &Type, environment: &Environment) -> Type {
+    match constraint {
+        Type::Enum(identity, _) => {
+            let payloads = environment.enum_payloads(identity);
+            if payloads.is_empty() {
+                return constraint.clone();
+            }
+            Type::Union(
+                std::iter::once(Type::Enum(identity.clone(), Vec::new()))
+                    .chain(
+                        payloads
+                            .iter()
+                            .map(|case| Type::Struct(Some(identity.enum_case(case)), Vec::new())),
+                    )
+                    .collect(),
+            )
+        }
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|member| runtime_constraint(member, environment))
+                .collect(),
+        ),
+        Type::List(Some(element)) => {
+            Type::List(Some(Box::new(runtime_constraint(element, environment))))
+        }
+        Type::Map(Some((key, value))) => Type::Map(Some((
+            Box::new(runtime_constraint(key, environment)),
+            Box::new(runtime_constraint(value, environment)),
+        ))),
+        Type::Record { fields, map } => Type::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| (name.clone(), runtime_constraint(field, environment)))
+                .collect(),
+            map: *map,
+        },
+        other => other.clone(),
+    }
+}
+
+/// `constraint` with the type arguments the subject gives an enum payload
+/// case it names, which a constraint cannot write: `{value}: Result.Ok` on a
+/// `Result<num, str>` binds `value` as a `num`.
+fn with_subject_arguments(constraint: &Type, subject: &Type) -> Type {
+    fn arguments_for(parent: &super::semantic::EnumIdentity, subject: &Type) -> Option<Vec<Type>> {
+        match subject {
+            Type::Enum(identity, arguments) if identity == parent && !arguments.is_empty() => {
+                Some(arguments.clone())
+            }
+            Type::Struct(Some(schema), arguments)
+                if schema.case_enum().as_ref() == Some(parent) && !arguments.is_empty() =>
+            {
+                Some(arguments.clone())
+            }
+            Type::Union(members) => members
+                .iter()
+                .find_map(|member| arguments_for(parent, member)),
+            _ => None,
+        }
+    }
+    match constraint {
+        Type::Struct(Some(schema), arguments) if arguments.is_empty() => schema
+            .case_enum()
+            .and_then(|parent| arguments_for(&parent, subject))
+            .map_or_else(
+                || constraint.clone(),
+                |arguments| Type::Struct(Some(schema.clone()), arguments),
+            ),
+        Type::Union(members) => Type::union(
+            members
+                .iter()
+                .map(|member| with_subject_arguments(member, subject)),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Whether `pattern` matches every struct of `schema`: a struct has each of
+/// its schema's fields, so a map pattern of them, each irrefutable, does.
+fn covers_struct(pattern: &Pattern, schema: &SemanticBinding) -> bool {
+    match pattern {
+        Pattern::At { pattern, .. } => covers_struct(pattern, schema),
+        Pattern::Map {
+            entries,
+            rest,
+            exact,
+        } => {
+            entries.iter().all(|(key, pattern)| {
+                matches!(key, MapPatternKey::String(name) if schema.members.contains_key(name))
+                    && is_irrefutable_pattern(pattern)
+            }) && (!*exact || rest.is_some() || entries.len() == schema.members.len())
+        }
+        pattern => is_irrefutable_pattern(pattern),
     }
 }
 
@@ -4550,6 +4687,80 @@ fn static_map_member_binding(
     })
 }
 
+/// Declares the enum type `name` and its binding, whose members are its
+/// fieldless cases; [`declare_enum_payloads`] adds its payload cases.
+fn declare_enum(environment: &mut Environment, expression: &Expr, module_name: Option<&str>) {
+    let ExprKind::Enum {
+        name,
+        cases,
+        type_parameters,
+        payloads,
+        ..
+    } = &expression.kind
+    else {
+        return;
+    };
+    let mut identity =
+        super::semantic::EnumIdentity::declared(expression.span.path.as_ref(), name.clone());
+    if let Some(module) = module_name {
+        identity.set_runtime_module(module.into());
+    }
+    let mut binding = SemanticBinding::value(Type::Map(None));
+    for case in cases {
+        binding.members.insert(
+            case.clone(),
+            SemanticBinding::value(Type::Enum(identity.clone(), Vec::new())),
+        );
+    }
+    environment.declare_type(
+        name.clone(),
+        super::environment::TypeMember::Enum {
+            identity,
+            cases: cases.clone(),
+            arity: type_parameters.len(),
+            payloads: payloads.iter().map(|(case, _)| case.clone()).collect(),
+        },
+    );
+    environment.declare(name.clone(), binding);
+}
+
+/// Makes each enum payload case a schema member of its enum's binding, as
+/// `Result.Ok`, with fields typed once aliases are resolved. Its identity is
+/// the enum's, qualified by the case, so its structs are the enum's values.
+fn declare_enum_payloads(
+    expressions: &[Expr],
+    environment: &mut Environment,
+) -> Result<(), SourceError> {
+    for expression in expressions {
+        let ExprKind::Enum {
+            name,
+            type_parameters,
+            payloads,
+            ..
+        } = &expression.kind
+        else {
+            continue;
+        };
+        let Some(super::environment::TypeMember::Enum { identity, .. }) =
+            environment.type_member(name).cloned()
+        else {
+            continue;
+        };
+        for (case, fields) in payloads {
+            let mut schema =
+                schema_binding(fields, type_parameters, environment, &[], &expression.span)?;
+            // A generic enum's fieldless schema still takes its parameters.
+            schema.schema_arity = type_parameters.len();
+            schema.schema_identity = Some(identity.enum_case(case));
+            register_schema(&schema);
+            if let Some(binding) = environment.lookup_mut(name) {
+                binding.members.insert(case.clone(), schema);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The type parameters a schema's field annotations may name: a generic
 /// schema's own, or else those of the code around it.
 fn schema_type_parameters<'a>(own: &'a [String], outer: &'a [String]) -> &'a [String] {
@@ -4616,8 +4827,9 @@ pub(super) fn register_schema(binding: &SemanticBinding) {
                 .collect(),
         );
     }
-    if binding.module_binding {
-        for member in binding.members.values().chain(&binding.schemas) {
+    // A module carries its schemas, and an enum its payload cases' schemas.
+    for member in binding.members.values().chain(&binding.schemas) {
+        if member.module_binding || member.schema_identity.is_some() || !member.members.is_empty() {
             register_schema(member);
         }
     }
@@ -5238,7 +5450,9 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         Type::Record { fields, .. } => fields
             .iter()
             .find_map(|(_, value)| first_generic_parameter(value)),
-        Type::Struct(_, arguments) => arguments.iter().find_map(first_generic_parameter),
+        Type::Struct(_, arguments) | Type::Enum(_, arguments) => {
+            arguments.iter().find_map(first_generic_parameter)
+        }
         Type::Never
         | Type::Unknown
         | Type::Any
@@ -5248,7 +5462,6 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         | Type::Str
         | Type::Bytes
         | Type::Resource(_)
-        | Type::Enum(_)
         | Type::List(None)
         | Type::Map(None)
         | Type::Function(None)
@@ -5421,6 +5634,24 @@ fn infer(
             infer(expected_key, actual_key, substitutions, span)?;
             infer(expected_value, actual_value, substitutions, span)
         }
+        (Type::Enum(expected_enum, expected), Type::Enum(actual_enum, actual))
+            if expected_enum == actual_enum && expected.len() == actual.len() =>
+        {
+            for (expected, actual) in expected.iter().zip(actual) {
+                infer(expected, actual, substitutions, span)?;
+            }
+            Ok(())
+        }
+        // A payload case's struct shares its enum's type parameters.
+        (Type::Enum(expected_enum, expected), Type::Struct(Some(case), actual))
+            if case.case_enum().as_ref() == Some(expected_enum)
+                && expected.len() == actual.len() =>
+        {
+            for (expected, actual) in expected.iter().zip(actual) {
+                infer(expected, actual, substitutions, span)?;
+            }
+            Ok(())
+        }
         (
             Type::Struct(Some(expected_schema), expected),
             Type::Struct(Some(actual_schema), actual),
@@ -5533,10 +5764,10 @@ fn known_schema_identity(expression: &Expr, environment: &Environment) -> Option
 
 fn value_type(value: &Value) -> Type {
     if let Value::Enum(value) = value {
-        return Type::Enum(super::semantic::EnumIdentity::declared(
-            value.module.as_ref(),
-            value.name.as_ref(),
-        ));
+        return Type::Enum(
+            super::semantic::EnumIdentity::declared(value.module.as_ref(), value.name.as_ref()),
+            Vec::new(),
+        );
     }
     match value.kind() {
         ValueKind::Nil => Type::Nil,
@@ -5992,6 +6223,11 @@ fn unreifiable_constraint(constraint: &Type, span: &SourceSpan) -> SourceError {
             {
                 Some(identity.name.clone())
             }
+            Type::Enum(identity, arguments)
+                if arguments.iter().any(|argument| *argument != Type::Unknown) =>
+            {
+                Some(identity.name.clone())
+            }
             Type::List(Some(value)) => struct_with_arguments(value),
             Type::Map(Some((key, value))) => {
                 struct_with_arguments(key).or_else(|| struct_with_arguments(value))
@@ -6006,12 +6242,25 @@ fn unreifiable_constraint(constraint: &Type, span: &SourceSpan) -> SourceError {
     let message = struct_with_arguments(constraint).map_or_else(
         || "match type constraint is not runtime-checkable".to_owned(),
         |schema| {
+            let bare = if constraint_names_enum(constraint) {
+                schema.clone()
+            } else {
+                format!("struct<{schema}>")
+            };
             format!(
-                "match type constraint is not runtime-checkable: a struct's type arguments are not checked at run time, so match `struct<{schema}>`"
+                "match type constraint is not runtime-checkable: type arguments are not checked at run time, so match `{bare}`"
             )
         },
     );
     SourceError::semantic(SourceErrorCode::InvalidMatch, message, span.clone())
+}
+
+fn constraint_names_enum(constraint: &Type) -> bool {
+    match constraint {
+        Type::Enum(..) => true,
+        Type::Union(members) => members.iter().any(constraint_names_enum),
+        _ => false,
+    }
 }
 
 fn validate_case_pattern(
@@ -6872,10 +7121,10 @@ mod tests {
             inferred_alternatives: Vec::new(),
         };
         let database = Type::Resource(ResourceIdentity::declared("db.slug", "Database"));
-        let status = Type::Enum(super::super::semantic::EnumIdentity::declared(
-            "status.slug",
-            "Status",
-        ));
+        let status = Type::Enum(
+            super::super::semantic::EnumIdentity::declared("status.slug", "Status"),
+            Vec::new(),
+        );
         let user = Type::Struct(
             Some(super::super::semantic::SchemaIdentity::declared(
                 "user.slug",

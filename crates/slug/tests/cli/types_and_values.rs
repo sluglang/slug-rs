@@ -376,7 +376,7 @@ fn generic_schemas_infer_and_check_their_type_arguments() {
         ),
         (
             "val f = fn(v) match { x: struct<Box<num>> => 1; _ => 2 }",
-            "a struct's type arguments are not checked at run time, so match `struct<Box>`",
+            "type arguments are not checked at run time, so match `struct<Box>`",
         ),
         (
             "val b = Box { value: 1 }\nb copy { value: \"s\" }",
@@ -401,6 +401,104 @@ fn generic_schemas_infer_and_check_their_type_arguments() {
         assert!(stderr.contains(message), "{source}: {stderr}");
     }
     fs::remove_file(&path).expect("remove generic schema source");
+}
+
+#[test]
+fn payload_enum_cases_construct_match_and_cover() {
+    let path = fixture_path("payload-enums");
+    fs::write(
+        &path,
+        "enum Result<T, E> {\n\
+           Ok { value: T }\n\
+           Error { error: E }\n\
+         }\n\
+         enum Shape { Circle { radius: num }, Square { side: num, label: str = \"sq\" }, Empty }\n\
+         val parsed:Result<num, str> = Result.Ok { value: 3 }\n\
+         val failed:Result<num, str> = Result.Error { error: \"bad\" }\n\
+         val unwrapOr = fn<T>(r:Result<T, str>, fallback:T):T {\n\
+           match r {\n\
+             {value}: Result.Ok => value\n\
+             _: Result.Error => fallback\n\
+           }\n\
+         }\n\
+         val area = fn(s:Shape):num {\n\
+           match s {\n\
+             {radius}: Shape.Circle => radius * radius\n\
+             {side}: Shape.Square => side * side\n\
+             Shape.Empty => 0\n\
+           }\n\
+         }\n\
+         val kind = fn(v) match { _: Shape => \"shape\"; _: list<Shape> => \"shapes\"; _ => \"?\" }\n\
+         val named = fn(r:{radius: num}):num { r.radius }\n\
+         val circle = Shape.Circle { radius: 2 }\n\
+         val main = fn() {\n\
+           println(unwrapOr(parsed, 0) + 1, unwrapOr(failed, 7), parsed == Result.Ok { value: 3 }, parsed == failed)\n\
+           println(area(circle), area(Shape.Square { side: 3 }), area(Shape.Empty), Shape.Square { side: 1 }.label)\n\
+           println(kind(circle), kind(Shape.Empty), kind([Shape.Empty, circle]), kind(3), named(circle), (circle copy { radius: 5 }).radius)\n\
+         }\n",
+    )
+    .expect("write payload enums");
+    let output = slug().arg(&path).output().expect("run payload enums");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "4 7 true false\n\
+         4 9 0 sq\n\
+         shape shape shapes ? 2 5\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let prelude = "enum Result<T, E> {\n  Ok { value: T }\n  Error { error: E }\n}\n\
+                   enum Shape { Circle { radius: num }, Empty }\n";
+    for (source, message) in [
+        (
+            "val f = fn(r:Result<num, str>):num { match r { {value}: Result.Ok => value + \"x\"; _ => 0 } }",
+            "operator `+` does not accept num and str",
+        ),
+        (
+            "val f = fn(r:Result<num, str>):num { match r { {value}: Result.Ok => value } }",
+            "non-exhaustive match; missing Result.Error",
+        ),
+        (
+            "val f = fn(s:Shape):num { match s { {radius: 1}: Shape.Circle => 1; Shape.Empty => 0 } }",
+            "non-exhaustive match; missing Shape.Circle",
+        ),
+        (
+            "val f = fn(r:Result<num, str>):num { match r { _: Result.Ok => 1; _: Result.Ok => 2; _ => 3 } }",
+            "match case cannot match remaining enum cases",
+        ),
+        (
+            "val r:Result<num, str> = Result.Ok { value: \"s\" }",
+            "expected Result<num, str>, got Result.Ok<str, unknown>",
+        ),
+        (
+            "val r:Result<num> = Result.Ok { value: 1 }",
+            "enum `Result` takes 2 type argument(s)",
+        ),
+        (
+            "val s:Shape = Result.Ok { value: 1 }",
+            "expected Shape, got Result.Ok<num, unknown>",
+        ),
+        (
+            "val c = Shape.Circle { size: 1 }",
+            "struct schema has no field `size`",
+        ),
+        (
+            "val c = Shape.Circle {}",
+            "missing required struct field `radius`",
+        ),
+        (
+            "val f = fn(v) match { x: Result<num, str> => 1; _ => 2 }",
+            "type arguments are not checked at run time, so match `Result`",
+        ),
+    ] {
+        fs::write(&path, format!("{prelude}{source}\n")).expect("write payload enum error");
+        let output = slug().arg(&path).output().expect("run payload enum error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove payload enum source");
 }
 
 #[test]

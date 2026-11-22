@@ -102,6 +102,10 @@ pub(super) enum TypeMember {
     Enum {
         identity: EnumIdentity,
         cases: Vec<String>,
+        /// How many type parameters a generic enum takes.
+        arity: usize,
+        /// The cases that carry a payload, each a schema under the enum.
+        payloads: Vec<String>,
     },
     Alias(Type),
     /// A generic alias: its body, in which `Type::Generic(i)` is its `i`th
@@ -120,12 +124,19 @@ impl TypeMember {
                 identity.set_runtime_module(module.into());
                 Self::Resource(identity)
             }
-            Self::Enum { identity, cases } => {
+            Self::Enum {
+                identity,
+                cases,
+                arity,
+                payloads,
+            } => {
                 let mut identity = identity.clone();
                 identity.set_runtime_module(module.into());
                 Self::Enum {
                     identity,
                     cases: cases.clone(),
+                    arity: *arity,
+                    payloads: payloads.clone(),
                 }
             }
             Self::Alias(_) | Self::GenericAlias { .. } => self.clone(),
@@ -668,6 +679,17 @@ impl Environment {
     }
 
     pub(super) fn enum_cases(&self, identity: &EnumIdentity) -> Option<Vec<String>> {
+        self.enum_member(identity).map(|(cases, _)| cases)
+    }
+
+    /// The cases of the enum `identity` names that carry a payload.
+    pub(super) fn enum_payloads(&self, identity: &EnumIdentity) -> Vec<String> {
+        self.enum_member(identity)
+            .map(|(_, payloads)| payloads)
+            .unwrap_or_default()
+    }
+
+    fn enum_member(&self, identity: &EnumIdentity) -> Option<(Vec<String>, Vec<String>)> {
         self.type_scopes
             .iter()
             .rev()
@@ -683,7 +705,9 @@ impl Environment {
                 TypeMember::Enum {
                     identity: candidate,
                     cases,
-                } if candidate == identity => Some(cases.clone()),
+                    payloads,
+                    ..
+                } if candidate == identity => Some((cases.clone(), payloads.clone())),
                 TypeMember::Resource(_)
                 | TypeMember::Enum { .. }
                 | TypeMember::Alias(_)

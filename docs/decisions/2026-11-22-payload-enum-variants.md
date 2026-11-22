@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted; implementation planned in
-[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 4.
+Accepted; implemented on 2026-11-22
+([payload cases](../language/nominal-types.md#payload-cases)). The pattern
+form is the whole-pattern type constraint only; no constructor-shaped pattern
+was added.
 
 ## Supersedes
 

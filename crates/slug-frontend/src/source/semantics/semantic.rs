@@ -46,6 +46,32 @@ impl NominalIdentity {
         self.declaration_path.is_empty()
     }
 
+    /// The schema identity of this enum's payload case `case`: the enum's,
+    /// qualified by the case, as `Result.Ok`.
+    pub(super) fn enum_case(&self, case: &str) -> Self {
+        Self {
+            declaration_path: self.declaration_path.clone(),
+            declaration_name: format!("{}.{case}", self.declaration_name),
+            name: format!("{}.{case}", self.name),
+            runtime_module: self.runtime_module.clone(),
+        }
+    }
+
+    /// For an enum payload case's schema, the enum's identity.
+    pub(super) fn case_enum(&self) -> Option<Self> {
+        let (declaration_name, _) = self.declaration_name.rsplit_once('.')?;
+        Some(Self {
+            declaration_path: self.declaration_path.clone(),
+            declaration_name: declaration_name.to_owned(),
+            name: self
+                .name
+                .rsplit_once('.')
+                .map_or(declaration_name, |(name, _)| name)
+                .to_owned(),
+            runtime_module: self.runtime_module.clone(),
+        })
+    }
+
     pub(super) fn runtime_module(&self) -> &str {
         self.runtime_module
             .as_deref()
@@ -101,7 +127,9 @@ pub(super) enum Type {
     Str,
     Bytes,
     Resource(ResourceIdentity),
-    Enum(EnumIdentity),
+    /// An enum's values; for a generic enum, with its type arguments, empty
+    /// when they are unknown.
+    Enum(EnumIdentity, Vec<Type>),
     List(Option<Box<Type>>),
     Map(Option<(Box<Type>, Box<Type>)>),
     Function(Option<Vec<Type>>),
@@ -206,7 +234,7 @@ impl Clone for Type {
             Self::Str => Self::Str,
             Self::Bytes => Self::Bytes,
             Self::Resource(identity) => Self::Resource(identity.clone()),
-            Self::Enum(identity) => Self::Enum(identity.clone()),
+            Self::Enum(identity, arguments) => Self::Enum(identity.clone(), arguments.clone()),
             Self::List(element) => Self::List(element.clone()),
             Self::Map(entries) => Self::Map(entries.clone()),
             Self::Function(signature) => Self::Function(signature.clone()),
@@ -277,6 +305,9 @@ fn replace_recursion(body: &Type, name: &str, replacement: &Type) -> Type {
         },
         Type::Struct(identity, arguments) => {
             Type::Struct(identity.clone(), arguments.iter().map(recur).collect())
+        }
+        Type::Enum(identity, arguments) => {
+            Type::Enum(identity.clone(), arguments.iter().map(recur).collect())
         }
         Type::Union(members) => Type::Union(members.iter().map(recur).collect()),
         Type::AliasApplication(alias, arguments) => {
@@ -599,7 +630,18 @@ impl fmt::Display for InferredAlternative {
 impl Type {
     pub(super) fn diagnostic_display(&self) -> String {
         match self {
-            Self::Resource(identity) | Self::Enum(identity) => identity.diagnostic_name(),
+            Self::Resource(identity) => identity.diagnostic_name(),
+            Self::Enum(identity, arguments) if arguments.is_empty() => identity.diagnostic_name(),
+            Self::Enum(identity, arguments) => format!(
+                "{}<{}>",
+                identity.diagnostic_name(),
+                arguments
+                    .iter()
+                    .map(Self::diagnostic_display)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Struct(Some(identity), _) if identity.case_enum().is_some() => self.to_string(),
             Self::Struct(Some(identity), arguments) if arguments.is_empty() => {
                 format!("struct<{}>", identity.diagnostic_name())
             }
@@ -633,7 +675,6 @@ impl Type {
             | Self::Str
             | Self::Bytes
             | Self::Resource(_)
-            | Self::Enum(_)
             | Self::Function(None)
             | Self::Task(None)
             | Self::Channel(None)
@@ -648,9 +689,11 @@ impl Type {
                 key.is_reifiable_match_constraint() && value.is_reifiable_match_constraint()
             }),
             Self::Union(members) => members.iter().all(Self::is_reifiable_match_constraint),
-            // A struct's type arguments are erased, so only its schema is
-            // checked.
-            Self::Struct(_, arguments) => arguments.iter().all(|argument| *argument == Self::Unknown),
+            // A struct's or enum's type arguments are erased, so only its
+            // schema or enum is checked.
+            Self::Struct(_, arguments) | Self::Enum(_, arguments) => {
+                arguments.iter().all(|argument| *argument == Self::Unknown)
+            }
             Self::Record { fields, .. } => fields
                 .iter()
                 .all(|(_, field)| field.is_reifiable_match_constraint()),
@@ -923,17 +966,25 @@ impl Type {
             Self::Resource(expected) => {
                 matches!(self, Self::Resource(actual) if actual == expected)
             }
+            // A value of an enum, or of one of its payload cases, is one of
+            // the enum's values.
+            Self::Enum(expected, expected_arguments) => {
+                let (actual, actual_arguments) = match self {
+                    Self::Enum(actual, arguments) => (actual.clone(), arguments),
+                    Self::Struct(Some(schema), arguments) => match schema.case_enum() {
+                        Some(actual) => (actual, arguments),
+                        None => return false,
+                    },
+                    _ => return false,
+                };
+                actual == *expected && arguments_assignable(actual_arguments, expected_arguments)
+            }
             Self::Schema => matches!(self, Self::Schema),
             Self::Struct(expected, expected_arguments) => match self {
                 Self::Struct(actual, actual_arguments) => {
                     expected.is_none()
                         || (actual == expected
-                            && (expected_arguments.is_empty()
-                                || actual_arguments.is_empty()
-                                || actual_arguments
-                                    .iter()
-                                    .zip(expected_arguments)
-                                    .all(|(actual, expected)| actual.is_assignable_to(expected))))
+                            && arguments_assignable(actual_arguments, expected_arguments))
                 }
                 _ => false,
             },
@@ -1050,6 +1101,17 @@ impl Type {
     }
 }
 
+/// Whether a generic struct's or enum's type arguments conform, covariantly;
+/// unknown ones, which are empty, conform either way.
+fn arguments_assignable(actual: &[Type], expected: &[Type]) -> bool {
+    expected.is_empty()
+        || actual.is_empty()
+        || actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.is_assignable_to(expected))
+}
+
 fn optional_argument_assignable(actual: Option<&Type>, expected: Option<&Type>) -> bool {
     match (actual, expected) {
         (_, None) | (None | Some(Type::Unknown), Some(_)) => true,
@@ -1107,7 +1169,10 @@ impl fmt::Display for Type {
             Self::Num => formatter.write_str("num"),
             Self::Str => formatter.write_str("str"),
             Self::Bytes => formatter.write_str("bytes"),
-            Self::Resource(identity) | Self::Enum(identity) => formatter.write_str(&identity.name),
+            Self::Resource(identity) => formatter.write_str(&identity.name),
+            Self::Enum(identity, arguments) => {
+                write_type_arguments(formatter, &identity.name, arguments)
+            }
             Self::List(argument) => display_application(formatter, "list", argument.as_deref()),
             Self::Map(arguments) => {
                 if let Some((key, value)) = arguments {
@@ -1134,20 +1199,17 @@ impl fmt::Display for Type {
             Self::Task(argument) => display_application(formatter, "task", argument.as_deref()),
             Self::Channel(argument) => display_application(formatter, "chan", argument.as_deref()),
             Self::Schema => formatter.write_str("schema"),
-            Self::Struct(name, arguments) => match name {
-                Some(name) if arguments.is_empty() => write!(formatter, "struct<{}>", name.name),
-                Some(name) => write!(
-                    formatter,
-                    "struct<{}<{}>>",
-                    name.name,
-                    arguments
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                None => formatter.write_str("struct"),
-            },
+            // A payload case's structs are its enum's values, so they are
+            // shown as the case: `Result.Ok<num, str>`.
+            Self::Struct(Some(name), arguments) if name.case_enum().is_some() => {
+                write_type_arguments(formatter, &name.name, arguments)
+            }
+            Self::Struct(Some(name), arguments) => {
+                formatter.write_str("struct<")?;
+                write_type_arguments(formatter, &name.name, arguments)?;
+                formatter.write_str(">")
+            }
+            Self::Struct(None, _) => formatter.write_str("struct"),
             Self::Tuple(elements) => write!(
                 formatter,
                 "[{}]",
@@ -1203,6 +1265,27 @@ fn record_field_name(name: &str) -> String {
     } else {
         format!("{name:?}")
     }
+}
+
+/// `name`, with its type arguments in angle brackets when it has any.
+fn write_type_arguments(
+    formatter: &mut fmt::Formatter<'_>,
+    name: &str,
+    arguments: &[Type],
+) -> fmt::Result {
+    formatter.write_str(name)?;
+    if arguments.is_empty() {
+        return Ok(());
+    }
+    write!(
+        formatter,
+        "<{}>",
+        arguments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn display_application(
@@ -1318,9 +1401,12 @@ pub(super) fn resolve_resource_references(
 ) -> Result<Type, SourceError> {
     match value_type {
         Type::Resource(identity) if identity.is_unresolved() => {
+            if let Some(case) = enum_case_type(&identity.name, environment) {
+                return Ok(case);
+            }
             match environment.type_member(&identity.name) {
                 Some(super::environment::TypeMember::Enum { identity, .. }) => {
-                    Ok(Type::Enum(identity.clone()))
+                    Ok(Type::Enum(identity.clone(), Vec::new()))
                 }
                 Some(super::environment::TypeMember::Alias(value_type)) => {
                     resolve_resource_references(value_type.clone(), span, environment)
@@ -1378,6 +1464,11 @@ pub(super) fn resolve_resource_references(
             .map(|argument| resolve_resource_references(argument, span, environment))
             .collect::<Result<Vec<_>, _>>()
             .map(|arguments| Type::Struct(identity, arguments)),
+        Type::Enum(identity, arguments) => arguments
+            .into_iter()
+            .map(|argument| resolve_resource_references(argument, span, environment))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|arguments| Type::Enum(identity, arguments)),
         Type::List(element) => element
             .map(|element| resolve_resource_references(*element, span, environment).map(Box::new))
             .transpose()
@@ -1454,9 +1545,12 @@ pub(super) fn resolve_schema_references(
 ) -> Result<Type, SourceError> {
     match value_type {
         Type::Resource(identity) if identity.is_unresolved() => {
+            if let Some(case) = enum_case_type(&identity.name, environment) {
+                return Ok(case);
+            }
             match environment.type_member(&identity.name) {
                 Some(super::environment::TypeMember::Enum { identity, .. }) => {
-                    Ok(Type::Enum(identity.clone()))
+                    Ok(Type::Enum(identity.clone(), Vec::new()))
                 }
                 Some(super::environment::TypeMember::Alias(value_type)) => {
                     resolve_schema_references(value_type.clone(), span, environment)
@@ -1657,12 +1751,47 @@ fn expand_alias_application(
             format!("type alias `{name}` cannot accept type arguments"),
             span.clone(),
         )),
+        Some(super::environment::TypeMember::Enum {
+            identity, arity, ..
+        }) => {
+            if arguments.len() != *arity {
+                return Err(SourceError::semantic(
+                    SourceErrorCode::InvalidTypeArguments,
+                    if *arity == 0 {
+                        format!("enum `{name}` takes no type arguments")
+                    } else {
+                        format!("enum `{name}` takes {arity} type argument(s)")
+                    },
+                    span.clone(),
+                ));
+            }
+            let mut identity = identity.clone();
+            name.clone_into(&mut identity.name);
+            Ok(Type::Enum(identity, arguments.to_vec()))
+        }
         _ => Err(SourceError::semantic(
             SourceErrorCode::UnknownType,
             format!("unknown type constructor `{name}`"),
             span.clone(),
         )),
     }
+}
+
+/// The type `Result.Ok` names: the structs of an enum's payload case.
+fn enum_case_type(name: &str, environment: &Environment) -> Option<Type> {
+    let (enum_name, case) = name.rsplit_once('.')?;
+    let Some(super::environment::TypeMember::Enum {
+        identity, payloads, ..
+    }) = environment.type_member(enum_name)
+    else {
+        return None;
+    };
+    if !payloads.iter().any(|payload| payload == case) {
+        return None;
+    }
+    let mut schema = identity.enum_case(case);
+    name.clone_into(&mut schema.name);
+    Some(Type::Struct(Some(schema), Vec::new()))
 }
 
 /// The error for a generic alias named without its type arguments.
@@ -1736,6 +1865,13 @@ pub(super) fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>
             map: *map,
         },
         Type::Struct(identity, arguments) => Type::Struct(
+            identity.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute(argument, substitutions))
+                .collect(),
+        ),
+        Type::Enum(identity, arguments) => Type::Enum(
             identity.clone(),
             arguments
                 .iter()

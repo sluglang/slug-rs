@@ -565,9 +565,15 @@ impl Parser {
                     )
                     .with_end(token.end));
                 };
+                let type_parameters = if self.matches(&TokenKind::Less) {
+                    self.alias_type_parameters()?
+                } else {
+                    Vec::new()
+                };
                 self.consume(&TokenKind::LBrace, "expected { after enum name")?;
                 self.newlines();
                 let mut cases = Vec::new();
+                let mut payloads = Vec::new();
                 while !self.matches(&TokenKind::RBrace) {
                     if self.matches(&TokenKind::End) {
                         return Err(self.expected_token(&TokenKind::RBrace, "expected }"));
@@ -589,6 +595,10 @@ impl Parser {
                         )
                         .with_end(token.end));
                     }
+                    // A payload's fields follow its case name on the same line.
+                    if self.matches(&TokenKind::LBrace) {
+                        payloads.push((case.clone(), self.schema_fields()?));
+                    }
                     cases.push(case);
                     self.declaration_separator("expected comma or newline between enum cases")?;
                 }
@@ -605,6 +615,8 @@ impl Parser {
                         exported,
                         name,
                         cases,
+                        type_parameters,
+                        payloads,
                         documentation,
                         tags,
                     },
@@ -1495,6 +1507,18 @@ impl Parser {
             } else {
                 Vec::new()
             };
+            let fields = self.schema_fields()?;
+            Ok(Expr::new(
+                ExprKind::StructSchema(fields, type_parameters),
+                span,
+                self.previous_end(),
+            ))
+        })
+    }
+    /// A schema's braced field list, as a struct expression or an enum
+    /// payload writes it.
+    fn schema_fields(&mut self) -> Result<Vec<StructSchemaField>, SourceError> {
+        super::stack::grow(|| {
             let delimiter = self.consume(&TokenKind::LBrace, "expected { after struct")?;
             self.enter_nesting(delimiter.span)?;
             let mut fields = Vec::new();
@@ -1533,11 +1557,7 @@ impl Parser {
             }
             self.next();
             self.leave_nesting();
-            Ok(Expr::new(
-                ExprKind::StructSchema(fields, type_parameters),
-                span,
-                self.previous_end(),
-            ))
+            Ok(fields)
         })
     }
     fn struct_init(&mut self, schema: Expr, span: SourceSpan) -> Result<Expr, SourceError> {

@@ -10,7 +10,7 @@ pub(super) fn is_map_key_type(value: &Type) -> bool {
         | Type::Num
         | Type::Str
         | Type::Bytes
-        | Type::Enum(_)
+        | Type::Enum(..)
         | Type::Resource(_)
         | Type::Channel(_)
         | Type::List(None)

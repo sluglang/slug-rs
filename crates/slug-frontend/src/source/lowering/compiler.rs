@@ -1247,13 +1247,25 @@ impl Compiler {
                     state.emit(Op::Nil, &expression.span);
                 }
                 ExprKind::Enum {
-                    name, cases, tags, ..
+                    name,
+                    cases,
+                    payloads,
+                    tags,
+                    ..
                 } => {
                     let declaration = self.module_declaration_index(expression);
                     self.tags(state, tags, Some(declaration), &expression.span)?;
                     for case in cases {
                         let key = state.constant(Value::string(case.clone()));
                         state.emit(Op::Constant(key), &expression.span);
+                        // A payload case is a schema, which constructs its
+                        // values as a struct's does.
+                        if let Some((_, fields)) =
+                            payloads.iter().find(|(payload, _)| payload == case)
+                        {
+                            self.struct_schema(state, fields, expression)?;
+                            continue;
+                        }
                         let value = state.constant(Value::Enum(slug_vm::Shared::new(EnumValue {
                             module: self
                                 .module_name
@@ -1311,32 +1323,7 @@ impl Compiler {
                     state.emit(Op::Map(entries.len()), &expression.span);
                 }
                 ExprKind::StructSchema(fields, _) => {
-                    let mut seen = HashSet::new();
-                    for field in fields {
-                        if !seen.insert(field.name.as_str()) {
-                            return Err(SourceError::semantic(
-                                SourceErrorCode::DuplicateName,
-                                format!("duplicate struct field '{}'", field.name),
-                                expression.span.clone(),
-                            )
-                            .with_extent(expression));
-                        }
-                        if let Some(default) = &field.default {
-                            self.expression(state, default)?;
-                        }
-                    }
-                    state.emit(
-                        Op::StructSchema(
-                            fields
-                                .iter()
-                                .map(|field| SchemaField {
-                                    name: field.name.clone(),
-                                    has_default: field.default.is_some(),
-                                })
-                                .collect(),
-                        ),
-                        &expression.span,
-                    );
+                    self.struct_schema(state, fields, expression)?;
                 }
                 ExprKind::StructInit { schema, fields } => {
                     self.expression(state, schema)?;
@@ -1517,6 +1504,42 @@ impl Compiler {
             }
             Ok(())
         })
+    }
+
+    /// A schema of `fields`, with each default evaluated now.
+    fn struct_schema(
+        &mut self,
+        state: &mut State,
+        fields: &[super::ast::StructSchemaField],
+        expression: &Expr,
+    ) -> Result<(), SourceError> {
+        let mut seen = HashSet::new();
+        for field in fields {
+            if !seen.insert(field.name.as_str()) {
+                return Err(SourceError::semantic(
+                    SourceErrorCode::DuplicateName,
+                    format!("duplicate struct field '{}'", field.name),
+                    expression.span.clone(),
+                )
+                .with_extent(expression));
+            }
+            if let Some(default) = &field.default {
+                self.expression(state, default)?;
+            }
+        }
+        state.emit(
+            Op::StructSchema(
+                fields
+                    .iter()
+                    .map(|field| SchemaField {
+                        name: field.name.clone(),
+                        has_default: field.default.is_some(),
+                    })
+                    .collect(),
+            ),
+            &expression.span,
+        );
+        Ok(())
     }
 
     fn module_declaration_index(&self, expression: &Expr) -> usize {
@@ -2290,6 +2313,31 @@ fn lower_case_pattern(
     })
 }
 
+/// The expression `a.b.c` reads, for a dotted `path`.
+fn member_path(path: &str) -> Expr {
+    let span = SourceSpan::new("<internal>", 1, 1);
+    let end = SourcePosition { line: 1, column: 1 };
+    let mut segments = path.split('.');
+    let first = segments.next().unwrap_or(path);
+    segments.fold(
+        Expr::new(ExprKind::Name(first.to_owned()), span.clone(), end),
+        |collection, segment| {
+            Expr::new(
+                ExprKind::Index {
+                    collection: Box::new(collection),
+                    index: Box::new(Expr::new(
+                        ExprKind::Value(Value::string(segment)),
+                        span.clone(),
+                        end,
+                    )),
+                },
+                span.clone(),
+                end,
+            )
+        },
+    )
+}
+
 fn lower_match_type(
     value_type: &super::semantic::Type,
     operands: &mut Vec<PatternOperand>,
@@ -2307,7 +2355,7 @@ fn lower_match_type(
             module: identity.runtime_module().into(),
             name: identity.name.clone(),
         }),
-        Type::Enum(identity) => Ok(MatchType::Enum {
+        Type::Enum(identity, _) => Ok(MatchType::Enum {
             module: identity.runtime_module().into(),
             name: identity.name.clone(),
         }),
@@ -2333,7 +2381,13 @@ fn lower_match_type(
         Type::Struct(None, _) => Ok(MatchType::Struct(None)),
         Type::Struct(Some(identity), _) => {
             let index = operands.len();
-            operands.push(PatternOperand::StructSchema(identity.name.clone()));
+            // A payload case's schema is a member of its enum, as `Result.Ok`
+            // or `shapes.Result.Ok`, read when the match runs.
+            operands.push(if identity.case_enum().is_some() {
+                PatternOperand::Computed(member_path(&identity.name))
+            } else {
+                PatternOperand::StructSchema(identity.name.clone())
+            });
             Ok(MatchType::Struct(Some(index)))
         }
         Type::Union(members) => members

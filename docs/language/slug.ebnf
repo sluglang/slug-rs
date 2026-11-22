@@ -49,8 +49,10 @@ defer_stmt = "defer" , [ "onsuccess" | ( "onerror" , "(" , identifier , ")" ) ] 
 foreign_decl = "foreign" , identifier , "=" , "fn" , [ type_parameters ] ,
                "(" , [ parameters ] , ")" , [ ":" , type_annotation ] , [ ";" ] ;
 resource_decl = "resource" , identifier ;
-enum_decl = "enum" , identifier , "{" , { NEWLINE } ,
-            [ identifier , { member_sep , identifier } , [ member_sep ] ] , "}" ;
+enum_decl = "enum" , identifier , [ type_parameters ] , "{" , { NEWLINE } ,
+            [ enum_case , { member_sep , enum_case } , [ member_sep ] ] , "}" ;
+(* A payload's fields follow its case name on the same line. *)
+enum_case = identifier , [ "{" , { NEWLINE } , [ struct_schema_fields ] , "}" ] ;
 (* Enum cases and struct schema fields are separated by a comma, one or more
    newlines, or both, with at most one comma. ";" is not a member separator. *)
 member_sep = { NEWLINE } , "," , { NEWLINE } | NEWLINE , { NEWLINE } ;

@@ -301,9 +301,11 @@ require.
 
 ### 4. Payload-bearing and generic enums
 
-- [ ] Specify [payload and generic variants](../decisions/2026-11-22-payload-enum-variants.md)
-  in the language documents, and decide constructor-shaped patterns.
-- [ ] Implement variants as distinct schema identities under the enum's
+- [x] Specify [payload and generic variants](../decisions/2026-11-22-payload-enum-variants.md)
+  in the language documents ([payload cases](../language/nominal-types.md#payload-cases)),
+  and decide constructor-shaped patterns: none for now; the whole-pattern
+  constraint `{value}: Result.Ok` is the form.
+- [x] Implement variants as distinct schema identities under the enum's
   namespace, as the ADR proposed; extend coverage to payload variants.
 - [ ] Type `Result`-style returns in one clutch as the test of the design,
   and revisit positional payloads then.

@@ -77,6 +77,7 @@ Shared standard-input line stream and interactive helpers through core-Clutch `s
 Interrupt and terminate requests delivered on channels through core-Clutch `slug.os.signal`|implemented|`crates/slug/tests/typed_core.rs`
 Broad `resource` source type|removed|`language/nominal-types.md`
 Nominal `resource Name` declarations, separate exported type paths, strongly typed source signatures, and whole-case match constraints|partial|`crates/slug/tests/cli.rs`, `crates/slug/tests/module_loader.rs`, and `language/nominal-types.md`
+Payload-bearing and generic enum cases, `enum Result<T, E> { Ok { value: T } Error { error: E } }`, with whole-pattern constraints and closed-match coverage|implemented|`crates/slug/tests/cli.rs`, `crates/slug/tests/module_loader.rs`, and `language/nominal-types.md`
 Fieldless nominal enums with required qualified cases|implemented|`crates/slug/tests/cli.rs`, `crates/slug/tests/module_loader.rs`, and `language/nominal-types.md`
 Comma or newline separators between enum cases and struct schema fields|implemented|`crates/slug/tests/cli.rs` and `language/slug.ebnf`
 Transparent `type Name = Annotation` aliases|implemented|`language/nominal-types.md`

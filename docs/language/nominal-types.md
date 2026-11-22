@@ -89,8 +89,63 @@ match from {
 
 Enum values compare equal only when both their enum identity and case are the
 same. They are not strings or numbers, cannot be forged by casts, and do not
-support explicit discriminants, bit flags, methods, or payload-bearing cases.
-An enum's complete case set is available to closed-match coverage checking.
+support explicit discriminants, bit flags, or methods. An enum's complete case
+set is available to closed-match coverage checking.
+
+### Payload cases
+
+A case may carry a payload of named fields, in braces after its name on the
+same line, and an enum may take type parameters, which its payloads' field
+annotations name. The rationale is in
+[Payload-bearing and generic enum variants](../decisions/2026-11-22-payload-enum-variants.md).
+
+```slug
+enum Result<T, E> {
+  Ok { value: T }
+  Error { error: E }
+}
+
+enum Shape { Circle { radius: num }, Square { side: num, label: str = "sq" }, Empty }
+
+val parsed:Result<num, str> = Result.Ok { value: 3 }
+
+val unwrapOr = fn<T>(r:Result<T, str>, fallback:T):T {
+  match r {
+    {value}: Result.Ok => value
+    _: Result.Error => fallback
+  }
+}
+```
+
+- **Schemas.** A payload case is a struct schema, with the field rules of
+  [Structs](structs.md) for types, defaults, and required fields; its
+  defaults are evaluated once, when the enum is declared. `Result.Ok` is that
+  schema, so `Result.Ok { value: 3 }` constructs a struct of it, and field
+  reads, `copy`, equality, and record-type conformance are a struct's. An
+  enum may mix fieldless and payload cases.
+- **Types.** A value of a payload case is a value of its enum: `Result.Ok {
+  value: 3 }` conforms to `Result<num, str>`. `Result<T, E>` takes one type
+  argument per parameter, covariantly, as a generic schema's struct does;
+  bare `Result` leaves them unknown. Construction infers a case's type
+  arguments from its fields, and diagnostics show its type as the case,
+  `Result.Ok<num, unknown>`, where a type argument no field determines is
+  unknown. `Result.Ok` is also a type annotation, for that case's values.
+- **Patterns.** A case is matched by a whole-pattern type constraint,
+  `{value}: Result.Ok` or `_: Result.Error`. The pattern's fields take their
+  types from the subject's type arguments, so `value` is a `num` when the
+  subject is a `Result<num, str>`. There is no constructor-shaped pattern,
+  such as `Result.Ok { value }`.
+- **Coverage.** A closed match covers a payload case with a constraint
+  naming it whose pattern matches every struct of the case: a wildcard, a
+  binding, or a map pattern of its fields whose patterns are irrefutable.
+  `{radius: 1}: Shape.Circle` matches some circles and covers none. An
+  unhandled case makes a closed match non-exhaustive, and a repeated one is
+  unreachable.
+- **At run time** a payload case's value is a struct of its case's schema,
+  which prints as a struct does. Type arguments are erased: a match
+  constraint names a generic enum as `Result`, which matches its fieldless
+  values and a struct of any of its payload cases; `Result<num, str>` is not
+  runtime-checkable.
 
 ## Aliases
 
@@ -203,8 +258,9 @@ Importing an enum does not inject its case names into the importing module.
 The current Rust subset implements nominal resource declarations, exported
 resource type paths such as `fs.File`, the `File` signatures in `slug.io.fs`,
 checked source/native resource-registration agreement, mandatory foreign
-resource argument/result validation, and fieldless enum declarations with
-qualified local/imported values and patterns, type paths, and exhaustive
-closed-match coverage, and transparent aliases including exported/imported
+resource argument/result validation, and enum declarations, fieldless and
+payload-bearing, generic or not, with qualified local/imported values and
+patterns, type paths, and exhaustive closed-match coverage, and transparent
+aliases including exported/imported
 and generic aliases. Aliases are compile-time-only names: they have no value, constructor,
 display form, or equality behavior of their own.

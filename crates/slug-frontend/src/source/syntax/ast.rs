@@ -252,8 +252,16 @@ impl Expr {
                     visit(bound);
                 }
             }
+            ExprKind::Enum { payloads, .. } => {
+                for (_, fields) in payloads {
+                    for field in fields {
+                        if let Some(default) = &field.default {
+                            visit(default);
+                        }
+                    }
+                }
+            }
             ExprKind::Resource { .. }
-            | ExprKind::Enum { .. }
             | ExprKind::TypeAlias { .. }
             | ExprKind::Value(_)
             | ExprKind::Interpolate(_)
@@ -297,7 +305,12 @@ pub(super) enum ExprKind {
     Enum {
         exported: bool,
         name: String,
+        /// Every case's name, in declaration order.
         cases: Vec<String>,
+        /// A generic enum's type parameters, which payload fields name.
+        type_parameters: Vec<String>,
+        /// Each payload-bearing case and its fields, in declaration order.
+        payloads: Vec<(String, Vec<StructSchemaField>)>,
         documentation: Option<String>,
         tags: Vec<Tag>,
     },

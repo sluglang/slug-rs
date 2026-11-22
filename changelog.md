@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Enum cases can carry data: `enum Result<T, E> { Ok { value: T } Error {
+  error: E } }`. `Result.Ok { value: 3 }` builds a case as a struct is built,
+  and is a `Result<num, str>`; a match takes it apart with `{value}:
+  Result.Ok`, whose `value` has the type the subject's type arguments give.
+  A closed match must handle every case, payload or fieldless. An enum can
+  mix both kinds, and payload fields can have defaults.
+
 - Struct schemas can take type parameters: `val Pair = struct<T, U> {
   first: T, second: U }`. Construction infers the type arguments from the
   fields, so `Pair { first: 1, second: "a" }` is a `struct<Pair<num, str>>`,

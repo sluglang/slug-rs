@@ -1862,7 +1862,12 @@ fn imports_generic_type_aliases_through_module_type_paths() {
          export val origin = fn():Point { PointSchema {x: 0, y: 0} }\n\
          export val xOf = fn(p:{x: num}):num { p.x }\n\
          export val Box = struct<T> { value: T }\n\
-         export val wrap = fn<T>(v:T):struct<Box<T>> { Box { value: v } }\n",
+         export val wrap = fn<T>(v:T):struct<Box<T>> { Box { value: v } }\n\
+         export enum Result<T, E> {\n\
+           Ok { value: T }\n\
+           Error { error: E }\n\
+         }\n\
+         export val ok = fn<T>(v:T):Result<T, str> { Result.Ok { value: v } }\n",
     )
     .expect("write generic alias module");
     let main_path = root.join("main.slug");
@@ -1879,7 +1884,9 @@ fn imports_generic_type_aliases_through_module_type_paths() {
              val tree:shapes.Labelled<num> = [shapes.origin(), [[shapes.origin(), [], 2]], 1]\n\
              val named:shapes.Named<num> = {name: \"n\", tag: 7}\n\
              val boxed:struct<Box<num>> = shapes.Box { value: 8 }\n\
-             export val value = [name, here[1], other, here[0].x, doc, tree[2], named.tag, xOf(origin()), shapes.xOf({x: 5}), boxed.value, shapes.wrap(\"w\").value]\n",
+             val unwrap = fn(r:shapes.Result<num, str>):num { match r { {value}: shapes.Result.Ok => value; _: Result.Error => 0 } }\n\
+             val result:Result<num, str> = shapes.ok(9)\n\
+             export val value = [name, here[1], other, here[0].x, doc, tree[2], named.tag, xOf(origin()), shapes.xOf({x: 5}), boxed.value, shapes.wrap(\"w\").value, unwrap(result), unwrap(shapes.Result.Error { error: \"e\" })]\n",
         )
         .expect("compile importer using generic aliases");
     let mut vm = Vm::with_module_loader(loader.clone());
@@ -1887,7 +1894,7 @@ fn imports_generic_type_aliases_through_module_type_paths() {
         .expect("run importer using generic aliases");
     assert_eq!(
         vm.exported_values(&program).to_string(),
-        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1, 7, 0, 5, 8, \"w\"]}"
+        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1, 7, 0, 5, 8, \"w\", 9, 0]}"
     );
     let error = loader
         .compile_source(
