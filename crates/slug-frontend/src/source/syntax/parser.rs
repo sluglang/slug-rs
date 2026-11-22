@@ -639,12 +639,18 @@ impl Parser {
                     )
                     .with_end(token.end));
                 };
+                let parameters = if self.matches(&TokenKind::Less) {
+                    self.alias_type_parameters()?
+                } else {
+                    Vec::new()
+                };
                 self.consume(&TokenKind::Eq, "expected = after type alias name")?;
                 let annotation = self.type_annotation()?;
                 return Ok(Expr::new(
                     ExprKind::TypeAlias {
                         exported,
                         name,
+                        parameters,
                         annotation,
                     },
                     span,
@@ -654,6 +660,39 @@ impl Parser {
             self.expression()
         })?;
         Self::bounded(expression)
+    }
+
+    /// A type alias's type parameters, from `<` to `>`: at least one name,
+    /// each once.
+    fn alias_type_parameters(&mut self) -> Result<Vec<String>, SourceError> {
+        self.next();
+        let mut parameters = Vec::new();
+        loop {
+            let token = self.next();
+            let TokenKind::Name(name) = token.kind else {
+                return Err(SourceError::at(
+                    SourceErrorCode::ExpectedSyntax,
+                    "expected type parameter name",
+                    token.span,
+                )
+                .with_end(token.end));
+            };
+            if parameters.contains(&name) {
+                return Err(SourceError::at(
+                    SourceErrorCode::DuplicateName,
+                    format!("duplicate type parameter `{name}`"),
+                    token.span,
+                )
+                .with_end(token.end));
+            }
+            parameters.push(name);
+            if !self.matches(&TokenKind::Comma) {
+                break;
+            }
+            self.next();
+        }
+        self.consume(&TokenKind::Greater, "expected > after type parameters")?;
+        Ok(parameters)
     }
 
     #[allow(clippy::too_many_lines)]

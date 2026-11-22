@@ -10,9 +10,14 @@ A newline normally ends the current expression. It instead continues that
 expression in either of these cases:
 
 1. The token before the newline requires a right-hand side: assignment, a
-binary operator, `/>`, `.`, `:`, or `=>`. A `>` that closes the type arguments
-of `list`, `map`, `chan`, `task`, `struct`, or `fn` is not a binary operator,
-so `type Rows = list<num>` at the end of a line ends its statement.
+binary operator, `/>`, `.`, `:`, or `=>`. A `>` that closes type arguments is
+not a binary operator, so `type Rows = list<num>` at the end of a line ends
+its statement. Type arguments are the ones after `list`, `map`, `chan`, `task`,
+`struct`, or `fn`, any inside those, and those after a name in a type: a name
+after an annotation's `:`, or in a `type` declaration, as `Pair<T, T>` in
+`type Twin<T> = Pair<T, T>`. A map literal value written with `<`, as in
+`{a: x < y}`, is read the same way, so a `>` at the end of a later line in that
+statement ends it rather than continuing.
 2. The first token after the newline is an infix continuation token: `+`, `-`,
 `*`, `/`, `%`, equality, comparison, logical-and/or, bitwise-and/or, shift,
 list append/prepend, `/>`, or `.`.

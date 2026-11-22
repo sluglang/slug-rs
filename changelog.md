@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Type aliases can take type parameters: `type Optional<T> = T|nil` and
+  `type Pair<T, U> = [T, U]` are filled in at each use, as `Optional<str>`,
+  in annotations, other aliases, generic functions, match constraints, and
+  from other modules as `shapes.Optional<num>`. A wrong number of type
+  arguments is a source error. A generic alias's `>` at the end of a line
+  ends the statement, as `list<num>`'s does.
+
 - Native code no longer leaks the value a module variable is updated to
   (`total = total + i`, `log = log :+ entry`, a struct copy with one field
   changed): a long-running program that updates module variables, as

@@ -54,7 +54,8 @@ enum_decl = "enum" , identifier , "{" , { NEWLINE } ,
 (* Enum cases and struct schema fields are separated by a comma, one or more
    newlines, or both, with at most one comma. ";" is not a member separator. *)
 member_sep = { NEWLINE } , "," , { NEWLINE } | NEWLINE , { NEWLINE } ;
-type_alias_decl = "type" , identifier , "=" , type_annotation ;
+type_alias_decl = "type" , identifier , [ "<" , identifier ,
+                  { "," , identifier } , ">" ] , "=" , type_annotation ;
 
 expression_stmt = expression ;
 

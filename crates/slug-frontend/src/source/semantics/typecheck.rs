@@ -18,7 +18,7 @@ use super::{
     semantic::{
         AlternativeType, AlternativeVariable, InferredAlternative, ResourceIdentity,
         SchemaIdentity, Type, resolve_annotation, resolve_resource_references,
-        resolve_static_annotation,
+        resolve_static_annotation, substitute,
     },
 };
 
@@ -2058,8 +2058,12 @@ fn exported_schemas(
         }
     }
     for member in types.values() {
-        if let super::environment::TypeMember::Alias(value_type) = member {
-            collect(value_type, &mut identities);
+        match member {
+            super::environment::TypeMember::Alias(value_type)
+            | super::environment::TypeMember::GenericAlias {
+                body: value_type, ..
+            } => collect(value_type, &mut identities),
+            _ => {}
         }
     }
     identities
@@ -2077,13 +2081,19 @@ fn resolve_type_aliases(
     let mut aliases = HashMap::new();
     for expression in expressions {
         let ExprKind::TypeAlias {
-            name, annotation, ..
+            name,
+            parameters,
+            annotation,
+            ..
         } = &expression.kind
         else {
             continue;
         };
         if aliases
-            .insert(name.clone(), (annotation, expression.span.clone()))
+            .insert(
+                name.clone(),
+                (annotation, parameters.as_slice(), expression.span.clone()),
+            )
             .is_some()
         {
             return Err(SourceError::semantic(
@@ -2094,7 +2104,7 @@ fn resolve_type_aliases(
             .with_extent(expression));
         }
     }
-    for (name, (_, span)) in &aliases {
+    for (name, (_, _, span)) in &aliases {
         if resource_names.contains(name) || enum_names.contains(name) {
             return Err(SourceError::semantic(
                 SourceErrorCode::DuplicateName,
@@ -2114,9 +2124,13 @@ fn resolve_type_aliases(
     Ok(())
 }
 
+/// Each alias declared in a module: its annotation, its type parameters, and
+/// where it is declared.
+type AliasDeclarations<'a> = HashMap<String, (&'a TypeAnnotation, &'a [String], SourceSpan)>;
+
 fn resolve_type_alias(
     name: &str,
-    aliases: &HashMap<String, (&TypeAnnotation, SourceSpan)>,
+    aliases: &AliasDeclarations<'_>,
     environment: &mut Environment,
     visiting: &mut Vec<String>,
     resolved: &mut HashSet<String>,
@@ -2125,7 +2139,7 @@ fn resolve_type_alias(
         if resolved.contains(name) {
             return Ok(());
         }
-        let (annotation, span) = aliases
+        let (annotation, parameters, span) = aliases
             .get(name)
             .expect("alias name came from the alias declaration table");
         if let Some(start) = visiting.iter().position(|entry| entry == name) {
@@ -2147,15 +2161,22 @@ fn resolve_type_alias(
         // unresolved schema reference until the alias is used after `S` exists.
         // Resource and enum identities, by contrast, belong to the type namespace
         // and are available while aliases are collected.
+        // A generic alias's parameters resolve to `Type::Generic`, which each
+        // use fills in.
         let value_type = resolve_resource_references(
-            resolve_annotation(annotation, &[], span)?,
+            resolve_annotation(annotation, parameters, span)?,
             span,
             environment,
         )?;
-        environment.declare_type(
-            name.into(),
-            super::environment::TypeMember::Alias(value_type),
-        );
+        let member = if parameters.is_empty() {
+            super::environment::TypeMember::Alias(value_type)
+        } else {
+            super::environment::TypeMember::GenericAlias {
+                parameters: parameters.len(),
+                body: value_type,
+            }
+        };
+        environment.declare_type(name.into(), member);
         visiting.pop();
         resolved.insert(name.into());
         Ok(())
@@ -2164,7 +2185,7 @@ fn resolve_type_alias(
 
 fn alias_dependencies(
     annotation: &TypeAnnotation,
-    aliases: &HashMap<String, (&TypeAnnotation, SourceSpan)>,
+    aliases: &AliasDeclarations<'_>,
     dependencies: &mut Vec<String>,
 ) -> Result<(), SourceError> {
     super::stack::grow(|| {
@@ -2175,12 +2196,10 @@ fn alias_dependencies(
                 }
             }
             TypeAnnotation::Apply { name, arguments } => {
+                // A generic alias used in another, as `Pair<T, T>`; whether
+                // it takes those arguments is checked where it is expanded.
                 if aliases.contains_key(name) {
-                    return Err(SourceError::semantic(
-                        SourceErrorCode::InvalidTypeArguments,
-                        format!("type alias `{name}` cannot accept type arguments"),
-                        aliases[name].1.clone(),
-                    ));
+                    dependencies.push(name.clone());
                 }
                 for argument in arguments {
                     alias_dependencies(argument, aliases, dependencies)?;
@@ -2477,6 +2496,18 @@ fn record_exports(
                     )
                     .ok()
                     .map(super::environment::TypeMember::Alias)
+                }
+                Some(super::environment::TypeMember::GenericAlias { parameters, body }) => {
+                    super::semantic::resolve_schema_references(
+                        body.clone(),
+                        &expression.span,
+                        environment,
+                    )
+                    .ok()
+                    .map(|body| super::environment::TypeMember::GenericAlias {
+                        parameters: *parameters,
+                        body,
+                    })
                 }
                 member => member.cloned(),
             };
@@ -3968,7 +3999,8 @@ fn is_closed_coverage_type(value_type: &Type) -> bool {
         | Type::Channel(Some(_))
         | Type::Struct(None)
         | Type::Tuple(_)
-        | Type::Generic(_) => false,
+        | Type::Generic(_)
+        | Type::AliasApplication(..) => false,
     }
 }
 
@@ -4879,9 +4911,10 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         Type::Map(Some((key, value))) => {
             first_generic_parameter(key).or_else(|| first_generic_parameter(value))
         }
-        Type::Function(Some(values)) | Type::Tuple(values) | Type::Union(values) => {
-            values.iter().find_map(first_generic_parameter)
-        }
+        Type::Function(Some(values))
+        | Type::Tuple(values)
+        | Type::Union(values)
+        | Type::AliasApplication(_, values) => values.iter().find_map(first_generic_parameter),
         Type::Never
         | Type::Unknown
         | Type::Any
@@ -5135,51 +5168,6 @@ fn infer_payload(
     }
     substitutions.insert(*index, actual.clone());
     Ok(())
-}
-
-fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>) -> Type {
-    match value_type {
-        Type::Generic(index) => substitutions.get(index).cloned().unwrap_or(Type::Unknown),
-        Type::List(argument) => Type::List(
-            argument
-                .as_ref()
-                .map(|argument| Box::new(substitute(argument, substitutions))),
-        ),
-        Type::Map(arguments) => Type::Map(arguments.as_ref().map(|(key, value)| {
-            (
-                Box::new(substitute(key, substitutions)),
-                Box::new(substitute(value, substitutions)),
-            )
-        })),
-        Type::Function(signature) => Type::Function(signature.as_ref().map(|signature| {
-            signature
-                .iter()
-                .map(|value| substitute(value, substitutions))
-                .collect()
-        })),
-        Type::Task(result) => Type::Task(
-            result
-                .as_ref()
-                .map(|result| Box::new(substitute(result, substitutions))),
-        ),
-        Type::Channel(value) => Type::Channel(
-            value
-                .as_ref()
-                .map(|value| Box::new(substitute(value, substitutions))),
-        ),
-        Type::Tuple(elements) => Type::Tuple(
-            elements
-                .iter()
-                .map(|element| substitute(element, substitutions))
-                .collect(),
-        ),
-        Type::Union(members) => Type::union(
-            members
-                .iter()
-                .map(|member| substitute(member, substitutions)),
-        ),
-        other => other.clone(),
-    }
 }
 
 fn known_schema_identity(expression: &Expr, environment: &Environment) -> Option<SchemaIdentity> {

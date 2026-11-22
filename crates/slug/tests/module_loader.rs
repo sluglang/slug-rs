@@ -1847,6 +1847,52 @@ fn nominal_types_remain_distinct_between_modules() {
 }
 
 #[test]
+fn imports_generic_type_aliases_through_module_type_paths() {
+    let root = root("generic-alias-imports");
+    fs::create_dir_all(&root).expect("create generic alias module directory");
+    fs::write(
+        root.join("shapes.slug"),
+        "val PointSchema = struct { x: num, y: num }\n\
+         export type Point = struct<PointSchema>\n\
+         export type Opt<T> = T|nil\n\
+         export type Located<T> = [Point, T]\n\
+         export val origin = fn():Point { PointSchema {x: 0, y: 0} }\n",
+    )
+    .expect("write generic alias module");
+    let main_path = root.join("main.slug");
+    let loader = ModuleLoader::new(&root, None);
+    let program = loader
+        .compile_source(
+            &main_path.to_string_lossy(),
+            "val shapes = import(\"shapes\")\n\
+             val {*} = import(\"shapes\")\n\
+             val name:shapes.Opt<str> = nil\n\
+             val here:shapes.Located<str> = [shapes.origin(), \"home\"]\n\
+             val other:Opt<num> = 3\n\
+             export val value = [name, here[1], other, here[0].x]\n",
+        )
+        .expect("compile importer using generic aliases");
+    let mut vm = Vm::with_module_loader(loader.clone());
+    vm.run_named(&program, "main")
+        .expect("run importer using generic aliases");
+    assert_eq!(
+        vm.exported_values(&program).to_string(),
+        "{\"value\": [nil, \"home\", 3, 0]}"
+    );
+    let error = loader
+        .compile_source(
+            &main_path.to_string_lossy(),
+            "val shapes = import(\"shapes\")\nval bad:shapes.Opt<num> = \"a\"\n",
+        )
+        .expect_err("an imported generic alias checks its use");
+    assert!(
+        error.to_string().contains("expected num|nil, got str"),
+        "{error}"
+    );
+    fs::remove_dir_all(root).expect("remove generic alias module directory");
+}
+
+#[test]
 fn imports_transparent_type_aliases_through_module_type_paths() {
     let root = root("alias-imports");
     fs::create_dir_all(&root).expect("create alias module directory");

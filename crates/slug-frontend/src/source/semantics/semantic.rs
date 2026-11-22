@@ -112,6 +112,9 @@ pub(super) enum Type {
     Tuple(Vec<Type>),
     Generic(usize),
     Union(Vec<Type>),
+    /// A generic alias applied to type arguments, as `Optional<num>`, until
+    /// annotation resolution looks the alias up and fills in its body.
+    AliasApplication(String, Vec<Type>),
 }
 
 /// A variable whose meaning is scoped to one inferred overload alternative.
@@ -452,7 +455,10 @@ impl Type {
             | Self::Task(None)
             | Self::Channel(None)
             | Self::Schema
-            | Self::Struct(_) => true,
+            | Self::Struct(_)
+            // An alias application is resolved by the environment, and checked
+            // again once it is, as an unresolved alias name is.
+            | Self::AliasApplication(..) => true,
             Self::List(element) => element
                 .as_deref()
                 .is_none_or(Self::is_reifiable_match_constraint),
@@ -485,8 +491,10 @@ impl Type {
         if flattened.iter().any(|member| member == &Self::Unknown) {
             return Self::Unknown;
         }
+        // A type parameter may stand for a nilable type, so `any` does not
+        // cover it, and nothing covers it until it is filled in.
         if flattened.iter().any(|member| member == &Self::Any) {
-            flattened.retain(|member| matches!(member, Self::Any | Self::Nil));
+            flattened.retain(|member| matches!(member, Self::Any | Self::Nil | Self::Generic(_)));
         }
         flattened.sort_by_key(sort_key);
         flattened.dedup();
@@ -496,11 +504,12 @@ impl Type {
         let covered = (0..flattened.len())
             .filter(|&index| {
                 let member = &flattened[index];
-                flattened.iter().enumerate().any(|(other_index, other)| {
-                    other_index != index
-                        && member.is_assignable_to(other)
-                        && (!other.is_assignable_to(member) || other_index < index)
-                })
+                !matches!(member, Self::Generic(_))
+                    && flattened.iter().enumerate().any(|(other_index, other)| {
+                        other_index != index
+                            && member.is_assignable_to(other)
+                            && (!other.is_assignable_to(member) || other_index < index)
+                    })
             })
             .collect::<Vec<_>>();
         for index in covered.into_iter().rev() {
@@ -757,6 +766,15 @@ impl fmt::Display for Type {
                     .join(", ")
             ),
             Self::Generic(index) => write!(formatter, "T{index}"),
+            Self::AliasApplication(name, arguments) => write!(
+                formatter,
+                "{name}<{}>",
+                arguments
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Union(members) => write!(
                 formatter,
                 "{}",
@@ -875,11 +893,47 @@ pub(super) fn resolve_resource_references(
                 Some(super::environment::TypeMember::Alias(value_type)) => {
                     resolve_resource_references(value_type.clone(), span, environment)
                 }
+                Some(super::environment::TypeMember::GenericAlias { parameters, .. }) => {
+                    Err(missing_alias_arguments(&identity.name, *parameters, span))
+                }
                 _ => environment
                     .resolve_resource_type(&identity.name, span)
                     .map(Type::Resource),
             }
         }
+        Type::AliasApplication(name, arguments) => {
+            let arguments = arguments
+                .into_iter()
+                .map(|argument| resolve_resource_references(argument, span, environment))
+                .collect::<Result<Vec<_>, _>>()?;
+            resolve_resource_references(
+                expand_alias_application(&name, &arguments, span, environment)?,
+                span,
+                environment,
+            )
+        }
+        Type::Function(signature) => signature
+            .map(|types| {
+                types
+                    .into_iter()
+                    .map(|value| resolve_resource_references(value, span, environment))
+                    .collect()
+            })
+            .transpose()
+            .map(Type::Function),
+        Type::Task(result) => result
+            .map(|result| resolve_resource_references(*result, span, environment).map(Box::new))
+            .transpose()
+            .map(Type::Task),
+        Type::Channel(value) => value
+            .map(|value| resolve_resource_references(*value, span, environment).map(Box::new))
+            .transpose()
+            .map(Type::Channel),
+        Type::Tuple(values) => values
+            .into_iter()
+            .map(|value| resolve_resource_references(value, span, environment))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Type::Tuple),
         Type::List(element) => element
             .map(|element| resolve_resource_references(*element, span, environment).map(Box::new))
             .transpose()
@@ -916,10 +970,24 @@ pub(super) fn resolve_schema_references(
                 Some(super::environment::TypeMember::Alias(value_type)) => {
                     resolve_schema_references(value_type.clone(), span, environment)
                 }
+                Some(super::environment::TypeMember::GenericAlias { parameters, .. }) => {
+                    Err(missing_alias_arguments(&identity.name, *parameters, span))
+                }
                 _ => environment
                     .resolve_resource_type(&identity.name, span)
                     .map(Type::Resource),
             }
+        }
+        Type::AliasApplication(name, arguments) => {
+            let arguments = arguments
+                .into_iter()
+                .map(|argument| resolve_schema_references(argument, span, environment))
+                .collect::<Result<Vec<_>, _>>()?;
+            resolve_schema_references(
+                expand_alias_application(&name, &arguments, span, environment)?,
+                span,
+                environment,
+            )
         }
         Type::Struct(Some(identity)) if identity.is_unresolved() => {
             let name = identity.name;
@@ -1050,13 +1118,109 @@ fn resolve_application(
             ("map", _) => Err(wrong_type_arity(name, "2", span)),
             ("fn", _) => Err(wrong_type_arity(name, "at least 1", span)),
             ("schema", _) => Err(wrong_type_arity(name, "0", span)),
-            _ => Err(SourceError::semantic(
-                SourceErrorCode::UnknownType,
-                format!("unknown type constructor `{name}`"),
-                span.clone(),
-            )),
+            // A generic alias, looked up when the annotation is resolved.
+            _ => Ok(Type::AliasApplication(name.into(), resolved)),
         }
     })
+}
+
+/// The type a use of generic alias `name` with `arguments` stands for: its
+/// body with each parameter filled in.
+fn expand_alias_application(
+    name: &str,
+    arguments: &[Type],
+    span: &SourceSpan,
+    environment: &Environment,
+) -> Result<Type, SourceError> {
+    match environment.type_member(name) {
+        Some(super::environment::TypeMember::GenericAlias { parameters, body }) => {
+            if arguments.len() != *parameters {
+                return Err(SourceError::semantic(
+                    SourceErrorCode::InvalidTypeArguments,
+                    format!(
+                        "type alias `{name}` takes {parameters} type argument(s), got {}",
+                        arguments.len()
+                    ),
+                    span.clone(),
+                ));
+            }
+            let substitutions = arguments.iter().cloned().enumerate().collect();
+            Ok(substitute(body, &substitutions))
+        }
+        Some(super::environment::TypeMember::Alias(_)) => Err(SourceError::semantic(
+            SourceErrorCode::InvalidTypeArguments,
+            format!("type alias `{name}` cannot accept type arguments"),
+            span.clone(),
+        )),
+        _ => Err(SourceError::semantic(
+            SourceErrorCode::UnknownType,
+            format!("unknown type constructor `{name}`"),
+            span.clone(),
+        )),
+    }
+}
+
+/// The error for a generic alias named without its type arguments.
+fn missing_alias_arguments(name: &str, parameters: usize, span: &SourceSpan) -> SourceError {
+    SourceError::semantic(
+        SourceErrorCode::InvalidTypeArguments,
+        format!("type alias `{name}` needs {parameters} type argument(s)"),
+        span.clone(),
+    )
+}
+
+/// `value_type` with each `Type::Generic(i)` replaced by substitution `i`, or
+/// by `unknown` when there is none.
+pub(super) fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>) -> Type {
+    match value_type {
+        Type::Generic(index) => substitutions.get(index).cloned().unwrap_or(Type::Unknown),
+        Type::List(argument) => Type::List(
+            argument
+                .as_ref()
+                .map(|argument| Box::new(substitute(argument, substitutions))),
+        ),
+        Type::Map(arguments) => Type::Map(arguments.as_ref().map(|(key, value)| {
+            (
+                Box::new(substitute(key, substitutions)),
+                Box::new(substitute(value, substitutions)),
+            )
+        })),
+        Type::Function(signature) => Type::Function(signature.as_ref().map(|signature| {
+            signature
+                .iter()
+                .map(|value| substitute(value, substitutions))
+                .collect()
+        })),
+        Type::Task(result) => Type::Task(
+            result
+                .as_ref()
+                .map(|result| Box::new(substitute(result, substitutions))),
+        ),
+        Type::Channel(value) => Type::Channel(
+            value
+                .as_ref()
+                .map(|value| Box::new(substitute(value, substitutions))),
+        ),
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| substitute(element, substitutions))
+                .collect(),
+        ),
+        Type::Union(members) => Type::union(
+            members
+                .iter()
+                .map(|member| substitute(member, substitutions)),
+        ),
+        Type::AliasApplication(name, arguments) => Type::AliasApplication(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute(argument, substitutions))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 fn wrong_type_arity(name: &str, expected: &str, span: &SourceSpan) -> SourceError {

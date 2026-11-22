@@ -101,6 +101,12 @@ pub(super) enum TypeMember {
         cases: Vec<String>,
     },
     Alias(Type),
+    /// A generic alias: its body, in which `Type::Generic(i)` is its `i`th
+    /// parameter, filled in at each use.
+    GenericAlias {
+        parameters: usize,
+        body: Type,
+    },
 }
 
 impl TypeMember {
@@ -119,7 +125,7 @@ impl TypeMember {
                     cases: cases.clone(),
                 }
             }
-            Self::Alias(value_type) => Self::Alias(value_type.clone()),
+            Self::Alias(_) | Self::GenericAlias { .. } => self.clone(),
         }
     }
 }
@@ -624,7 +630,9 @@ impl Environment {
                 .and_then(|binding| binding.type_members.get(type_name))
                 .and_then(|member| match member {
                     TypeMember::Resource(identity) => Some(identity.clone()),
-                    TypeMember::Enum { .. } | TypeMember::Alias(_) => None,
+                    TypeMember::Enum { .. }
+                    | TypeMember::Alias(_)
+                    | TypeMember::GenericAlias { .. } => None,
                 });
         }
         self.type_scopes
@@ -633,7 +641,9 @@ impl Environment {
             .find_map(|scope| scope.get(name))
             .and_then(|member| match member {
                 TypeMember::Resource(identity) => Some(identity.clone()),
-                TypeMember::Enum { .. } | TypeMember::Alias(_) => None,
+                TypeMember::Enum { .. }
+                | TypeMember::Alias(_)
+                | TypeMember::GenericAlias { .. } => None,
             })
     }
 
@@ -667,7 +677,10 @@ impl Environment {
                     identity: candidate,
                     cases,
                 } if candidate == identity => Some(cases.clone()),
-                TypeMember::Resource(_) | TypeMember::Enum { .. } | TypeMember::Alias(_) => None,
+                TypeMember::Resource(_)
+                | TypeMember::Enum { .. }
+                | TypeMember::Alias(_)
+                | TypeMember::GenericAlias { .. } => None,
             })
     }
 
@@ -696,7 +709,9 @@ impl Environment {
                 .get(type_name)
                 .and_then(|member| match member {
                     TypeMember::Resource(identity) => Some(identity.clone()),
-                    TypeMember::Enum { .. } | TypeMember::Alias(_) => None,
+                    TypeMember::Enum { .. }
+                    | TypeMember::Alias(_)
+                    | TypeMember::GenericAlias { .. } => None,
                 })
                 .ok_or_else(|| {
                     super::SourceError::semantic(

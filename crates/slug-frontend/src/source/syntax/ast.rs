@@ -304,6 +304,8 @@ pub(super) enum ExprKind {
     TypeAlias {
         exported: bool,
         name: String,
+        /// The alias's type parameters, as in `type Pair<T, U> = [T, U]`.
+        parameters: Vec<String>,
         annotation: TypeAnnotation,
     },
     Assign {

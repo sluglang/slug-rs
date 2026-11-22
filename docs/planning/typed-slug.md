@@ -270,10 +270,13 @@ require.
 
 ### 1. Generic type aliases
 
-- [ ] Specify parameters, expansion, arity errors, export, and import.
+- [x] Specify parameters, expansion, arity errors, export, and import
+  ([aliases](../language/nominal-types.md#aliases)).
 - [ ] Specify recursive aliases: contractive and regular, compared
   coinductively.
-- [ ] Implement in the checker; aliases stay transparent and erased.
+- [x] Implement generic aliases in the checker; they stay transparent and
+  erased.
+- [ ] Implement recursive aliases.
 
 ### 2. Structural record types
 

@@ -32,7 +32,7 @@ fn transparent_type_aliases_preserve_underlying_types() {
 }
 
 #[test]
-fn type_aliases_reject_cycles_and_generic_use() {
+fn type_aliases_reject_cycles_and_type_arguments_to_a_plain_alias() {
     let path = fixture_path("type-alias-errors");
     fs::write(&path, "type First = Second\ntype Second = First\n").expect("write cyclic aliases");
     let output = slug().arg(&path).output().expect("run cyclic aliases");
@@ -51,7 +51,91 @@ fn type_aliases_reject_cycles_and_generic_use() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("unknown type constructor `Path`")
+            .contains("type alias `Path` cannot accept type arguments")
+    );
+}
+
+#[test]
+fn generic_type_aliases_fill_in_their_parameters_at_each_use() {
+    let path = fixture_path("generic-type-aliases");
+    fs::write(
+        &path,
+        "type Optional<T> = T|nil\n\
+         type Pair<T, U> = [T, U]\n\
+         type Twin<T> = Pair<T, T>\n\
+         type Table<V> = map<str, list<Optional<V>>>\n\
+         val first = fn(pair:Pair<num, str>):num { pair[0] }\n\
+         val label = fn(name:Optional<str>):str { name ?? \"anon\" }\n\
+         val twins:Twin<num> = [1, 2]\n\
+         val table:Table<num> = {a: [1, nil]}\n\
+         val keep = fn<T>(value:Optional<T>, fallback:T):T { value ?? fallback }\n\
+         val classify = fn(v) match { n: Optional<num> => \"optional\"; _ => \"other\" }\n\
+         val main = fn() {\n\
+           println(first([1, \"a\"]), label(nil), label(\"Ada\"), twins, table, keep(nil, 3))\n\
+           println(classify(nil), classify(\"a\"))\n\
+         }\n",
+    )
+    .expect("write generic aliases");
+    let output = slug().arg(&path).output().expect("run generic aliases");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "1 anon Ada [1, 2] {\"a\": [1, nil]} 3\noptional other\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for (source, message) in [
+        ("val x:Optional<num> = \"a\"", "expected num|nil, got str"),
+        (
+            "val x:Optional = 1",
+            "type alias `Optional` needs 1 type argument(s)",
+        ),
+        (
+            "val x:Pair<num> = [1]",
+            "type alias `Pair` takes 2 type argument(s), got 1",
+        ),
+        ("val x:Nope<num> = 1", "unknown type constructor `Nope`"),
+        ("type Bad<T, T> = T", "duplicate type parameter `T`"),
+        (
+            "type Loop<T> = Loop<T>|nil",
+            "recursive type alias: Loop -> Loop",
+        ),
+    ] {
+        fs::write(
+            &path,
+            format!("type Optional<T> = T|nil\ntype Pair<T, U> = [T, U]\n{source}\n"),
+        )
+        .expect("write alias error");
+        let output = slug().arg(&path).output().expect("run alias error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove alias source");
+}
+
+#[test]
+fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
+    // A generic alias's closing `>` ends a line as `list<num>`'s does, while
+    // a trailing comparison still continues onto the next line.
+    let path = fixture_path("alias-line-end");
+    fs::write(
+        &path,
+        "type Pair<T, U> = [T, U]\n\
+         type Twin<T> = Pair<T, T>\n\
+         val twins:Twin<num> = [1, 2]\n\
+         val more = 3 >\n\
+           2\n\
+         println(twins, more)\n",
+    )
+    .expect("write alias line ends");
+    let output = slug().arg(&path).output().expect("run alias line ends");
+    fs::remove_file(&path).expect("remove alias line ends");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "[1, 2] true\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

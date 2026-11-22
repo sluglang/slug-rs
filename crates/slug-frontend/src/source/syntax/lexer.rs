@@ -737,14 +737,7 @@ impl Lexer {
                         self.next();
                         TokenKind::ShiftLeft
                     } else {
-                        if matches!(
-                            result.last().map(|token: &Token| &token.kind),
-                            Some(TokenKind::Fn | TokenKind::Struct)
-                        ) || matches!(
-                            result.last().map(|token: &Token| &token.kind),
-                            Some(TokenKind::Name(name))
-                                if matches!(name.as_str(), "list" | "map" | "task" | "chan")
-                        ) {
+                        if opens_type_arguments(&result, type_angles) {
                             type_angles += 1;
                         }
                         TokenKind::Less
@@ -1019,4 +1012,49 @@ impl Lexer {
         self.push(&mut result, TokenKind::End, self.span());
         Ok(result)
     }
+}
+
+/// Whether a `<` after `tokens` opens type arguments, so that the `>` that
+/// closes them may end a line: after `fn`, `struct`, or a built-in generic
+/// type, inside type arguments already, or after a name that begins or
+/// continues an annotation (after its `:`) or a type declaration (`type
+/// Name<T> = Other<T>`), as a generic alias is written.
+fn opens_type_arguments(tokens: &[Token], type_angles: usize) -> bool {
+    match tokens.last().map(|token| &token.kind) {
+        Some(TokenKind::Fn | TokenKind::Struct) => true,
+        Some(TokenKind::Name(name)) => {
+            matches!(name.as_str(), "list" | "map" | "task" | "chan")
+                || type_angles > 0
+                || in_type_position(&tokens[..tokens.len() - 1])
+        }
+        _ => false,
+    }
+}
+
+/// Whether the tokens before a name place it in a type: back over the
+/// tokens a type is written with, to the `:` of an annotation, or to a
+/// `type` declaration or the `=` of one.
+fn in_type_position(tokens: &[Token]) -> bool {
+    let mut after_equals = false;
+    for token in tokens.iter().rev().take(64) {
+        match &token.kind {
+            TokenKind::Name(name) if name == "type" => return true,
+            TokenKind::Colon => return !after_equals,
+            TokenKind::Eq if !after_equals => after_equals = true,
+            TokenKind::Name(_)
+            | TokenKind::Dot
+            | TokenKind::Pipe
+            | TokenKind::Less
+            | TokenKind::Greater
+            | TokenKind::ShiftRight
+            | TokenKind::Comma
+            | TokenKind::LBracket
+            | TokenKind::RBracket
+            | TokenKind::Fn
+            | TokenKind::Struct
+            | TokenKind::Nil => {}
+            _ => return false,
+        }
+    }
+    false
 }

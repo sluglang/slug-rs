@@ -104,8 +104,28 @@ export type MaybeFile = File|nil
 Aliases are transparent. `Path` and `str` are interchangeable for
 assignability, overload selection, callable-signature identity, and runtime
 matching. An alias does not create a value, a constructor, or a new nominal
-identity. Recursive alias definitions are source errors. Generic aliases and
-strong typedefs are outside this feature.
+identity. Recursive alias definitions are source errors. Strong typedefs are
+outside this feature.
+
+A generic alias takes type parameters, which each use fills in:
+
+```slug
+type Optional<T> = T|nil
+type Pair<T, U> = [T, U]
+type Twin<T> = Pair<T, T>
+
+val label = fn(name:Optional<str>):str { name ?? "anon" }
+val twins:Twin<num> = [1, 2]
+```
+
+`Optional<str>` stands for `str|nil` wherever it is written, including in
+another alias, a generic function's signature, and a match type constraint,
+where the expanded type must be runtime-checkable. Its parameters are written
+once each, after the alias name. A use must give exactly as many type
+arguments as the alias has parameters: `Optional` alone, `Pair<num>`, and
+`Path<str>` for an alias `Path` without parameters are source errors, with
+code `invalid_type_arguments`. An imported generic alias is used the same way,
+as `shapes.Optional<num>`, and keeps the struct types of its module.
 
 An alias of a struct type names the schema where the alias is declared, so a
 module can export a struct type while keeping its schema private:
@@ -158,5 +178,5 @@ checked source/native resource-registration agreement, mandatory foreign
 resource argument/result validation, and fieldless enum declarations with
 qualified local/imported values and patterns, type paths, and exhaustive
 closed-match coverage, and transparent aliases including exported/imported
-aliases. Aliases are compile-time-only names: they have no value, constructor,
+and generic aliases. Aliases are compile-time-only names: they have no value, constructor,
 display form, or equality behavior of their own.
