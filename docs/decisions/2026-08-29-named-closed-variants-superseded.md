@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed; implementation deferred.
+Superseded
+
+## Superseded by
+
+[Payload-bearing and generic enum variants](2026-11-22-payload-enum-variants.md).
 
 ## Context
 

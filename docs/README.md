@@ -69,6 +69,7 @@ a specified feature is implemented.
 |---|---|
 | [language-foundation-roadmap.md](planning/language-foundation-roadmap.md) | Dependency-ordered implementation tasks for source compatibility. |
 | [type-system-plan.md](planning/type-system-plan.md) | Dependency-ordered plan for the next static-checking milestones. |
+| [typed-slug.md](planning/typed-slug.md) | Moving Slug to sound gradual typing, with strict typing everywhere as the end goal to evaluate: the rule to replace, the soundness model, generic aliases, structural records, generic and payload enums, and the runtime payoff. |
 | [inferred-overload-alternatives-follow-up.md](planning/inferred-overload-alternatives-follow-up.md) | Deferred work after finite inferred `+` alternatives. |
 | [host-owned-module-resolution.md](planning/host-owned-module-resolution.md) | Staged extraction of filesystem-free module resolution with desktop and embedded hosts. |
 | [immutable-collection-value-redesign.md](planning/immutable-collection-value-redesign.md) | Staged collection and `Value` representation work that preserves immutable semantics. |

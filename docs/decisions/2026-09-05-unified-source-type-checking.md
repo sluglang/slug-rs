@@ -1,5 +1,10 @@
 # Unify source type checking
 
+## Amended by
+
+[Annotations are guarantees](2026-11-22-annotations-are-guarantees.md), where
+this record says annotations add no runtime validation.
+
 ## Context
 
 Slug previously exposed optional static checking through `-type-check` and

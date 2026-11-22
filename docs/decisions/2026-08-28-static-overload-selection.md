@@ -1,5 +1,10 @@
 # Select overloads from static callable signatures
 
+## Amended by
+
+[Annotations are guarantees](2026-11-22-annotations-are-guarantees.md), where
+this record says annotations add no runtime validation.
+
 ## Context
 
 Imported modules can combine distinct callables under one name. The current VM
