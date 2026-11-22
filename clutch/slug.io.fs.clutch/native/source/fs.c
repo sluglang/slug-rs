@@ -355,6 +355,73 @@ static wchar_t *child_path(const wchar_t *directory, const wchar_t *name) {
   return path;
 }
 
+/* Whether `path` begins with `prefix`. */
+static bool starts_with(const wchar_t *path, const wchar_t *prefix) {
+  return wcsncmp(path, prefix, wcslen(prefix)) == 0;
+}
+
+/* `text`, a UTF-8 path, as a new UTF-16 path in the extended form that has
+ * no MAX_PATH limit: made absolute first, as Windows resolves a path, with
+ * `/` as `\`, `.` and `..` resolved, and a relative path taken from the
+ * current directory, then prefixed with `\\?\` (`\\?\UNC\` for a share). A
+ * device such as `NUL`, and a path already in that form, are left as they
+ * are. NULL with the thread's last error set when it cannot be made. */
+static wchar_t *wide_path(const char *text) {
+  wchar_t *given = wide(text);
+  wchar_t *full;
+  wchar_t *extended;
+  DWORD length;
+  DWORD written;
+  size_t full_length;
+  bool share;
+  if (given == NULL) return NULL;
+  if (given[0] == L'\0') {
+    free(given);
+    SetLastError(ERROR_PATH_NOT_FOUND);
+    return NULL;
+  }
+  if (starts_with(given, L"\\\\?\\") || starts_with(given, L"\\\\.\\")) return given;
+  length = GetFullPathNameW(given, 0, NULL, NULL);
+  if (length == 0) {
+    free(given);
+    return NULL;
+  }
+  full = malloc((size_t)length * sizeof *full);
+  if (full == NULL) {
+    free(given);
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return NULL;
+  }
+  written = GetFullPathNameW(given, length, full, NULL);
+  free(given);
+  if (written == 0 || written >= length) {
+    free(full);
+    if (written != 0) SetLastError(ERROR_FILENAME_EXCED_RANGE);
+    return NULL;
+  }
+  /* A device resolves to its own form. */
+  if (starts_with(full, L"\\\\.\\") || starts_with(full, L"\\\\?\\")) return full;
+  full_length = written;
+  share = full_length >= 2 && full[0] == L'\\' && full[1] == L'\\';
+  {
+    const wchar_t *prefix = share ? L"\\\\?\\UNC" : L"\\\\?\\";
+    size_t prefix_length = wcslen(prefix);
+    /* A share keeps one of its two leading backslashes, after "UNC". */
+    const wchar_t *rest = share ? full + 1 : full;
+    size_t rest_length = share ? full_length - 1 : full_length;
+    extended = malloc((prefix_length + rest_length + 1) * sizeof *extended);
+    if (extended == NULL) {
+      free(full);
+      SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+      return NULL;
+    }
+    memcpy(extended, prefix, prefix_length * sizeof *extended);
+    memcpy(extended + prefix_length, rest, (rest_length + 1) * sizeof *extended);
+  }
+  free(full);
+  return extended;
+}
+
 /* The failure number for a conversion that failed: the thread's last error,
  * or an invalid argument when there was none. */
 static int conversion_error(void) {
@@ -386,7 +453,7 @@ static bool is_link(const wchar_t *path) {
 static void run_open(job *work) {
   DWORD access;
   DWORD disposition;
-  wchar_t *path = wide(work->path);
+  wchar_t *path = wide_path(work->path);
   HANDLE handle;
   if (path == NULL) {
     reply_system(work, conversion_error());
@@ -488,9 +555,14 @@ static bool is_missing(int error) {
 static void run_stat(job *work) {
   WIN32_FILE_ATTRIBUTE_DATA info;
   const char *kind;
-  wchar_t *path = wide(work->path);
+  wchar_t *path = wide_path(work->path);
   if (path == NULL) {
-    reply_system(work, conversion_error());
+    int error = conversion_error();
+    if (is_missing(error)) {
+      reply_status(work, SLUG_FS_END);
+      return;
+    }
+    reply_system(work, error);
     return;
   }
   /* The attributes of a final link itself, not of what it points to. */
@@ -520,7 +592,7 @@ static void run_stat(job *work) {
 }
 
 static void run_list(job *work) {
-  wchar_t *path = wide(work->path);
+  wchar_t *path = wide_path(work->path);
   wchar_t *pattern;
   WIN32_FIND_DATAW found;
   HANDLE search;
@@ -604,9 +676,24 @@ static int make_one(const wchar_t *path, bool existing) {
 }
 
 /* The length of `path`'s root, which is never made: a drive ("C:" or
- * "C:\"), a UNC share ("\\server\share\"), or a leading separator. */
+ * "C:\"), a UNC share ("\\server\share\"), or a leading separator, each
+ * after the extended form's "\\?\" or "\\?\UNC\". */
 static size_t root_length(const wchar_t *path) {
   size_t length = 0;
+  if (starts_with(path, L"\\\\?\\UNC\\")) {
+    /* Past the server and the share. */
+    int parts = 0;
+    length = 8;
+    while (path[length] != L'\0' && parts < 2) {
+      if (is_separator(path[length])) parts++;
+      length++;
+    }
+    return length;
+  }
+  if (starts_with(path, L"\\\\?\\")) {
+    size_t rest = root_length(path + 4);
+    return 4 + rest;
+  }
   if (path[0] != L'\0' && path[1] == L':') {
     length = 2;
   } else if (is_separator(path[0]) && is_separator(path[1])) {
@@ -624,7 +711,7 @@ static size_t root_length(const wchar_t *path) {
 }
 
 static void run_make_directory(job *work) {
-  wchar_t *path = wide(work->path);
+  wchar_t *path = wide_path(work->path);
   int error;
   if (path == NULL) {
     reply_system(work, conversion_error());
@@ -656,8 +743,8 @@ static void run_make_directory(job *work) {
 }
 
 static void run_rename(job *work) {
-  wchar_t *from = wide(work->path);
-  wchar_t *to = from == NULL ? NULL : wide(work->other);
+  wchar_t *from = wide_path(work->path);
+  wchar_t *to = from == NULL ? NULL : wide_path(work->other);
   int error = 0;
   if (from == NULL || to == NULL) {
     error = conversion_error();
@@ -692,7 +779,7 @@ static int remove_entry(const wchar_t *path, DWORD attributes) {
 }
 
 static void run_remove(job *work) {
-  wchar_t *path = wide(work->path);
+  wchar_t *path = wide_path(work->path);
   DWORD attributes;
   int error;
   if (path == NULL) {
@@ -743,11 +830,16 @@ static int remove_tree(const wchar_t *path, DWORD attributes) {
 }
 
 static void run_remove_all(job *work) {
-  wchar_t *path = wide(work->path);
+  wchar_t *path = wide_path(work->path);
   DWORD attributes;
   int error;
   if (path == NULL) {
-    reply_system(work, conversion_error());
+    error = conversion_error();
+    if (is_missing(error)) {
+      reply_status(work, SLUG_FS_OK);
+      return;
+    }
+    reply_system(work, error);
     return;
   }
   attributes = GetFileAttributesW(path);

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `slug.io.fs` handles paths longer than 260 characters on Windows, where
+  Windows' file functions otherwise stop: each path is made absolute and
+  given Windows' extended form, as Rust's standard library does.
+
 - `slug.net.tcp` is ported to Windows, on Winsock: one I/O thread still
   serves every connection, polling their sockets with `WSAPoll`. On Windows
   a failure's message is the system's own description, in the user's

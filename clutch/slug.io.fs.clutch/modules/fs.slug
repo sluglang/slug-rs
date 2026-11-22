@@ -33,7 +33,9 @@
  * error code. Running out of memory throws `native.alloc`.
  *
  * Paths are text. Windows accepts `/` as well as `\` between their parts,
- * and `join` builds one with the system's own `separator`.
+ * and `join` builds one with the system's own `separator`. There a path may
+ * be longer than Windows' usual 260 characters: each is resolved to an
+ * absolute path in Windows' extended form.
  */
 
 export resource File

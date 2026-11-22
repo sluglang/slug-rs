@@ -193,3 +193,31 @@ val joinBuildsPathsWithTheSeparator = fn() {
     })
 }
 
+@test
+val pathsLongerThanWindowsOldLimitWork = fn() {
+    // Windows' file functions stop at 260 characters without the extended
+    // path form, which the clutch gives every path there.
+    inDirectory(fn(root) {
+        val part = "a-directory-name-long-enough-that-a-few-make-a-long-path-0123456789"
+        val deep = fs.join([root, part, part, part, part, part])
+        fs.makeDirectory(deep, true)
+        val name = "file-" + part + ".txt"
+        val path = fs.join([deep, name])
+        assertTrue(len(path) > 400)
+        val out = fs.openWrite(path)
+        fs.write(out, "deep")
+        fs.close(out)
+        val input = fs.openRead(path)
+        val line = fs.readLine(input)
+        fs.close(input)
+        assertEqual(line, "deep")
+        assertEqual((fs.stat(path) ?? {}).kind, "file")
+        assertEqual(fs.list(deep), [name])
+        fs.rename(path, path + ".moved")
+        assertEqual(fs.list(deep), [name + ".moved"])
+        fs.remove(path + ".moved")
+        fs.removeAll(fs.join([root, part]))
+        assertEqual(fs.list(root), [])
+    })
+}
+
