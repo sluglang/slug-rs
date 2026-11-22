@@ -273,8 +273,14 @@ pub enum MatchType {
     Num,
     Str,
     Bytes,
-    Resource { module: String, name: String },
-    Enum { module: String, name: String },
+    Resource {
+        module: String,
+        name: String,
+    },
+    Enum {
+        module: String,
+        name: String,
+    },
     List(Option<Box<MatchType>>),
     Map(Option<(Box<MatchType>, Box<MatchType>)>),
     Function,
@@ -283,6 +289,10 @@ pub enum MatchType {
     Schema,
     Struct(Option<usize>),
     Union(Vec<MatchType>),
+    /// A record type: a map whose value at each string key, a missing key
+    /// reading `nil`, or a struct whose field of each name, matches the
+    /// field's type.
+    Record(Vec<(String, MatchType)>),
 }
 
 /// One source-order case consumed by the private select instruction.

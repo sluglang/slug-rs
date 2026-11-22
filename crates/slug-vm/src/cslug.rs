@@ -1078,6 +1078,14 @@ fn encode_match_type(value: &MatchType, depth: usize, output: &mut Vec<u8>) -> R
                 encode_match_type(value, depth + 1, output)?;
             }
         }
+        MatchType::Record(fields) => {
+            output.push(16);
+            uleb(fields.len(), output);
+            for (name, value) in fields {
+                string(name, output);
+                encode_match_type(value, depth + 1, output)?;
+            }
+        }
     }
     Ok(())
 }
@@ -1967,6 +1975,17 @@ impl<'a> Reader<'a> {
                     types.push(self.match_type(depth + 1)?);
                 }
                 Ok(MatchType::Union(types))
+            }
+            16 => {
+                let count = self.count("match record field count")?;
+                let mut fields = Vec::with_capacity(count);
+                for _ in 0..count {
+                    fields.push((
+                        self.string("match record field name")?,
+                        self.match_type(depth + 1)?,
+                    ));
+                }
+                Ok(MatchType::Record(fields))
             }
             _ => Err(Error::InvalidStructure("match type kind".into())),
         }

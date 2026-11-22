@@ -254,7 +254,13 @@ nil = "nil" ;
 (* Type annotations are parsed as type text. These are the supported structural forms. *)
 type_annotation = type_term , { "|" , type_term } ;
 type_term = type_constructor , [ "<" , type_annotation , { "," , type_annotation } , ">" ] ;
-type_constructor = type_path | "fn" | "[" , [ type_annotation , { "," , type_annotation } ] , "]" ;
+type_constructor = type_path | "fn" | "[" , [ type_annotation , { "," , type_annotation } ] , "]"
+                 | record_type ;
+(* A record type has at least one field. As in map keys, a reserved word other
+   than true and false names a field; a quoted string may not interpolate. *)
+record_type = "{" , { NEWLINE } , record_field , { member_sep , record_field } ,
+              [ member_sep ] , "}" ;
+record_field = ( identifier | string ) , ":" , type_annotation ;
 type_path = identifier , { "." , identifier } ;
 
 (* Lexical forms (simplified): *)

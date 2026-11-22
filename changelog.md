@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Record types describe maps and structs by their fields: `type Player =
+  {name: str, hp: num, guild: str|nil}` accepts any map with those keys, or
+  any struct with those fields, whatever else it holds; a map without a key
+  reads `nil` there, so `guild` may be absent. A map literal such as
+  `{name: "Ada", hp: 3}` now has a record type, so the checker knows what each
+  key holds, through bindings, `+`, `copy`, field reads, and destructuring.
+  A mismatch names the field: `expected {name: str}, got {name: num}: field
+  `name` is num, but must be str`. Record types work in generic aliases,
+  recursive aliases, and as match constraints, which check each field at run
+  time.
+
 - Type aliases can be recursive, for trees and nested data: `type Json =
   nil|bool|num|str|list<Json>|map<str, Json>` and `type Tree<T> = [T,
   list<Tree<T>>]`, directly or through other aliases. A reference back must be

@@ -1170,11 +1170,23 @@ structural forms. Whitespace around punctuation is insignificant.
 type_annotation = union_member , { "|" , union_member } ;
 union_member    = named_type , [ "<" , type_annotation ,
                   { "," , type_annotation } , ">" ]
-                | tuple_type ;
+                | tuple_type
+                | record_type ;
 named_type      = type_path | "fn" ;
 type_path       = identifier , { "." , identifier } ;
 tuple_type      = "[" , [ type_annotation , { "," , type_annotation } ] , "]" ;
+record_type     = "{" , field , { field_separator , field } ,
+                  [ field_separator ] , "}" ;
+field           = ( identifier | string ) , ":" , type_annotation ;
+field_separator = "," | newline ;
 ```
+
+A record type, such as `{name: str, hp: num}`, describes any map or struct
+whose value at each listed field conforms to that field's type, whatever
+other keys or fields it has; a map without a key reads `nil` there. A map
+literal whose keys are all distinct string constants has a record type as
+well as its map type. [Record Types](record-types.md) defines conformance,
+field reads, and record match constraints.
 
 `A|B` describes a value that may conform to either `A` or `B`; it does not
 convert between them. `nil` is an ordinary union member, so `str|nil` is the

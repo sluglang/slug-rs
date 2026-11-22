@@ -1858,7 +1858,9 @@ fn imports_generic_type_aliases_through_module_type_paths() {
          export type Located<T> = [Point, T]\n\
          export type Json = nil|num|str|list<Json>|map<str, Json>\n\
          export type Labelled<T> = [Point, list<Labelled<T>>, T]\n\
-         export val origin = fn():Point { PointSchema {x: 0, y: 0} }\n",
+         export type Named<T> = {name: str, tag: T}\n\
+         export val origin = fn():Point { PointSchema {x: 0, y: 0} }\n\
+         export val xOf = fn(p:{x: num}):num { p.x }\n",
     )
     .expect("write generic alias module");
     let main_path = root.join("main.slug");
@@ -1873,7 +1875,8 @@ fn imports_generic_type_aliases_through_module_type_paths() {
              val other:Opt<num> = 3\n\
              val doc:shapes.Json = [1, {a: \"b\"}]\n\
              val tree:shapes.Labelled<num> = [shapes.origin(), [[shapes.origin(), [], 2]], 1]\n\
-             export val value = [name, here[1], other, here[0].x, doc, tree[2]]\n",
+             val named:shapes.Named<num> = {name: \"n\", tag: 7}\n\
+             export val value = [name, here[1], other, here[0].x, doc, tree[2], named.tag, xOf(origin()), shapes.xOf({x: 5})]\n",
         )
         .expect("compile importer using generic aliases");
     let mut vm = Vm::with_module_loader(loader.clone());
@@ -1881,7 +1884,19 @@ fn imports_generic_type_aliases_through_module_type_paths() {
         .expect("run importer using generic aliases");
     assert_eq!(
         vm.exported_values(&program).to_string(),
-        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1]}"
+        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1, 7, 0, 5]}"
+    );
+    let error = loader
+        .compile_source(
+            &main_path.to_string_lossy(),
+            "val shapes = import(\"shapes\")\nshapes.xOf({x: \"a\"})\n",
+        )
+        .expect_err("an imported record type checks its fields");
+    assert!(
+        error
+            .to_string()
+            .contains("field `x` is str, but must be num"),
+        "{error}"
     );
     let error = loader
         .compile_source(

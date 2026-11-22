@@ -2341,6 +2341,11 @@ fn lower_match_type(
             .map(|member| lower_match_type(member, operands))
             .collect::<Result<Vec<_>, _>>()
             .map(MatchType::Union),
+        Type::Record { fields, .. } => fields
+            .iter()
+            .map(|(name, field)| Ok((name.clone(), lower_match_type(field, operands)?)))
+            .collect::<Result<Vec<_>, SourceError>>()
+            .map(MatchType::Record),
         Type::Never
         | Type::Unknown
         | Type::Function(Some(_))

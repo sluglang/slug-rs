@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted; implementation planned in
-[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 2.
+Accepted; implemented on 2026-11-22 ([Record Types](../language/record-types.md)),
+except the boundary checks of [stage 6](../planning/typed-slug.md).
 
 ## Context
 

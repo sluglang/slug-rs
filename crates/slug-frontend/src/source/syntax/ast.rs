@@ -457,6 +457,8 @@ pub(super) enum TypeAnnotation {
     },
     Tuple(Vec<TypeAnnotation>),
     Union(Vec<TypeAnnotation>),
+    /// `{name: str, hp: num}`: fields in source order.
+    Record(Vec<(String, TypeAnnotation)>),
 }
 #[derive(Clone, Debug)]
 pub(super) struct MatchCase {

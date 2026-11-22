@@ -47,6 +47,18 @@ pub(super) fn type_intersection(left: &Type, right: &Type) -> Option<Type> {
         | (Type::Struct(Some(identity)), Type::Struct(None)) => {
             Some(Type::Struct(Some(identity.clone())))
         }
+        // A map or struct may have a record type's fields; what matches is
+        // the record type's values among it.
+        (Type::Map(_) | Type::Struct(_) | Type::Record { .. }, Type::Record { map: false, .. })
+            if may_conform_to_record(left, right) =>
+        {
+            Some(right.clone())
+        }
+        (Type::Record { map: false, .. }, Type::Map(_) | Type::Struct(_) | Type::Record { .. })
+            if may_conform_to_record(right, left) =>
+        {
+            Some(left.clone())
+        }
         // A tuple is a list of its elements.
         (Type::Tuple(_), Type::List(_)) if left.is_assignable_to(right) => Some(left.clone()),
         (Type::List(_), Type::Tuple(_)) if right.is_assignable_to(left) => Some(right.clone()),
@@ -62,7 +74,51 @@ pub(super) fn union_intersections(members: &[Type], other: &Type) -> Option<Type
     (!intersections.is_empty()).then(|| Type::union(intersections))
 }
 
+/// Whether some value of `value_type`, a map, struct, or record type, may
+/// conform to `record`: whether each of its fields may be there with a value
+/// of the field's type. A field's value the checker does not know may.
+fn may_conform_to_record(value_type: &Type, record: &Type) -> bool {
+    let Type::Record { fields, .. } = record else {
+        return false;
+    };
+    fields.iter().all(|(name, expected)| {
+        let actual = match value_type {
+            Type::Record { map, .. } => match value_type.record_field(name) {
+                Some(actual) => actual.clone(),
+                None if *map => Type::Nil,
+                None => return true,
+            },
+            Type::Map(Some((_, value))) => Type::union([value.as_ref().clone(), Type::Nil]),
+            Type::Struct(Some(identity)) => {
+                let Some(schema) = super::super::semantic::schema_fields(identity) else {
+                    return true;
+                };
+                let Some(actual) = schema.get(name) else {
+                    return false;
+                };
+                actual.clone()
+            }
+            _ => return true,
+        };
+        is_dynamic_operation_type(&actual)
+            || is_dynamic_operation_type(expected)
+            || type_intersection(&actual, expected).is_some()
+    })
+}
+
 pub(super) fn type_subtract(left: &Type, right: &Type) -> Option<Type> {
+    // A record type covers only the members whose every value conforms.
+    if let Type::Record { map: false, .. } = right {
+        let members = match left {
+            Type::Union(members) => members.clone(),
+            other => vec![other.clone()],
+        };
+        let remaining = members
+            .into_iter()
+            .filter(|member| !member.is_assignable_to(right))
+            .collect::<Vec<_>>();
+        return (!remaining.is_empty()).then(|| Type::union(remaining));
+    }
     if let Type::Union(members) = right {
         return members.iter().try_fold(left.clone(), |remaining, member| {
             type_subtract(&remaining, member)

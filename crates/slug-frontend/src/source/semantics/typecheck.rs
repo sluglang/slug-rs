@@ -2044,6 +2044,11 @@ fn exported_schemas(
                     collect(value, identities);
                 }
             }
+            Type::Record { fields, .. } => {
+                for (_, value) in fields {
+                    collect(value, identities);
+                }
+            }
             _ => {}
         }
     }
@@ -2309,6 +2314,13 @@ fn expand_alias_body(
                     .map(|element| inside(element, path))
                     .collect::<Result<Vec<_>, _>>()?,
             ),
+            Type::Record { fields, map } => Type::Record {
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| Ok::<_, SourceError>((name, inside(value, path)?)))
+                    .collect::<Result<Vec<_>, _>>()?,
+                map,
+            },
             Type::Union(members) => Type::union(
                 members
                     .into_iter()
@@ -2931,6 +2943,22 @@ fn check_expression_inner(
                     keys.push(check_expression(key, environment, type_parameters)?);
                     values.push(check_expression(value, environment, type_parameters)?);
                 }
+                // A literal whose keys are all distinct string constants
+                // has a record type, which says what each key holds.
+                let mut names = std::collections::HashSet::new();
+                let fields = entries
+                    .iter()
+                    .zip(&values)
+                    .map(|((key, _), value)| match &key.kind {
+                        ExprKind::Value(Value::Str(name)) if names.insert(name.to_string()) => {
+                            Some((name.to_string(), value.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(fields) = fields.filter(|fields| !fields.is_empty()) {
+                    return Ok(Type::record(fields, true));
+                }
                 Ok(Type::Map((!entries.is_empty()).then(|| {
                     (Box::new(Type::union(keys)), Box::new(Type::union(values)))
                 })))
@@ -3457,6 +3485,7 @@ fn check_expression_inner(
                 let schema = known_struct_schema(&result, environment);
                 let mut replaced = std::collections::HashSet::new();
                 let mut map_replacements = Vec::new();
+                let mut record_fields = Vec::new();
                 for (name, replacement) in fields {
                     if !replaced.insert(name) {
                         return Err(SourceError::semantic(
@@ -3468,6 +3497,7 @@ fn check_expression_inner(
                     }
                     let actual = check_expression(replacement, environment, type_parameters)?;
                     map_replacements.push(actual.clone());
+                    record_fields.push((name.clone(), actual.clone()));
                     if let Some(schema) = &schema {
                         let expected = schema.members.get(name).ok_or_else(|| {
                             SourceError::semantic(
@@ -3480,6 +3510,14 @@ fn check_expression_inner(
                         require(&expected.value_type, &actual, &replacement.span)
                             .map_err(|error| explain_nil_start(error, replacement, environment))?;
                     }
+                }
+                // A record's copy has the replaced fields' new types.
+                if let Type::Record { fields, map } = &result {
+                    let kept = fields
+                        .iter()
+                        .filter(|(name, _)| !replaced.contains(name))
+                        .cloned();
+                    return Ok(Type::record(kept.chain(record_fields).collect(), *map));
                 }
                 if let Type::Map(Some((key, value))) = &result {
                     Ok(Type::Map(Some((
@@ -3520,6 +3558,11 @@ fn check_expression_inner(
                         .and_then(|binding| binding.member_facts.get(key.as_ref()))
                 {
                     return Ok(narrowed.clone());
+                }
+                if let ExprKind::Value(Value::Str(name)) = &index.kind
+                    && let Some(field) = collection.record_field(name)
+                {
+                    return Ok(field.clone());
                 }
                 Ok(expression_binding(expression, environment)
                     .map(|binding| binding.value_type)
@@ -3905,6 +3948,32 @@ fn add_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, Sour
     if matches!(left, Type::Str) {
         return Ok(Type::Str);
     }
+    // Merging two map literals gives the right one's value at a shared key.
+    if let (
+        Type::Record {
+            fields: left_fields,
+            map: true,
+        },
+        Type::Record {
+            fields: right_fields,
+            map: true,
+        },
+    ) = (left, right)
+    {
+        let mut fields = left_fields
+            .iter()
+            .filter(|(name, _)| right.record_field(name).is_none())
+            .cloned()
+            .collect::<Vec<_>>();
+        fields.extend(right_fields.iter().cloned());
+        return Ok(Type::record(fields, true));
+    }
+    if matches!(left, Type::Record { map: true, .. })
+        || matches!(right, Type::Record { map: true, .. })
+    {
+        return add_result(&left.as_map(), &right.as_map(), span)
+            .or_else(|_| invalid_operation("+", left, right, span));
+    }
     if is_dynamic_operation_type(left) || is_dynamic_operation_type(right) {
         return Ok(Type::Unknown);
     }
@@ -3936,6 +4005,10 @@ fn add_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, Sour
 }
 
 fn subtract_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, SourceError> {
+    if matches!(left, Type::Record { map: true, .. }) {
+        return subtract_result(&left.as_map(), right, span)
+            .or_else(|_| invalid_operation("-", left, right, span));
+    }
     if matches!(left, Type::Map(_)) {
         if is_dynamic_operation_type(right) || is_map_key_type(right) {
             return Ok(left.clone());
@@ -4061,6 +4134,10 @@ fn index_result(collection: &Type, index: &Type, span: &SourceSpan) -> Result<Ty
             require_operation_operand(&Type::Str, index, span)?;
             Ok(Type::Unknown)
         }
+        // A map literal's other keys read `nil`; an open record's other
+        // fields may hold anything.
+        Type::Record { map: true, .. } => index_result(&collection.as_map(), index, span),
+        Type::Record { map: false, .. } => Ok(Type::Unknown),
         // A constant index into a tuple reads its element; the caller handles
         // that, so any other index reads one of the elements.
         Type::Tuple(_) => index_result(&collection.as_list(), index, span),
@@ -4156,6 +4233,7 @@ fn is_closed_coverage_type(value_type: &Type) -> bool {
         | Type::Tuple(_)
         | Type::Generic(_)
         | Type::AliasApplication(..)
+        | Type::Record { .. }
         | Type::Recursive { .. }
         | Type::RecursionVar(_) => false,
     }
@@ -4481,7 +4559,28 @@ fn schema_binding(
             .members
             .insert(field.name.clone(), SemanticBinding::value(value_type));
     }
+    register_schema(&binding);
     Ok(binding)
+}
+
+/// Records the field types of `binding`'s schema, and of the schemas it
+/// carries as a module, for comparing their structs with record types.
+pub(super) fn register_schema(binding: &SemanticBinding) {
+    if let Some(identity) = &binding.schema_identity {
+        super::semantic::register_schema_fields(
+            identity,
+            binding
+                .members
+                .iter()
+                .map(|(name, field)| (name.clone(), field.value_type.clone()))
+                .collect(),
+        );
+    }
+    if binding.module_binding {
+        for member in binding.members.values().chain(&binding.schemas) {
+            register_schema(member);
+        }
+    }
 }
 
 fn known_struct_schema(value_type: &Type, environment: &Environment) -> Option<SemanticBinding> {
@@ -4550,7 +4649,9 @@ fn imported_modules(
         }
         schemas.extend(snapshot.schemas.iter().cloned());
     }
-    Some(SemanticBinding::module(result, type_members, schemas))
+    let module = SemanticBinding::module(result, type_members, schemas);
+    register_schema(&module);
+    Some(module)
 }
 
 fn bind_semantic_pattern(
@@ -4570,12 +4671,24 @@ fn bind_semantic_pattern(
                 let MapPatternKey::String(key) = key else {
                     continue;
                 };
-                if let Some(member) = binding.members.get(key).cloned().or_else(|| {
-                    schema
-                        .as_ref()
-                        .and_then(|schema| schema.members.get(key))
-                        .cloned()
-                }) {
+                if let Some(member) = binding
+                    .members
+                    .get(key)
+                    .cloned()
+                    .or_else(|| {
+                        schema
+                            .as_ref()
+                            .and_then(|schema| schema.members.get(key))
+                            .cloned()
+                    })
+                    .or_else(|| {
+                        binding
+                            .value_type
+                            .record_field(key)
+                            .cloned()
+                            .map(SemanticBinding::value)
+                    })
+                {
                     bind_semantic_pattern(pattern, &member, environment);
                 }
             }
@@ -4701,21 +4814,25 @@ fn bind_case_pattern(pattern: &Pattern, value_type: &Type, environment: &mut Env
                 }
             }
             Pattern::Map { entries, rest, .. } => {
-                let (key, map_value) = match value_type {
+                let as_map = value_type.as_map();
+                let (key, map_value) = match &as_map {
                     Type::Map(Some((key, value))) => (key.as_ref(), value.as_ref()),
                     _ => (&Type::Unknown, &Type::Unknown),
                 };
                 let schema = known_struct_schema(value_type, environment);
                 for (map_key, pattern) in entries {
-                    let value =
-                        if let (Some(schema), MapPatternKey::String(name)) = (&schema, map_key) {
-                            schema
-                                .members
-                                .get(name)
-                                .map_or(map_value, |member| &member.value_type)
-                        } else {
-                            map_value
-                        };
+                    let value = if let MapPatternKey::String(name) = map_key
+                        && let Some(field) = value_type.record_field(name)
+                    {
+                        field
+                    } else if let (Some(schema), MapPatternKey::String(name)) = (&schema, map_key) {
+                        schema
+                            .members
+                            .get(name)
+                            .map_or(map_value, |member| &member.value_type)
+                    } else {
+                        map_value
+                    };
                     bind_case_pattern(pattern, value, environment);
                 }
                 if let Some(super::ast::RestPattern::Binding(name)) = rest {
@@ -5073,6 +5190,9 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         | Type::Union(values)
         | Type::AliasApplication(_, values) => values.iter().find_map(first_generic_parameter),
         Type::Recursive { body, .. } => first_generic_parameter(body),
+        Type::Record { fields, .. } => fields
+            .iter()
+            .find_map(|(_, value)| first_generic_parameter(value)),
         Type::Never
         | Type::Unknown
         | Type::Any
@@ -5217,6 +5337,23 @@ fn infer(
         }
         substitutions.insert(*index, actual.clone());
         return Ok(());
+    }
+    if matches!(expected, Type::Map(_)) && matches!(actual, Type::Record { map: true, .. }) {
+        return infer(expected, &actual.as_map(), substitutions, span);
+    }
+    if let Type::Record {
+        fields: expected_fields,
+        map: false,
+    } = expected
+        && let Type::Record { .. } = actual
+    {
+        // A field that does not conform is reported with the whole record.
+        for (name, expected) in expected_fields {
+            if let Some(actual) = actual.record_field(name) {
+                let _ = infer(expected, actual, substitutions, span);
+            }
+        }
+        return require(&substitute(expected, substitutions), actual, span);
     }
     match (expected, actual) {
         (Type::Union(expected), actual) => infer_union(expected, actual, substitutions, span),
@@ -5370,11 +5507,14 @@ fn require(expected: &Type, actual: &Type, span: &SourceSpan) -> Result<(), Sour
         Ok(())
     } else {
         // Where no tuple is expected, a tuple is shown as the list it also
-        // is: `expected list<num>, got list<num|str>`.
-        let shown = if expected.to_string().contains('[') {
-            actual.clone()
-        } else {
-            actual.widen_tuples()
+        // is: `expected list<num>, got list<num|str>`. Likewise, where no
+        // record type is expected, a map literal is shown as its map type:
+        // `expected map<str, num>, got map<str, str>`.
+        let expected_text = expected.to_string();
+        let shown = match (expected_text.contains('['), expected_text.contains('{')) {
+            (true, _) => actual.clone(),
+            (false, true) => actual.widen_tuples(),
+            (false, false) => actual.widen_literals(),
         };
         let actual = &shown;
         let expected_display = expected.to_string();
@@ -5384,9 +5524,12 @@ fn require(expected: &Type, actual: &Type, span: &SourceSpan) -> Result<(), Sour
         } else {
             (expected_display, actual_display)
         };
+        let detail = actual
+            .record_mismatch(expected)
+            .map_or_else(String::new, |detail| format!(": {detail}"));
         Err(SourceError::semantic(
             SourceErrorCode::TypeMismatch,
-            format!("expected {expected_display}, got {actual_display}"),
+            format!("expected {expected_display}, got {actual_display}{detail}"),
             span.clone(),
         )
         .with_expected_actual(expected_display, actual_display))

@@ -2402,6 +2402,68 @@ impl Parser {
         self.leave_nesting();
         annotation
     }
+    /// A record type after its `{`: fields `name: Type`, named by
+    /// identifiers or string literals, separated by commas or newlines.
+    fn record_type(&mut self, open: &Token) -> Result<TypeAnnotation, SourceError> {
+        let mut fields: Vec<(String, TypeAnnotation)> = Vec::new();
+        self.separators();
+        while !self.matches(&TokenKind::RBrace) {
+            if self.matches(&TokenKind::End) {
+                return Err(self.expected_token(&TokenKind::RBrace, "expected } in record type"));
+            }
+            let token = self.next();
+            let name = match &token.kind {
+                TokenKind::Interpolated(parts) => match parts.as_slice() {
+                    [] => Some(String::new()),
+                    [StringPart::Text(text)] => Some(text.clone()),
+                    _ => None,
+                },
+                // As in a map literal, `true` and `false` are not string keys.
+                TokenKind::True | TokenKind::False => None,
+                kind => Self::key_name(kind),
+            };
+            let Some(name) = name else {
+                return Err(SourceError::at(
+                    SourceErrorCode::ExpectedSyntax,
+                    "expected record field name",
+                    token.span,
+                )
+                .with_end(token.end));
+            };
+            if fields.iter().any(|(field, _)| *field == name) {
+                return Err(SourceError::at(
+                    SourceErrorCode::DuplicateName,
+                    format!("duplicate record field `{name}`"),
+                    token.span,
+                )
+                .with_end(token.end));
+            }
+            self.consume(&TokenKind::Colon, "expected : after record field name")?;
+            fields.push((name, self.type_annotation()?));
+            let newline = self.is_separator();
+            self.separators();
+            if self.matches(&TokenKind::Comma) {
+                self.next();
+                self.separators();
+            } else if !newline && !self.matches(&TokenKind::RBrace) {
+                return Err(SourceError::at_token(
+                    SourceErrorCode::ExpectedSyntax,
+                    "expected comma or newline between record fields",
+                    self.peek(),
+                ));
+            }
+        }
+        if fields.is_empty() {
+            return Err(SourceError::at(
+                SourceErrorCode::ExpectedSyntax,
+                "a record type needs at least one field; use `map` or `struct` for any map or struct",
+                open.span.clone(),
+            )
+            .with_end(self.peek().end));
+        }
+        self.next();
+        Ok(TypeAnnotation::Record(fields))
+    }
     fn type_term(&mut self) -> Result<TypeAnnotation, SourceError> {
         super::stack::grow(|| {
             let token = self.next();
@@ -2439,6 +2501,7 @@ impl Parser {
                     return Ok(TypeAnnotation::Tuple(elements));
                 }
                 TokenKind::Nil => TypeAnnotation::Name("nil".into()),
+                TokenKind::LBrace => return self.record_type(&token),
                 _ => {
                     return Err(SourceError::at(
                         SourceErrorCode::ExpectedSyntax,

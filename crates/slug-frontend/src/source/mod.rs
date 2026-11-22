@@ -757,6 +757,14 @@ fn annotation_text(annotation: &ast::TypeAnnotation) -> String {
         ast::TypeAnnotation::Name(name) => name.clone(),
         ast::TypeAnnotation::Apply { name, arguments } => format!("{name}<{}>", join(arguments)),
         ast::TypeAnnotation::Tuple(elements) => format!("({})", join(elements)),
+        ast::TypeAnnotation::Record(fields) => {
+            let mut fields = fields
+                .iter()
+                .map(|(name, annotation)| format!("{name}:{}", annotation_text(annotation)))
+                .collect::<Vec<_>>();
+            fields.sort();
+            format!("{{{}}}", fields.join(","))
+        }
         ast::TypeAnnotation::Union(members) => {
             let mut members = members.iter().map(annotation_text).collect::<Vec<_>>();
             members.sort();

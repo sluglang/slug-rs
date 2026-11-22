@@ -656,6 +656,44 @@ fn matches_type(
         MatchType::Union(members) => members.iter().try_fold(false, |matches, member| {
             Ok(matches || matches_type(member, value, operands)?)
         }),
+        MatchType::Record(fields) => matches_record(fields, value, operands),
+    }
+}
+
+/// Whether `value` is a map whose value at each field's string key, a
+/// missing key reading `nil`, or a struct whose field of each name, matches
+/// the field's type.
+fn matches_record(
+    fields: &[(String, MatchType)],
+    value: &Value,
+    operands: &[Value],
+) -> Result<bool, (RuntimeErrorKind, String)> {
+    match value {
+        Value::Map(values) => fields.iter().try_fold(true, |matches, (name, field)| {
+            Ok(matches
+                && matches_type(
+                    field,
+                    values
+                        .get(&Value::string(name.as_str()))
+                        .unwrap_or(&Value::Nil),
+                    operands,
+                )?)
+        }),
+        Value::Struct(actual) => fields.iter().try_fold(true, |matches, (name, field)| {
+            if !matches {
+                return Ok(false);
+            }
+            let Some(position) = actual
+                .schema
+                .fields
+                .iter()
+                .position(|candidate| candidate.name.as_ref() == name)
+            else {
+                return Ok(false);
+            };
+            matches_type(field, &actual.values[position], operands)
+        }),
+        _ => Ok(false),
     }
 }
 

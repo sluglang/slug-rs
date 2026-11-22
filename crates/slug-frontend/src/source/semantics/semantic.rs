@@ -110,6 +110,15 @@ pub(super) enum Type {
     Schema,
     Struct(Option<SchemaIdentity>),
     Tuple(Vec<Type>),
+    /// A record type, as `{name: str}`: a map whose value at each field's
+    /// string key, or a struct whose field of that name, conforms to the
+    /// field's type, whatever other keys or fields it has. Fields are sorted
+    /// by name; build one with [`Type::record`]. With `map`, the type of a
+    /// map literal: a map whose keys are exactly these strings.
+    Record {
+        fields: Vec<(String, Type)>,
+        map: bool,
+    },
     Generic(usize),
     Union(Vec<Type>),
     /// A generic alias applied to type arguments, as `Optional<num>`, until
@@ -124,6 +133,28 @@ pub(super) enum Type {
     },
     /// Inside a `Recursive` body named `name`, the recursive type itself.
     RecursionVar(String),
+}
+
+std::thread_local! {
+    /// The field types of each schema the checker has seen, so a struct type,
+    /// which carries only its schema's identity, can be compared with a
+    /// record type.
+    static SCHEMA_FIELDS: std::cell::RefCell<HashMap<SchemaIdentity, HashMap<String, Type>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Records the field types of the schema `identity` names, for comparing its
+/// structs with record types.
+pub(super) fn register_schema_fields(identity: &SchemaIdentity, fields: HashMap<String, Type>) {
+    SCHEMA_FIELDS.with(|schemas| {
+        schemas.borrow_mut().insert(identity.clone(), fields);
+    });
+}
+
+/// The field types of the schema `identity` names, when the checker has
+/// seen it.
+pub(super) fn schema_fields(identity: &SchemaIdentity) -> Option<HashMap<String, Type>> {
+    SCHEMA_FIELDS.with(|schemas| schemas.borrow().get(identity).cloned())
 }
 
 std::thread_local! {
@@ -161,6 +192,13 @@ fn replace_recursion(body: &Type, name: &str, replacement: &Type) -> Type {
         Type::Task(result) => Type::Task(result.as_deref().map(|result| Box::new(recur(result)))),
         Type::Channel(value) => Type::Channel(value.as_deref().map(|value| Box::new(recur(value)))),
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(recur).collect()),
+        Type::Record { fields, map } => Type::Record {
+            fields: fields
+                .iter()
+                .map(|(field, value)| (field.clone(), recur(value)))
+                .collect(),
+            map: *map,
+        },
         Type::Union(members) => Type::Union(members.iter().map(recur).collect()),
         Type::AliasApplication(alias, arguments) => {
             Type::AliasApplication(alias.clone(), arguments.iter().map(recur).collect())
@@ -320,6 +358,9 @@ impl AlternativeType {
             }
             (Self::List(expected), Type::List(Some(actual))) => {
                 expected.accepts_constraint(actual, substitutions)
+            }
+            (Self::Map(_, _), Type::Record { map: true, .. }) => {
+                self.accepts_constraint(&actual.as_map(), substitutions)
             }
             (Self::List(_), Type::List(None)) | (Self::Map(_, _), Type::Map(None)) => true,
             (
@@ -518,6 +559,9 @@ impl Type {
                 key.is_reifiable_match_constraint() && value.is_reifiable_match_constraint()
             }),
             Self::Union(members) => members.iter().all(Self::is_reifiable_match_constraint),
+            Self::Record { fields, .. } => fields
+                .iter()
+                .all(|(_, field)| field.is_reifiable_match_constraint()),
             Self::Never
             | Self::Unknown
             | Self::Function(Some(_))
@@ -533,6 +577,36 @@ impl Type {
     }
     pub(super) fn universal() -> Self {
         Self::Union(vec![Self::Any, Self::Nil])
+    }
+
+    /// A record type of these fields, sorted by name.
+    pub(super) fn record(mut fields: Vec<(String, Self)>, map: bool) -> Self {
+        fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+        Self::Record { fields, map }
+    }
+
+    /// A map literal's record type as the map type it also is, of string keys
+    /// and the union of its fields' types; any other type as it is.
+    pub(super) fn as_map(&self) -> Self {
+        match self {
+            Self::Record { fields, map: true } => Self::Map(Some((
+                Box::new(Self::Str),
+                Box::new(Self::union(fields.iter().map(|(_, value)| value.clone()))),
+            ))),
+            other => other.clone(),
+        }
+    }
+
+    /// The type of field `name` of a value of this record type, if it has
+    /// that field.
+    pub(super) fn record_field(&self, name: &str) -> Option<&Self> {
+        let Self::Record { fields, .. } = self else {
+            return None;
+        };
+        fields
+            .binary_search_by(|(field, _)| field.as_str().cmp(name))
+            .ok()
+            .map(|index| &fields[index].1)
     }
 
     pub(super) fn union(members: impl IntoIterator<Item = Self>) -> Self {
@@ -638,6 +712,13 @@ impl Type {
             Self::Tuple(elements) => {
                 Self::Tuple(elements.into_iter().map(Self::widen_unknown).collect())
             }
+            Self::Record { fields, map } => Self::Record {
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| (name, value.widen_unknown()))
+                    .collect(),
+                map,
+            },
             Self::Union(members) => Self::union(members.into_iter().map(Self::widen_unknown)),
             other => other,
         }
@@ -653,8 +734,24 @@ impl Type {
         }
     }
 
-    /// The type with every tuple in it widened to a list, for a `var`, whose
-    /// later values need not keep its first value's length.
+    /// The type with every tuple in it widened to a list, and every map
+    /// literal's record type to its map type, for a `var`, whose later values
+    /// need not keep its first value's length or keys.
+    pub(super) fn widen_literals(&self) -> Self {
+        match self {
+            Self::Tuple(_) => self.as_list().widen_literals(),
+            Self::Record { map: true, .. } => self.as_map().widen_literals(),
+            Self::List(Some(element)) => Self::List(Some(Box::new(element.widen_literals()))),
+            Self::Map(Some((key, value))) => Self::Map(Some((
+                Box::new(key.widen_literals()),
+                Box::new(value.widen_literals()),
+            ))),
+            Self::Union(members) => Self::union(members.iter().map(Self::widen_literals)),
+            other => other.clone(),
+        }
+    }
+
+    /// The type with every tuple in it widened to a list.
     pub(super) fn widen_tuples(&self) -> Self {
         match self {
             Self::Tuple(_) => self.as_list().widen_tuples(),
@@ -707,8 +804,12 @@ impl Type {
             },
             Self::Map(expected) => match self {
                 Self::Map(actual) => optional_pair_assignable(actual.as_ref(), expected.as_ref()),
+                Self::Record { map: true, .. } => {
+                    self.as_map().is_assignable_to(&Self::Map(expected.clone()))
+                }
                 _ => false,
             },
+            Self::Record { fields, map } => self.conforms_to_record(fields, *map),
             Self::Function(expected) => match self {
                 Self::Function(actual) => {
                     optional_signature_assignable(actual.as_deref(), expected.as_deref())
@@ -745,6 +846,106 @@ impl Type {
                 }
                 _ => false,
             },
+            _ => false,
+        }
+    }
+}
+
+impl Type {
+    /// Why a value of this type does not conform to `expected`, a record type,
+    /// naming the first field that does not: `None` when `expected` is not a
+    /// record type or this type is not a map, struct, or record.
+    pub(super) fn record_mismatch(&self, expected: &Self) -> Option<String> {
+        let Self::Record {
+            fields: expected,
+            map: false,
+        } = expected.unfolded()
+        else {
+            return None;
+        };
+        let schema = match self {
+            Self::Struct(Some(identity)) => schema_fields(identity),
+            _ => None,
+        };
+        expected.iter().find_map(|(name, expected)| {
+            let shown = record_field_name(name);
+            let actual = match self {
+                Self::Record { map, .. } => match self.record_field(name) {
+                    Some(actual) => actual.clone(),
+                    None if *map && Self::Nil.is_assignable_to(expected) => return None,
+                    None => return Some(format!("field `{shown}` is missing")),
+                },
+                Self::Map(Some((_, value))) => {
+                    let value = Self::union([value.as_ref().clone(), Self::Nil]);
+                    if value.is_assignable_to(expected) {
+                        return None;
+                    }
+                    return Some(if value.without_nil().is_assignable_to(expected) {
+                        format!(
+                            "field `{shown}` may be missing, which reads `nil`, but must be {expected}"
+                        )
+                    } else {
+                        format!("field `{shown}` would be {value}, but must be {expected}")
+                    });
+                }
+                Self::Struct(Some(_)) => match schema.as_ref()?.get(name) {
+                    Some(actual) => actual.clone(),
+                    None => return Some(format!("the struct has no field `{shown}`")),
+                },
+                _ => return None,
+            };
+            (!actual.is_assignable_to(expected))
+                .then(|| format!("field `{shown}` is {actual}, but must be {expected}"))
+        })
+    }
+
+    /// Whether a value of this type conforms to the record type of
+    /// `expected` fields; with `exact`, to a map literal's record type.
+    fn conforms_to_record(&self, expected: &[(String, Self)], exact: bool) -> bool {
+        match self {
+            Self::Record { fields, map } => {
+                if exact {
+                    return *map
+                        && fields.len() == expected.len()
+                        && fields.iter().zip(expected).all(
+                            |((name, actual), (expected_name, expected))| {
+                                name == expected_name && actual.is_assignable_to(expected)
+                            },
+                        );
+                }
+                expected.iter().all(|(name, expected)| {
+                    match self.record_field(name) {
+                        Some(actual) => actual.is_assignable_to(expected),
+                        // A map literal without the key reads `nil` there; an
+                        // open record may hold anything there.
+                        None if *map => Self::Nil.is_assignable_to(expected),
+                        None => Self::universal().is_assignable_to(expected),
+                    }
+                })
+            }
+            // A map or struct whose contents the checker does not know.
+            Self::Map(None) => true,
+            Self::Struct(None) => !exact,
+            // A map may lack any key, which then reads `nil`.
+            Self::Map(Some((_, value))) => {
+                let value = Self::union([value.as_ref().clone(), Self::Nil]);
+                !exact
+                    && expected
+                        .iter()
+                        .all(|(_, expected)| value.is_assignable_to(expected))
+            }
+            Self::Struct(Some(identity)) => {
+                !exact
+                    && SCHEMA_FIELDS.with(|schemas| {
+                        schemas.borrow().get(identity).is_none_or(|fields| {
+                            expected.iter().all(|(name, expected)| {
+                                fields
+                                    .get(name)
+                                    .is_some_and(|actual| actual.is_assignable_to(expected))
+                            })
+                        })
+                    })
+            }
             _ => false,
         }
     }
@@ -850,6 +1051,15 @@ impl fmt::Display for Type {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Self::Record { fields, .. } => write!(
+                formatter,
+                "{{{}}}",
+                fields
+                    .iter()
+                    .map(|(name, value)| format!("{}: {value}", record_field_name(name)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Generic(index) => write!(formatter, "T{index}"),
             Self::Recursive { name, .. } | Self::RecursionVar(name) => formatter.write_str(name),
             Self::AliasApplication(name, arguments) => write!(
@@ -871,6 +1081,21 @@ impl fmt::Display for Type {
                     .join("|")
             ),
         }
+    }
+}
+
+/// A record field's name as source writes it: bare when it is a name, quoted
+/// otherwise.
+fn record_field_name(name: &str) -> String {
+    let mut characters = name.chars();
+    let bare = characters
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
+        && characters.all(|character| character.is_alphanumeric() || character == '_');
+    if bare {
+        name.to_owned()
+    } else {
+        format!("{name:?}")
     }
 }
 
@@ -910,6 +1135,16 @@ pub(super) fn resolve_annotation(
             .map(|member| resolve_annotation(member, type_parameters, span))
             .collect::<Result<Vec<_>, _>>()
             .map(Type::union),
+        TypeAnnotation::Record(fields) => fields
+            .iter()
+            .map(|(name, annotation)| {
+                Ok((
+                    name.clone(),
+                    resolve_annotation(annotation, type_parameters, span)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, SourceError>>()
+            .map(|fields| Type::record(fields, false)),
     })
 }
 
@@ -954,6 +1189,11 @@ fn reject_alias_applications(
             TypeAnnotation::Tuple(elements) | TypeAnnotation::Union(elements) => {
                 for element in elements {
                     reject_alias_applications(element, span, environment)?;
+                }
+            }
+            TypeAnnotation::Record(fields) => {
+                for (_, annotation) in fields {
+                    reject_alias_applications(annotation, span, environment)?;
                 }
             }
             TypeAnnotation::Name(_) => {}
@@ -1024,6 +1264,9 @@ pub(super) fn resolve_resource_references(
             .map(|value| resolve_resource_references(value, span, environment))
             .collect::<Result<Vec<_>, _>>()
             .map(Type::Tuple),
+        Type::Record { fields, map } => map_record_fields(fields, map, |value| {
+            resolve_resource_references(value, span, environment)
+        }),
         Type::List(element) => element
             .map(|element| resolve_resource_references(*element, span, environment).map(Box::new))
             .transpose()
@@ -1141,6 +1384,9 @@ pub(super) fn resolve_schema_references(
             .map(|value| resolve_schema_references(value, span, environment))
             .collect::<Result<Vec<_>, _>>()
             .map(Type::Tuple),
+        Type::Record { fields, map } => map_record_fields(fields, map, |value| {
+            resolve_schema_references(value, span, environment)
+        }),
         Type::Union(values) => values
             .into_iter()
             .map(|value| resolve_schema_references(value, span, environment))
@@ -1148,6 +1394,19 @@ pub(super) fn resolve_schema_references(
             .map(Type::union),
         other => Ok(other),
     }
+}
+
+/// A record type of `fields`, each with its type resolved by `resolve`.
+fn map_record_fields(
+    fields: Vec<(String, Type)>,
+    map: bool,
+    resolve: impl Fn(Type) -> Result<Type, SourceError>,
+) -> Result<Type, SourceError> {
+    fields
+        .into_iter()
+        .map(|(name, value)| Ok((name, resolve(value)?)))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|fields| Type::Record { fields, map })
 }
 
 fn resolve_name(name: &str, type_parameters: &[String]) -> Type {
@@ -1316,6 +1575,13 @@ pub(super) fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>
         Type::Recursive { name, body } => Type::Recursive {
             name: name.clone(),
             body: Box::new(substitute(body, substitutions)),
+        },
+        Type::Record { fields, map } => Type::Record {
+            fields: fields
+                .iter()
+                .map(|(name, value)| (name.clone(), substitute(value, substitutions)))
+                .collect(),
+            map: *map,
         },
         other => other.clone(),
     }

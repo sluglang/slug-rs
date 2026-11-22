@@ -1780,6 +1780,9 @@ impl Program {
             MatchType::Union(members) => members
                 .iter()
                 .try_for_each(|member| Self::validate_match_type(member, operands)),
+            MatchType::Record(fields) => fields
+                .iter()
+                .try_for_each(|(_, field)| Self::validate_match_type(field, operands)),
             _ => Ok(()),
         }
     }

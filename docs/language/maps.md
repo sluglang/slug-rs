@@ -28,7 +28,9 @@ repeat a key, including through equal keys such as `1` and `1.0`: a repeated
 constant key is a semantic error, and a repeated computed key is a checked
 runtime type error when the literal is evaluated. Use `+` to overwrite a key.
 Newlines immediately inside the braces or after an entry comma are whitespace;
-entries remain comma-delimited.
+entries remain comma-delimited. A literal whose keys are all distinct string
+constants also has a [record type](record-types.md), so the checker knows
+what each key holds.
 
 A key must be hashable. Numbers, strings, bytes, booleans, enum values,
 native resources, and channels are hashable, and so are lists and structs

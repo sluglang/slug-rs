@@ -282,12 +282,13 @@ require.
 
 ### 2. Structural record types
 
-- [ ] Specify `{field: Type}` types: which maps and structs conform, width
+- [x] Specify `{field: Type}` types: which maps and structs conform, width
   subtyping, absent fields as `nil`, and how they meet `map<K, V>` and
-  `struct<S>`.
-- [ ] Check field reads, construction, copies, and destructuring against
-  them; narrow with match constraints.
-- [ ] Make record types runtime-checkable for match constraints, so stage 6
+  `struct<S>` ([record types](../language/record-types.md)).
+- [x] Check field reads, construction, copies, and destructuring against
+  them; narrow with match constraints. A map literal with constant string
+  keys has a record type, which is also its map type.
+- [x] Make record types runtime-checkable for match constraints, so stage 6
   can check them at boundaries.
 
 ### 3. Generic nominal types

@@ -186,6 +186,135 @@ fn recursive_type_aliases_are_contractive_and_regular() {
 }
 
 #[test]
+fn record_types_check_maps_and_structs_by_their_fields() {
+    let path = fixture_path("record-types");
+    fs::write(
+        &path,
+        "type Named = {name: str}\n\
+         type Player = {\n\
+           name: str\n\
+           hp: num\n\
+           guild: str|nil\n\
+         }\n\
+         type Box<T> = {value: T}\n\
+         type Tree = {value: num, children: list<Tree>}\n\
+         val Pet = struct { name: str, legs: num = 4 }\n\
+         val greet = fn(who:Named):str { \"hi \" + who.name }\n\
+         val heal = fn(p:Player):num { p.hp + 1 }\n\
+         val guild = fn(p:{guild: str|nil}):str { if (p.guild != nil) { p.guild } else { \"none\" } }\n\
+         val unbox = fn<T>(box:Box<T>):T { box.value }\n\
+         val p = {name: \"bo\", hp: 2, guild: nil}\n\
+         val t:Tree = {value: 1, children: [{value: 2, children: []}]}\n\
+         val counts:map<str, num> = {a: 1, b: 2}\n\
+         val healed = p copy {hp: 9}\n\
+         val {name, hp} = p + {hp: 5}\n\
+         val quoted:{\"first name\": str} = {\"first name\": \"x\"}\n\
+         val kind = fn(v) match {\n\
+           r: {name: str} => r.name\n\
+           r: {weight: num} => \"weighs ${r.weight}\"\n\
+           _ => \"?\"\n\
+         }\n\
+         val main = fn() {\n\
+           println(greet({name: \"ann\", extra: 1}), greet(Pet { name: \"rex\" }), heal(p), heal(healed))\n\
+           println(guild(p), guild({guild: \"g\"}), guild({}), unbox({value: \"s\"}) + \"!\")\n\
+           println(t.children[0].value, counts, name, hp, quoted)\n\
+           println(kind({name: \"a\"}), kind(Pet { name: \"p\" }), kind({weight: 3}), kind({name: 1}), kind(3))\n\
+         }\n",
+    )
+    .expect("write record types");
+    let output = slug().arg(&path).output().expect("run record types");
+    assert_eq!(
+        String::from_utf8(output.stdout.clone()).unwrap(),
+        "hi ann hi rex 3 10\n\
+         none g none s!\n\
+         2 {\"a\": 1, \"b\": 2} bo 5 {\"first name\": \"x\"}\n\
+         a p weighs 3 ? ?\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Record match constraints survive a compiled artifact.
+    let artifact = path.with_extension("cslug");
+    let compile = slug()
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            artifact.to_str().unwrap(),
+        ])
+        .output()
+        .expect("compile record types");
+    assert!(compile.status.success(), "{compile:?}");
+    let run = slug()
+        .args(["run", artifact.to_str().unwrap()])
+        .output()
+        .expect("run record types artifact");
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        String::from_utf8(output.stdout).unwrap()
+    );
+    fs::remove_file(&artifact).expect("remove record types artifact");
+
+    fs::remove_file(&path).expect("remove record type source");
+}
+
+#[test]
+fn record_type_mismatches_name_the_field() {
+    let path = fixture_path("record-type-errors");
+    let prelude = "val Pet = struct { name: str }\n\
+                   val greet = fn(who:{name: str}):str { who.name }\n";
+    for (source, message) in [
+        (
+            "greet({nam: \"ann\"})",
+            "expected {name: str}, got {nam: str}: field `name` is missing",
+        ),
+        (
+            "greet({name: 3})",
+            "expected {name: str}, got {name: num}: field `name` is num, but must be str",
+        ),
+        (
+            "val m:map<str, str> = {name: \"a\"}\ngreet(m)",
+            "field `name` may be missing, which reads `nil`, but must be str",
+        ),
+        (
+            "val f = fn(p:{name: num}) { p }\nf(Pet { name: \"x\" })",
+            "got struct<Pet>: field `name` is str, but must be num",
+        ),
+        (
+            "val Rock = struct { weight: num }\ngreet(Rock { weight: 1 })",
+            "the struct has no field `name`",
+        ),
+        (
+            "val f = fn(p:{name: str}):num { p.name }",
+            "expected num, got str",
+        ),
+        (
+            "val p = {hp: 1}\nval q = p copy {hp: \"x\"}\nval f = fn(r:{hp: num}) { r }\nf(q)",
+            "field `hp` is str, but must be num",
+        ),
+        (
+            "val f = fn(p:{hp: str}) { val {hp} = p\nhp - 1 }",
+            "expected num, got str",
+        ),
+        ("type Bad = {}", "a record type needs at least one field"),
+        ("type Bad = {a: num, a: str}", "duplicate record field `a`"),
+        (
+            "val k = fn(v:struct<Pet>):str match { r: {name: num} => \"n\"; _ => \"p\" }",
+            "match case cannot match remaining type struct<Pet>",
+        ),
+        (
+            "val k = fn(v:struct<Pet>):str match { r: {name: str} => r.name; _ => \"p\" }",
+            "match case is unreachable",
+        ),
+    ] {
+        fs::write(&path, format!("{prelude}{source}\n")).expect("write record type error");
+        let output = slug().arg(&path).output().expect("run record type error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove record type source");
+}
+
+#[test]
 fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
     // A generic alias's closing `>` ends a line as `list<num>`'s does, while
     // a trailing comparison still continues onto the next line.
@@ -2450,7 +2579,10 @@ fn a_nil_test_narrows_a_member_of_an_immutable_binding() {
         let (code, _, stderr) = run(&format!("{prelude}{source}"));
         assert_eq!(code, Some(1), "{source}");
         assert!(
-            stderr.contains("operator `+` does not accept map<str, num>|nil and map<str, str>"),
+            // A `var` keeps its map literal's map type; a `val` its record
+            // type.
+            stderr.contains("operator `+` does not accept map<str, num>|nil and {kind: str}")
+                || stderr.contains("operator `+` does not accept {at: num}|nil and {kind: str}"),
             "{source}: {stderr}"
         );
     }
