@@ -55,12 +55,27 @@ use crate::{
     },
 };
 
+/// The most IR values a compiled function may have. Its native frame holds
+/// a slot for each, and the stack budget is checked only at calls, so one
+/// frame past it could overflow a thread's stack on its own: the main
+/// thread's is 1 MiB on Windows. This keeps a frame within a quarter of
+/// [`runtime::STACK_BUDGET`], 2730 values; the largest hot function of the
+/// benchmarks and clutch suites has under 1000.
+#[allow(clippy::cast_sign_loss, reason = "a slot's size is positive")]
+const MAX_VALUES: usize = runtime::STACK_BUDGET / 4 / layout::SIZE as usize;
+
 /// Why a function does not compile, or `Ok` if it can.
 ///
 /// # Errors
 ///
 /// Returns the first thing the baseline tier does not compile yet.
 pub fn qualify(function: &Function) -> Result<(), String> {
+    if function.values.len() > MAX_VALUES {
+        return Err(format!(
+            "it has {} values, more than the {MAX_VALUES} a native frame holds",
+            function.values.len()
+        ));
+    }
     let cell = |slot: &usize| function.cells.get(*slot).copied().unwrap_or(true);
     for block in &function.blocks {
         for inst in &block.insts {

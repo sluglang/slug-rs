@@ -1074,6 +1074,20 @@ val main = fn() {
 }
 
 #[test]
+fn a_function_too_large_for_a_native_frame_stays_interpreted() {
+    // A native frame has a slot per value, and the stack budget is checked
+    // only at calls, so a frame must stay well within it: with 100,000
+    // values, as one diagnostics test has, it was over 2 MiB, past the
+    // 1 MiB of a Windows main thread's stack.
+    let source = format!("val main = fn() {{ println({}true) }}\n", "!".repeat(5000));
+    let trace = same_with_and_without_native_code("too-large", &source);
+    assert!(
+        trace.contains("a native frame holds"),
+        "the function compiled:\n{trace}"
+    );
+}
+
+#[test]
 fn compiled_calls_in_tasks_with_their_own_view_match_the_interpreter() {
     // A spawned task with a `task var` and a fork each have their own view
     // of the module variables. Their compiled loops call module functions,
