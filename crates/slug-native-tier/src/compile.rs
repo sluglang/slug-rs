@@ -2565,17 +2565,6 @@ fn owning_values(function: &Function) -> Vec<bool> {
                     | Op::GetLocal(_)
                     | Op::MakeClosure { .. }
                     | Op::MakeClosurePooled { .. }
-                    | Op::ListAppend
-                    | Op::ListPrepend
-                    | Op::GetSlice { .. }
-                    | Op::Struct(_)
-                    | Op::StructPooled(_)
-                    | Op::StructCopy(_)
-                    | Op::StructCopyPooled(_)
-                    | Op::CopyGlobalPooled { .. }
-                    | Op::UpdateCapture { .. }
-                    | Op::Map(_)
-                    | Op::InterpolatePooled(_)
                     | Op::MatchCasePooled { .. }
                     | Op::MatchLocalsPooled { .. }
                     | Op::TryMatchPooled { .. }
@@ -2586,7 +2575,10 @@ fn owning_values(function: &Function) -> Vec<bool> {
                     | Op::GetIndexConstant(_)
                     | Op::ReadIndex { .. }
                     | Op::ReadIndexConstant { .. } => true,
-                    _ => false,
+                    // Every operation the VM runs for native code makes a
+                    // value: an update's is the value it assigned, which the
+                    // variable holds too.
+                    op => NativeOperation::of(op).is_some(),
                 },
             };
             if owns {
@@ -2597,4 +2589,55 @@ fn owning_values(function: &Function) -> Vec<bool> {
         }
     }
     owning
+}
+
+#[cfg(test)]
+mod tests {
+    use super::owning_values;
+    use crate::lift::lift;
+    use slug_vm::{NativeOperation, Op};
+
+    #[test]
+    fn every_operation_the_vm_runs_owns_its_result() {
+        // Module-variable updates and copies among them: a result that did
+        // not own its value leaked a reference to it on every update.
+        let program = slug_frontend::compile(
+            "test.slug",
+            "var total = 0\n\
+             var log = []\n\
+             var player = {hp: 3, name: \"a\"}\n\
+             val step = fn(i) {\n\
+                 total = total + i\n\
+                 log = log :+ i\n\
+                 player = player copy { hp: player.hp + i }\n\
+                 [i] :+ i\n\
+             }\n\
+             val main = fn() { println(step(1), total, log, player) }\n",
+        )
+        .expect("test source compiles");
+        let mut operations = 0;
+        for chunk in 0..program.chunk_count() {
+            let Ok(function) = lift(&program, chunk) else {
+                continue;
+            };
+            let owning = owning_values(&function);
+            for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+                if NativeOperation::of(&inst.op).is_some() {
+                    operations += 1;
+                    for result in &inst.results {
+                        assert!(
+                            owning[result.index()],
+                            "{:?} at {} does not own its result",
+                            inst.op,
+                            inst.ip
+                        );
+                    }
+                }
+                if matches!(inst.op, Op::UpdateGlobalPooled { .. }) {
+                    assert!(owning[inst.results[0].index()]);
+                }
+            }
+        }
+        assert!(operations >= 3, "the program has the operations it tests");
+    }
 }
