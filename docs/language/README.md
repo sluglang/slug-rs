@@ -37,6 +37,7 @@ normative.
 | `nominal-types.md` | Nominal native resource handles, fieldless enums, and transparent aliases. |
 | `maps.md` | Map literals, keys, and operations. |
 | `record-types.md` | Structural record types, `{name: str}`, for maps and structs. |
+| `annotation-checks.md` | Where annotations are checked at run time, what a check covers, and its error. |
 | `match-and-destructuring.md` | Match expressions and destructuring patterns. |
 | `structs.md` | Schema identity, construction, defaults, field access, and equality. |
 | `strings.md` | String literals and string operations. |

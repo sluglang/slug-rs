@@ -3,7 +3,8 @@
 ## Status
 
 Accepted; implementation planned in
-[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 6.
+[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 6; specified in
+[Annotation checks](../language/annotation-checks.md).
 
 ## Context
 
@@ -50,7 +51,13 @@ checked deeply and the result kept.
   binding, not when it is sent.
 - **Generic parameters are erased.** A type parameter is not checked: in
   `fn<T>(x:T):T`, nothing typed can depend on `T` beyond what its uses check.
-  Type arguments to generic aliases, structs, and enums are erased likewise.
+- **Type arguments of structs and enums are checked.** A value reaching
+  `Box<num>` or `Result<num, str>` is checked deeply, as an immutable
+  collection is: each field against its type with the type arguments
+  substituted, once, and the result kept. A generic alias is checked as what
+  it stands for. (Amended 2026-11-22: the type arguments were to be erased,
+  but then a field read from a struct of unproven contents would have a type
+  nothing enforced.)
 
 Typed code may rely on the first-order type of every value it holds, and of
 every element it reads from a collection it holds. The representation that
@@ -67,6 +74,9 @@ keeps a check's result with a value is an implementation detail.
 - Deep checks of large collections that cross many boundaries could be
   costly; keeping the result bounds this, and stage 6 measures it before the
   native tier depends on the checks.
+- Checking type arguments makes a field read from a generic struct, or a
+  payload read from an enum value, as reliable as an element read from a
+  list.
 - Match type constraints already check value categories, nominal types,
   unions, and `list<T>`/`map<K, V>`; boundary checks share that machinery,
   extended to tuples, records, and functions' tags.

@@ -255,6 +255,41 @@ pub(crate) struct SessionSnapshot {
 
 pub(super) type ImportSnapshots = HashMap<String, ModuleSnapshot>;
 
+/// The annotated place a runtime check guards, which its error names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum CheckPlace {
+    /// The value of an annotated declaration, binding `name` unless it
+    /// destructures.
+    Binding(Option<String>),
+    /// An assignment to the annotated `var` `name`.
+    Assignment(String),
+    /// What a function completes with, by its body's end, `return`, or a
+    /// recovering `defer onerror`.
+    Result,
+    /// The parameter `name`, at `index`, on entry. `inferred` when its type
+    /// is not annotated but what the checker inferred inside the body, from
+    /// how the body uses it or what a callee expects of the function.
+    Parameter {
+        name: String,
+        index: usize,
+        inferred: bool,
+    },
+    /// The field `name` of a struct being constructed or copied.
+    Field(String),
+    /// What a call through a function value returns, which the function
+    /// value's type describes but nothing enforced.
+    CallResult,
+}
+
+/// A runtime check where a value whose type the checker could not prove
+/// reaches an annotated place: the value must conform to `expected`, whose
+/// type parameters a check does not test.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct BoundaryCheck {
+    pub(super) expected: Type,
+    pub(super) place: CheckPlace,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct SemanticAnalysis {
     pub(super) snapshot: ModuleSnapshot,
@@ -265,6 +300,12 @@ pub(super) struct SemanticAnalysis {
     pub(crate) foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
     pub(super) match_constraints: HashMap<SourceSpan, Vec<Option<Type>>>,
     pub(super) expression_types: HashMap<SourceSpan, Type>,
+    /// The runtime checks each site makes: a declaration, an assignment, a
+    /// `return`, a `defer`, a function literal for its parameters and its
+    /// body's result, a struct construction or copy for its fields, or a
+    /// call through a function value for its result.
+    #[allow(dead_code, reason = "the compiler emits these checks in the next step")]
+    pub(super) boundary_checks: HashMap<SourceSpan, Vec<BoundaryCheck>>,
     /// The names `{*}` declarations define, or `None` when one selects from
     /// a map whose entries are not known until it runs.
     pub(super) selected_globals: Option<HashSet<String>>,
@@ -286,6 +327,7 @@ struct SemanticRecords {
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
     match_constraints: HashMap<SourceSpan, Vec<Option<Type>>>,
     expression_types: HashMap<SourceSpan, Type>,
+    boundary_checks: HashMap<SourceSpan, Vec<BoundaryCheck>>,
     selected_globals: HashSet<String>,
     unknown_selection: bool,
 }
@@ -946,6 +988,31 @@ impl Environment {
             .insert(span, value_type);
     }
 
+    /// Records that the site at `site` checks its value, of type `actual`,
+    /// against `expected` when it runs, unless the checker proved it
+    /// conforms. A trial check records nothing: the check that follows it
+    /// does.
+    pub(super) fn record_boundary_check(
+        &self,
+        site: &SourceSpan,
+        actual: &Type,
+        expected: &Type,
+        place: CheckPlace,
+    ) {
+        if self.in_trial() || actual.is_proven_assignable_to(expected) {
+            return;
+        }
+        let check = BoundaryCheck {
+            expected: expected.clone(),
+            place,
+        };
+        let mut records = self.records.borrow_mut();
+        let checks = records.boundary_checks.entry(site.clone()).or_default();
+        if !checks.contains(&check) {
+            checks.push(check);
+        }
+    }
+
     /// Records the names a `{*}` declaration defines, or, with `None`, that
     /// they are not known until it runs.
     pub(super) fn record_selection<'a>(&self, names: Option<impl Iterator<Item = &'a String>>) {
@@ -967,6 +1034,7 @@ impl Environment {
             foreign_resource_signatures: records.foreign_resource_signatures.clone(),
             match_constraints: records.match_constraints.clone(),
             expression_types: records.expression_types.clone(),
+            boundary_checks: records.boundary_checks.clone(),
             selected_globals: (!records.unknown_selection)
                 .then(|| records.selected_globals.clone()),
         }

@@ -281,6 +281,24 @@ pub(super) fn with_type_parameter_names<R>(names: &[String], work: impl FnOnce()
 }
 
 std::thread_local! {
+    /// Whether assignability is being proven, by `is_proven_assignable_to`,
+    /// rather than allowed.
+    static PROVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn proving() -> bool {
+    PROVING.with(std::cell::Cell::get)
+}
+
+/// Runs `work` with assignability proven or allowed, as `proving` says.
+fn with_proving<R>(proving: bool, work: impl FnOnce() -> R) -> R {
+    let outer = PROVING.with(|flag| flag.replace(proving));
+    let result = work();
+    PROVING.with(|flag| flag.set(outer));
+    result
+}
+
+std::thread_local! {
     /// Pairs of types being compared while one of them is recursive: a pair
     /// met again is assumed to conform, as recursive types are compared
     /// coinductively.
@@ -764,6 +782,11 @@ impl Type {
     }
 
     pub(super) fn union(members: impl IntoIterator<Item = Self>) -> Self {
+        // A union is normalized by what may be assigned, even while proving.
+        with_proving(false, || Self::normalized_union(members))
+    }
+
+    fn normalized_union(members: impl IntoIterator<Item = Self>) -> Self {
         let mut flattened = Vec::new();
         for member in members {
             match member {
@@ -919,9 +942,58 @@ impl Type {
         }
     }
 
+    /// Whether every value of this type certainly conforms to `expected`, so
+    /// that one reaching an annotation of `expected` needs no runtime check.
+    /// It is `is_assignable_to`, except that a part the checker could not
+    /// determine, `unknown` or a collection or struct of unknown contents,
+    /// conforms only to a type every value conforms to. As a check tests
+    /// only a function's, task's, or channel's kind, and nothing of a type
+    /// parameter, those conform by kind alone, and a type parameter accepts
+    /// any value.
+    pub(super) fn is_proven_assignable_to(&self, expected: &Self) -> bool {
+        self.is_assignable_to(expected) && with_proving(true, || self.is_assignable_to(expected))
+    }
+
+    /// Whether every value conforms to this type, as far as a runtime check
+    /// can tell: `any|nil`, `unknown`, or a union with a type parameter.
+    pub(super) fn accepts_every_value(&self) -> bool {
+        match self {
+            Self::Unknown | Self::Generic(_) => true,
+            Self::Union(members) => {
+                members
+                    .iter()
+                    .any(|member| matches!(member, Self::Generic(_)))
+                    || (members.contains(&Self::Any) && members.contains(&Self::Nil))
+            }
+            Self::Recursive { .. } => self.unfolded().accepts_every_value(),
+            _ => false,
+        }
+    }
+
+    /// Whether a value of this type is one of the enum `expected`'s values:
+    /// a value of the enum or of one of its payload cases, with type
+    /// arguments that conform.
+    fn is_enum_value_of(&self, expected: &EnumIdentity, expected_arguments: &[Self]) -> bool {
+        let (actual, actual_arguments) = match self {
+            Self::Enum(actual, arguments) => (actual.clone(), arguments),
+            Self::Struct(Some(schema), arguments) => match schema.case_enum() {
+                Some(actual) => (actual, arguments),
+                None => return false,
+            },
+            _ => return false,
+        };
+        actual == *expected && arguments_assignable(actual_arguments, expected_arguments)
+    }
+
     pub(super) fn is_assignable_to(&self, expected: &Self) -> bool {
-        if self == expected || matches!(self, Self::Never | Self::Unknown) {
+        if self == expected || matches!(self, Self::Never) {
             return true;
+        }
+        if proving() && expected.accepts_every_value() {
+            return true;
+        }
+        if matches!(self, Self::Unknown) {
+            return !proving();
         }
         if matches!(self, Self::Recursive { .. }) || matches!(expected, Self::Recursive { .. }) {
             let pair = (self.clone(), expected.clone());
@@ -968,37 +1040,30 @@ impl Type {
             Self::Record { fields, map } => self.conforms_to_record(fields, *map),
             Self::Function(expected) => match self {
                 Self::Function(actual) => {
-                    optional_signature_assignable(actual.as_deref(), expected.as_deref())
+                    proving()
+                        || optional_signature_assignable(actual.as_deref(), expected.as_deref())
                 }
                 _ => false,
             },
             Self::Task(expected) => match self {
                 Self::Task(actual) => {
-                    optional_covariant_assignable(actual.as_deref(), expected.as_deref())
+                    proving()
+                        || optional_covariant_assignable(actual.as_deref(), expected.as_deref())
                 }
                 _ => false,
             },
             Self::Channel(expected) => match self {
                 Self::Channel(actual) => {
-                    optional_argument_assignable(actual.as_deref(), expected.as_deref())
+                    proving()
+                        || optional_argument_assignable(actual.as_deref(), expected.as_deref())
                 }
                 _ => false,
             },
             Self::Resource(expected) => {
                 matches!(self, Self::Resource(actual) if actual == expected)
             }
-            // A value of an enum, or of one of its payload cases, is one of
-            // the enum's values.
             Self::Enum(expected, expected_arguments) => {
-                let (actual, actual_arguments) = match self {
-                    Self::Enum(actual, arguments) => (actual.clone(), arguments),
-                    Self::Struct(Some(schema), arguments) => match schema.case_enum() {
-                        Some(actual) => (actual, arguments),
-                        None => return false,
-                    },
-                    _ => return false,
-                };
-                actual == *expected && arguments_assignable(actual_arguments, expected_arguments)
+                self.is_enum_value_of(expected, expected_arguments)
             }
             Self::Schema => matches!(self, Self::Schema),
             Self::Struct(expected, expected_arguments) => match self {
@@ -1096,9 +1161,10 @@ impl Type {
                     }
                 })
             }
-            // A map or struct whose contents the checker does not know.
-            Self::Map(None) => true,
-            Self::Struct(None, _) => !exact,
+            // A map or struct whose contents the checker does not know, which
+            // only a runtime check can show conforms.
+            Self::Map(None) => !proving() || accept_every_value(expected),
+            Self::Struct(None, _) => !exact && (!proving() || accept_every_value(expected)),
             // A map may lack any key, which then reads `nil`.
             Self::Map(Some((_, value))) => {
                 let value = Self::union([value.as_ref().clone(), Self::Nil]);
@@ -1109,24 +1175,31 @@ impl Type {
             }
             Self::Struct(Some(identity), arguments) => {
                 !exact
-                    && schema_fields(identity, arguments).is_none_or(|fields| {
-                        expected.iter().all(|(name, expected)| {
+                    && match schema_fields(identity, arguments) {
+                        Some(fields) => expected.iter().all(|(name, expected)| {
                             fields
                                 .get(name)
                                 .is_some_and(|actual| actual.is_assignable_to(expected))
-                        })
-                    })
+                        }),
+                        None => !proving() || accept_every_value(expected),
+                    }
             }
             _ => false,
         }
     }
 }
 
+/// Whether every field of a record type accepts every value.
+fn accept_every_value(fields: &[(String, Type)]) -> bool {
+    fields.iter().all(|(_, field)| field.accepts_every_value())
+}
+
 /// Whether a generic struct's or enum's type arguments conform, covariantly;
-/// unknown ones, which are empty, conform either way.
+/// unknown ones, which are empty, conform when allowed, and when proven only
+/// to arguments that accept every value.
 fn arguments_assignable(actual: &[Type], expected: &[Type]) -> bool {
     expected.is_empty()
-        || actual.is_empty()
+        || (actual.is_empty() && (!proving() || expected.iter().all(Type::accepts_every_value)))
         || actual
             .iter()
             .zip(expected)
@@ -1145,7 +1218,10 @@ fn optional_argument_assignable(actual: Option<&Type>, expected: Option<&Type>) 
 /// matches exactly.
 fn optional_covariant_assignable(actual: Option<&Type>, expected: Option<&Type>) -> bool {
     match (actual, expected) {
-        (_, None) | (None | Some(Type::Unknown), Some(_)) => true,
+        (_, None) => true,
+        (None | Some(Type::Unknown), Some(expected)) => {
+            !proving() || expected.accepts_every_value()
+        }
         (Some(actual), Some(expected)) => actual.is_assignable_to(expected),
     }
 }
@@ -1155,7 +1231,10 @@ fn optional_pair_assignable(
     expected: Option<&(Box<Type>, Box<Type>)>,
 ) -> bool {
     match (actual, expected) {
-        (_, None) | (None, Some(_)) => true,
+        (_, None) => true,
+        (None, Some((key, value))) => {
+            !proving() || (key.accepts_every_value() && value.accepts_every_value())
+        }
         (Some(actual), Some(expected)) => {
             actual.0.is_assignable_to(&expected.0) && actual.1.is_assignable_to(&expected.1)
         }

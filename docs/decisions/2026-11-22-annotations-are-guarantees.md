@@ -3,7 +3,8 @@
 ## Status
 
 Accepted; implementation planned in
-[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 6.
+[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 6; specified in
+[Annotation checks](../language/annotation-checks.md).
 
 ## Amends
 
@@ -49,6 +50,14 @@ annotated `str`, is a source error. Only the part of an inferred type that
 comes from unannotated code, which the checker could not determine, is left
 to the runtime check.
 
+**A dynamic call to an overload set selects by type.** A call the checker
+could not resolve to one member takes the first member whose parameters bind
+the arguments and whose entry checks they pass, rather than the first that
+binds them by shape. Without this, an entry check would reject a call that a
+later member accepts: `f("s")` must reach `f(x:str)` though `f(x:num)` was
+declared first, where today it runs `f(x:num)` with a string. (Amended
+2026-11-22.)
+
 Within code whose types the checker proved, the compiler and the runtime may
 rely on every proven type. What a check covers, and so how far a type may be
 relied on, is set by [the soundness model](2026-11-22-transient-soundness-model.md).
@@ -62,6 +71,9 @@ relied on, is set by [the soundness model](2026-11-22-transient-soundness-model.
   This is the intended effect.
 - Annotated code may need narrowing it did not need before: a value of type
   `str|nil` must be narrowed to `str` before it reaches a `str` annotation.
+- Dynamic overload dispatch changes: a call that reached the first member
+  by shape alone may now reach a later one, or fail when no member's checks
+  pass.
 - Boundary failures need a diagnostic code and the expected and actual types,
   consistent with [Diagnostic Documents](../reference/diagnostics.md).
 - The cost of the checks must be measured on every benchmark before anything

@@ -12,8 +12,9 @@ use super::{
         Parameter, Pattern, Prefix, SelectCaseKind, Tag, TypeAnnotation,
     },
     environment::{
-        CallableParameter, CallableSignature, Environment, ImportSnapshots, ModuleSnapshot,
-        NilStartSite, SemanticAnalysis, SemanticBinding, SessionSnapshot, function_value_type,
+        CallableParameter, CallableSignature, CheckPlace, Environment, ImportSnapshots,
+        ModuleSnapshot, NilStartSite, SemanticAnalysis, SemanticBinding, SessionSnapshot,
+        function_value_type,
     },
     semantic::{
         AlternativeType, AlternativeVariable, InferredAlternative, ResourceIdentity,
@@ -2493,6 +2494,7 @@ fn apply_expected_parameters(
 }
 
 fn check_function_body(
+    span: &SourceSpan,
     parameters: &[Parameter],
     signature: &CallableSignature,
     return_annotation: Option<&TypeAnnotation>,
@@ -2503,6 +2505,7 @@ fn check_function_body(
     // Diagnostics in the body name its type parameters as written.
     super::semantic::with_type_parameter_names(type_parameters, || {
         check_function_body_in_scope(
+            span,
             parameters,
             signature,
             return_annotation,
@@ -2514,6 +2517,7 @@ fn check_function_body(
 }
 
 fn check_function_body_in_scope(
+    span: &SourceSpan,
     parameters: &[Parameter],
     signature: &CallableSignature,
     return_annotation: Option<&TypeAnnotation>,
@@ -2528,7 +2532,9 @@ fn check_function_body_in_scope(
         // A body that is a `match` without a subject matches the arguments,
         // a tuple of the parameters' types as the body sees them.
         let mut arguments = Vec::new();
-        for (parameter, signature_parameter) in parameters.iter().zip(&signature.parameters) {
+        for (index, (parameter, signature_parameter)) in
+            parameters.iter().zip(&signature.parameters).enumerate()
+        {
             let parameter_type = &signature_parameter.value_type;
             if parameter.discard {
                 arguments.push(Type::Unknown);
@@ -2552,6 +2558,22 @@ fn check_function_body_in_scope(
                     element_type
                 };
                 arguments.push(binding_type.clone());
+                // The body relies on the type it sees a parameter with, so the
+                // function checks its argument on entry: any caller may call
+                // it. A type from a body-derived overload alternative is one
+                // of several, which the body is checked against in turn.
+                if parameter.annotation.is_some() || signature.inferred_alternatives.is_empty() {
+                    scoped.record_boundary_check(
+                        span,
+                        &Type::Unknown,
+                        &binding_type,
+                        CheckPlace::Parameter {
+                            name: parameter.name.clone(),
+                            index,
+                            inferred: parameter.annotation.is_none(),
+                        },
+                    );
+                }
                 scoped.declare(parameter.name.clone(), SemanticBinding::value(binding_type));
             }
             if let Some(default) = &parameter.default {
@@ -2580,6 +2602,7 @@ fn check_function_body_in_scope(
                     error
                 }
             })?;
+            scoped.record_boundary_check(span, &completed, expected, CheckPlace::Result);
         }
         // The function produces its body's value or any `return`'s, which were
         // each checked against `expected` where they occur.
@@ -2869,6 +2892,15 @@ fn check_expression_inner(
                     let actual = as_expected_tuple(expected, value, actual.clone(), environment);
                     require(expected, &actual, &expression.span)
                         .map_err(|error| explain_nil_start(error, value, environment))?;
+                    environment.record_boundary_check(
+                        &expression.span,
+                        &actual,
+                        expected,
+                        CheckPlace::Binding(match pattern {
+                            Pattern::Binding(name) => Some(name.clone()),
+                            _ => None,
+                        }),
+                    );
                 }
                 if callable.is_none() {
                     let mut binding = value_binding(value, &actual, environment, type_parameters)?;
@@ -2956,6 +2988,7 @@ fn check_expression_inner(
                 }
                 environment.record_function(expression.span.clone(), signature.identity());
                 let actual = check_function_body(
+                    &expression.span,
                     parameters,
                     &signature,
                     return_annotation.as_ref(),
@@ -3169,6 +3202,12 @@ fn check_expression_inner(
                     .filter(|binding| !(environment.in_trial() && binding.nil_start.is_some()))
                 {
                     let expected = binding.declared.as_ref().unwrap_or(&binding.value_type);
+                    environment.record_boundary_check(
+                        &expression.span,
+                        &actual,
+                        expected,
+                        CheckPlace::Assignment(name.clone()),
+                    );
                     require(expected, &actual, &value.span).map_err(|error| {
                         let error = error.with_extent(value);
                         if binding
@@ -3202,6 +3241,12 @@ fn check_expression_inner(
                     require(&expected, &actual, &value.span).map_err(|error| {
                         explain_nil_start(error.with_extent(value), value, environment)
                     })?;
+                    environment.record_boundary_check(
+                        &expression.span,
+                        &actual,
+                        &expected,
+                        CheckPlace::Result,
+                    );
                 }
                 environment.record_return(actual.clone());
                 Ok(actual)
@@ -3218,6 +3263,12 @@ fn check_expression_inner(
                     if let Some(expected) = environment.expected_return() {
                         require(&expected, &handled, &value.span)
                             .map_err(|error| error.with_extent(value))?;
+                        environment.record_boundary_check(
+                            &expression.span,
+                            &handled,
+                            &expected,
+                            CheckPlace::Result,
+                        );
                     }
                     environment.record_return(handled);
                 }
@@ -3623,6 +3674,12 @@ fn check_expression_inner(
                             require(&expected.value_type, &actual, &value.span)
                         }
                         .map_err(|error| explain_nil_start(error, value, environment))?;
+                        environment.record_boundary_check(
+                            &expression.span,
+                            &actual,
+                            &expected.value_type,
+                            CheckPlace::Field(name.clone()),
+                        );
                     }
                 }
                 if let Some(schema) = &schema_binding
@@ -3681,6 +3738,12 @@ fn check_expression_inner(
                         })?;
                         require(&expected.value_type, &actual, &replacement.span)
                             .map_err(|error| explain_nil_start(error, replacement, environment))?;
+                        environment.record_boundary_check(
+                            &expression.span,
+                            &actual,
+                            &expected.value_type,
+                            CheckPlace::Field(name.clone()),
+                        );
                     }
                 }
                 // A record's copy has the replaced fields' new types.
@@ -5351,12 +5414,21 @@ fn check_call(
             return Ok(Type::Unknown);
         };
         if binding.callables.is_empty() {
-            return check_function_value_call(
+            let result = check_function_value_call(
                 &binding.value_type,
                 &shapes,
                 &actuals,
                 &expression.span,
+            )?;
+            // A function value was checked only to be a function, so what
+            // its type says it returns is checked when it does.
+            environment.record_boundary_check(
+                &expression.span,
+                &Type::Unknown,
+                &result,
+                CheckPlace::CallResult,
             );
+            return Ok(result);
         }
         let callables = binding.callables.clone();
         if callables.len() > 1
@@ -6693,6 +6765,132 @@ mod tests {
                 (name, signature)
             })
             .collect()
+    }
+
+    /// The runtime checks the checker records for `source`, by line: each
+    /// as its line, its place, and its expected type.
+    fn recorded_checks(source: &str) -> Vec<(u32, CheckPlace, String)> {
+        let tokens = super::super::Lexer::new("test.slug", source)
+            .tokens()
+            .expect("source lexes");
+        let expressions = super::super::Parser::new(tokens)
+            .parse()
+            .expect("source parses");
+        let mut checks = analyze_with_imports(&expressions, HashMap::new(), None)
+            .expect("source analyzes")
+            .boundary_checks
+            .into_iter()
+            .flat_map(|(span, checks)| {
+                checks
+                    .into_iter()
+                    .map(move |check| (span.line, check.place, check.expected.to_string()))
+            })
+            .collect::<Vec<_>>();
+        checks.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        checks
+    }
+
+    #[test]
+    fn only_a_value_the_checker_could_not_prove_is_checked_at_an_annotation() {
+        let checks = recorded_checks(
+            "val dynamic = fn(x) { x }\n\
+             val literal:num = 1\n\
+             val unknown:num = dynamic(2)\n\
+             val numbers:list<num> = [1, 2]\n\
+             val unknowns:list<num> = dynamic([1])\n\
+             var count:num = 0\n\
+             count = dynamic(3)\n\
+             count = 4\n",
+        );
+        assert_eq!(
+            checks,
+            vec![
+                (3, CheckPlace::Binding(Some("unknown".into())), "num".into()),
+                (
+                    5,
+                    CheckPlace::Binding(Some("unknowns".into())),
+                    "list<num>".into()
+                ),
+                (7, CheckPlace::Assignment("count".into()), "num".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_function_checks_its_parameters_on_entry_and_an_unproven_result() {
+        let checks = recorded_checks(
+            "val dynamic = fn(x) { x }\n\
+             val annotated = fn(n:num, rest) { n }\n\
+             val inferred = fn(v) { v / 10 }\n\
+             val unproven = fn(x):str { dynamic(x) }\n\
+             val proven = fn(x):str { \"s\" }\n\
+             val identity = fn<T>(x:T):T { x }\n\
+             val early = fn(x):num { if (x == nil) { return dynamic(x) }\n 0 }\n",
+        );
+        let parameter = |name: &str, inferred| CheckPlace::Parameter {
+            name: name.into(),
+            index: 0,
+            inferred,
+        };
+        assert_eq!(
+            checks,
+            vec![
+                (2, parameter("n", false), "num".into()),
+                (3, parameter("v", true), "num".into()),
+                (4, CheckPlace::Result, "str".into()),
+                (7, CheckPlace::Result, "num".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_call_through_a_function_value_checks_its_result() {
+        let checks = recorded_checks(
+            "val apply = fn(f:fn<str, num>) { f(1) }\n\
+             val each = fn<T>(f:fn<T, num>) { f(1) }\n",
+        );
+        assert_eq!(
+            checks,
+            vec![
+                (1, CheckPlace::CallResult, "str".into()),
+                (
+                    1,
+                    CheckPlace::Parameter {
+                        name: "f".into(),
+                        index: 0,
+                        inferred: false
+                    },
+                    "fn<str, num>".into()
+                ),
+                (
+                    2,
+                    CheckPlace::Parameter {
+                        name: "f".into(),
+                        index: 0,
+                        inferred: false
+                    },
+                    "fn<T0, num>".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_struct_field_checks_a_value_the_checker_could_not_prove() {
+        let checks = recorded_checks(
+            "val dynamic = fn(x) { x }\n\
+             val Pet = struct { name: str, age }\n\
+             val rex = Pet { name: dynamic(\"Rex\"), age: dynamic(3) }\n\
+             val proven = rex copy { name: \"Max\" }\n\
+             val unproven = rex copy { name: dynamic(\"Max\") }\n",
+        );
+        assert_eq!(
+            checks,
+            vec![
+                (3, CheckPlace::Field("name".into()), "str".into()),
+                (5, CheckPlace::Field("name".into()), "str".into()),
+            ]
+        );
     }
 
     #[test]

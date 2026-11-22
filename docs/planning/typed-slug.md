@@ -421,10 +421,43 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
 
 ### 6. Sound boundaries
 
-- [ ] Specify where checks occur: binding, argument, result, field, element
-  read, receive; the error, with the annotation's location.
-- [ ] Implement the checks in the compiler, inserting them only where a
-  value's type is not proven.
+- [x] Specify where checks occur: binding, argument, result, field, element
+  read, receive; the error, with the annotation's location. Specified in
+  [Annotation checks](../language/annotation-checks.md). Two decisions were
+  amended on the way: struct and enum type arguments are checked, not
+  erased, and a dynamic call to an overload set selects by type.
+- [x] Record in the checker where checks are needed: a value reaching an
+  annotated or inferred type that it is not proven to conform to, by
+  `is_proven_assignable_to`, which treats an undetermined part as conforming
+  only to a type every value does. Measured over the repository's `.slug`
+  files (5,516 sites):
+
+  | Place | Sites | Note |
+  | --- | --- | --- |
+  | Annotated parameter | 4,525 | 2,009 `num`, 898 `str`, 581 `map`, 475 `list`: nearly all one tag compare |
+  | Inferred parameter | 560 | 205 `num`, 142 `str`, 116 `map` |
+  | Result | 292 | Mostly values from untyped `foreign` raw functions and unannotated helpers; 152 in Crawl |
+  | Assignment | 84 | Most to unannotated `var`s, against their first value's type |
+  | Struct field | 38 | |
+  | Call through a function value | 10 | |
+  | Declaration | 7 | |
+
+  75 sites check against a type with a type parameter, whose check is
+  partly erased.
+- [ ] Close the gaps the survey found before anything relies on the checks:
+  - A dynamic value reaching a type parameter in a generic function's
+    result, as `fn<T>(x:T):T { helper(x) }`, cannot be checked inside it, so
+    the caller must check the instantiated result.
+  - A generic higher-order function launders a function value's type:
+    `map(xs, g)` with `g:fn<num, str>`, checked only to be a function, gives
+    a `list<num>` nothing enforced. A type argument inferred from such a
+    value makes the call's result unproven.
+  - A `foreign` function's result annotation is not yet recorded as a check.
+  - A copy of a struct whose schema the checker does not know needs the
+    runtime to check the replaced fields against the schema's annotations.
+- [ ] Implement the checks in the compiler and the VM, inserting them only
+  where the checker recorded one; with native-tier support, since a
+  function with an op the tier does not compile runs interpreted.
 - [ ] Keep a checked-element summary with immutable collections, and mark
   values built in typed code as checked.
 - [ ] Measure the cost on every benchmark (interleaved PGO A/B, hold-outs
