@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Native code no longer leaks the value a module variable is updated to
+  (`total = total + i`, `log = log :+ entry`, a struct copy with one field
+  changed): a long-running program that updates module variables, as
+  Crawl's game does every tick, no longer grows its memory. A 4800-tick
+  game now stays at 57 MB, where it had climbed to 85 MB.
+
 - `slug.io.fs` handles paths longer than 260 characters on Windows, where
   Windows' file functions otherwise stop: each path is made absolute and
   given Windows' extended form, as Rust's standard library does.
