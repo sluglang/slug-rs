@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A function literal takes its parameters' types from where it is used: as
+  an argument, from the function type the callee expects there, so with a
+  generic `map(xs:list<T>, f:fn<U, T>)`, `fn(n) { n * 2 }` over a `list<num>`
+  gets `n:num` and the result is a `list<num>`; as the value of an annotated
+  binding, `val inc:fn<num, num> = fn(x) { x + 1 }`, from the annotation.
+
 - The checker knows the builtins' types: `len` and `keys` return a `num` and
   a `list`, `print` and `println` are checked like any function, and
   `len(nil)` is a source error rather than a runtime one. More of a program's

@@ -586,6 +586,61 @@ fn standard_results_read_through_the_pipeline() {
 }
 
 #[test]
+fn function_literals_take_parameter_types_from_where_they_are_used() {
+    let path = fixture_path("expected-function-literals");
+    let prelude = "val mapped = fn<T, U>(xs:list<T>, f:fn<U, T>, i:num = 0, acc:list<U> = []):list<U> {\n\
+                     if (i == len(xs)) { acc } else { recur(xs, f, i + 1, acc :+ f(xs[i])) }\n\
+                   }\n\
+                   val apply = fn(f:fn<num, num>):num { f(3) }\n";
+    fs::write(
+        &path,
+        format!(
+            "{prelude}\
+             val names = mapped([1, 2, 3], fn(n) {{ \"#\" + n }})\n\
+             val lengths:list<num> = mapped(names, fn(s) {{ len(s) }})\n\
+             val doubled = [1, 2] /> mapped(fn(n) {{ n * 2 }})\n\
+             val inc:fn<num, num> = fn(x) {{ x + 1 }}\n\
+             println(names, lengths, doubled, apply(fn(x) {{ x + 1 }}), inc(2))\n"
+        ),
+    )
+    .expect("write expected function literals");
+    let output = slug()
+        .arg(&path)
+        .output()
+        .expect("run expected function literals");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "[\"#1\", \"#2\", \"#3\"] [2, 2, 2] [2, 4] 4 3\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (source, message) in [
+        // `U` is inferred from the literal's result.
+        (
+            "val r:list<str> = mapped([1, 2], fn(n) { n * 2 })",
+            "expected list<str>, got list<num>",
+        ),
+        // `s` is a `str`, from the list.
+        ("mapped([\"a\"], fn(s) { s - 2 })", "expected num, got str"),
+        (
+            "apply(fn(x) { x + \"!\" })",
+            "operator `+` does not accept num and str",
+        ),
+        (
+            "val inc:fn<num, num> = fn(x) { x + 1 }\ninc(\"s\")",
+            "expected num, got str",
+        ),
+    ] {
+        fs::write(&path, format!("{prelude}{source}\n")).expect("write literal error");
+        let output = slug().arg(&path).output().expect("run literal error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove expected function literal source");
+}
+
+#[test]
 fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
     // A generic alias's closing `>` ends a line as `list<num>`'s does, while
     // a trailing comparison still continues onto the next line.

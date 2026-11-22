@@ -2444,7 +2444,13 @@ fn callable_signature(
     };
     let constraints = parameter_constraints(parameters, body, environment)?;
     let inferred_alternatives = inferred_overload_alternatives(parameters, body, &constraints)?;
-    let inferred_parameters = solved_parameter_types(&constraints);
+    let mut inferred_parameters = solved_parameter_types(&constraints);
+    let expected = apply_expected_parameters(
+        parameters,
+        &mut inferred_parameters,
+        &expression.span,
+        environment,
+    );
     let mut signature = function_type(
         type_parameters,
         parameters,
@@ -2453,8 +2459,36 @@ fn callable_signature(
         environment,
         Some(&inferred_parameters),
     )?;
-    signature.inferred_alternatives = inferred_alternatives;
+    if !expected {
+        signature.inferred_alternatives = inferred_alternatives;
+    }
     Ok(Some(signature))
+}
+
+/// Gives each unannotated parameter of the function literal at `span` the
+/// type expected of it, where it is an argument or an annotated binding's
+/// value, over what its body implies. Whether any was given.
+fn apply_expected_parameters(
+    parameters: &[Parameter],
+    inferred: &mut HashMap<String, Type>,
+    span: &SourceSpan,
+    environment: &Environment,
+) -> bool {
+    let Some(expected) = environment.expected_parameters(span) else {
+        return false;
+    };
+    let mut applied = false;
+    for (parameter, expected) in parameters.iter().zip(expected) {
+        if parameter.annotation.is_none()
+            && !parameter.discard
+            && !parameter.variadic
+            && !is_dynamic_operation_type(&expected)
+        {
+            inferred.insert(parameter.name.clone(), expected);
+            applied = true;
+        }
+    }
+    applied
 }
 
 fn check_function_body(
@@ -2757,6 +2791,19 @@ fn check_expression_inner(
                 mutable,
                 ..
             } => {
+                // An annotated function literal takes its parameters' types
+                // from the annotation; a wrong annotation is reported below.
+                if let (Some(annotation), ExprKind::Function { .. }) = (annotation, &value.kind)
+                    && let Ok(Type::Function(Some(types))) = resolve_static_annotation(
+                        annotation,
+                        type_parameters,
+                        &expression.span,
+                        environment,
+                    )
+                    && let Some((_, parameters)) = types.split_first()
+                {
+                    environment.expect_parameters(value.span.clone(), parameters.to_vec());
+                }
                 let callable = if let Pattern::Binding(name) = pattern {
                     callable_signature(value, &expression.span, environment)?
                         .map(|signature| (name.clone(), signature))
@@ -2859,7 +2906,13 @@ fn check_expression_inner(
                 let constraints = parameter_constraints(parameters, body, environment)?;
                 let inferred_alternatives =
                     inferred_overload_alternatives(parameters, body, &constraints)?;
-                let inferred_parameters = solved_parameter_types(&constraints);
+                let mut inferred_parameters = solved_parameter_types(&constraints);
+                let expected = apply_expected_parameters(
+                    parameters,
+                    &mut inferred_parameters,
+                    &expression.span,
+                    environment,
+                );
                 let mut signature = function_type(
                     function_type_parameters,
                     parameters,
@@ -2868,7 +2921,9 @@ fn check_expression_inner(
                     environment,
                     Some(&inferred_parameters),
                 )?;
-                signature.inferred_alternatives = inferred_alternatives;
+                if !expected {
+                    signature.inferred_alternatives = inferred_alternatives;
+                }
                 environment.record_function(expression.span.clone(), signature.identity());
                 let actual = check_function_body(
                     parameters,
@@ -5176,13 +5231,32 @@ fn check_call(
             return Ok(Type::Bytes);
         }
         check_expression(callee, environment, type_parameters)?;
+        // A function literal argument of a callee with one signature takes
+        // its parameters' types from what the signature expects there, with
+        // the type arguments the arguments before it give.
+        let sole_signature = match &callee.kind {
+            ExprKind::TypeApply { .. } => None,
+            _ => expression_binding(callee, environment).and_then(|binding| {
+                match binding.callables.as_slice() {
+                    [signature] => Some(signature.clone()),
+                    _ => None,
+                }
+            }),
+        };
         let mut actuals = piped.into_iter().collect::<Vec<_>>();
-        actuals.extend(
-            arguments
-                .iter()
-                .map(|argument| check_argument(argument, environment, type_parameters))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        let piped_count = actuals.len();
+        for (position, argument) in arguments.iter().enumerate() {
+            if let Some(signature) = &sole_signature {
+                expect_function_argument(
+                    signature,
+                    piped_count + position,
+                    argument,
+                    &actuals,
+                    environment,
+                );
+            }
+            actuals.push(check_argument(argument, environment, type_parameters)?);
+        }
         let mut shapes = vec![ArgumentShape::Positional; actuals.len() - arguments.len()];
         shapes.extend(arguments.iter().map(|argument| match argument {
             CallArgument::Positional(_) => ArgumentShape::Positional,
@@ -5324,6 +5398,54 @@ fn callable_name(expression: &Expr) -> String {
             _ => "<computed>".into(),
         },
         _ => "<callable>".into(),
+    }
+}
+
+/// Records the parameter types `signature` expects of `argument` when it is a
+/// function literal at `position`, filling in type arguments from the
+/// arguments before it, `earlier`.
+fn expect_function_argument(
+    signature: &CallableSignature,
+    position: usize,
+    argument: &CallArgument,
+    earlier: &[Type],
+    environment: &Environment,
+) {
+    let (value, parameter) = match argument {
+        CallArgument::Positional(value) => (value, signature.parameters.get(position)),
+        CallArgument::Named { name, value } => (
+            value,
+            signature
+                .parameters
+                .iter()
+                .find(|parameter| parameter.label.as_deref() == Some(name.as_str())),
+        ),
+        CallArgument::Spread(_) => return,
+    };
+    let (ExprKind::Function { .. }, Some(parameter)) = (&value.kind, parameter) else {
+        return;
+    };
+    if parameter.variadic {
+        return;
+    }
+    let mut substitutions = HashMap::new();
+    for (earlier_parameter, actual) in signature.parameters.iter().zip(earlier) {
+        if earlier_parameter.variadic || is_dynamic_operation_type(actual) {
+            continue;
+        }
+        // A mismatch is reported when the call is checked.
+        let _ = infer(
+            &earlier_parameter.value_type,
+            actual,
+            &mut substitutions,
+            &value.span,
+        );
+    }
+    let expected = super::semantic::substitute(&parameter.value_type, &substitutions);
+    if let Type::Function(Some(types)) = expected
+        && let Some((_, parameters)) = types.split_first()
+    {
+        environment.expect_parameters(value.span.clone(), parameters.to_vec());
     }
 }
 

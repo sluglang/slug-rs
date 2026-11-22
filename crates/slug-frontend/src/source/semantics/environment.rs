@@ -272,6 +272,9 @@ pub(super) struct SemanticAnalysis {
 
 #[derive(Clone, Debug, Default)]
 struct SemanticRecords {
+    /// For a function literal that is an argument, the parameter types its
+    /// callee expects of it.
+    expected_parameters: HashMap<SourceSpan, Vec<Type>>,
     selected_calls: HashMap<SourceSpan, CallableIdentity>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
@@ -883,6 +886,20 @@ impl Environment {
             .borrow_mut()
             .match_constraints
             .insert(span, constraints);
+    }
+
+    /// Records the parameter types expected of the function literal at
+    /// `span`, as an argument.
+    pub(super) fn expect_parameters(&self, span: SourceSpan, types: Vec<Type>) {
+        self.records
+            .borrow_mut()
+            .expected_parameters
+            .insert(span, types);
+    }
+
+    /// The parameter types expected of the function literal at `span`.
+    pub(super) fn expected_parameters(&self, span: &SourceSpan) -> Option<Vec<Type>> {
+        self.records.borrow().expected_parameters.get(span).cloned()
     }
 
     /// The type last recorded for the expression at `span`.

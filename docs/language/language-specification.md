@@ -1443,6 +1443,16 @@ other way round, since the function is given values of the expected type: a
 `fn(e) { ... }`, whose `e` accepts anything, may be passed where a
 `fn<any, T>` is expected whatever `T` is.
 
+A function literal takes the types of its unannotated parameters from where
+it is used, when that says: as an argument to a callee with one signature,
+from that parameter's function type, with the type arguments the arguments
+before it determine; as the value of an annotated binding, from the
+annotation. So in `mapped([1, 2], fn(n) { n * 2 })`, for `mapped =
+fn<T, U>(xs:list<T>, f:fn<U, T>):list<U>`, `n` is a `num` and the result a
+`list<num>`, and `val inc:fn<num, num> = fn(x) { x + 1 }` types `x` as a
+`num`. These types replace what the body alone would imply, so a body that
+needs something else is a source error. An overloaded callee gives none.
+
 Callers may provide type arguments explicitly with `name<Type>(...)`, for
 example `identity<str>("Slug")`. An explicit application must name a generic
 function, provide exactly one type argument per declared parameter, and be
