@@ -1005,7 +1005,10 @@ is the runtime copying lists, which both tiers share.
   feature of `slug`, and `SLUG_NATIVE` is `on` when unset, except on
   Windows, where native code has not run yet (the VM's thread there has a
   1 MB stack, which native frames share): it stays `off` there until
-  tested. `make test` sets `SLUG_NATIVE=off`, so it still checks the
+  tested. *2026-11-22:* a Windows CI job runs the tier's tests and the
+  slug suite off, on, with every chunk compiled, and as by default; with a
+  native frame capped at a quarter of the stack budget, all pass, and
+  `SLUG_NATIVE` is `on` when unset there too. `make test` sets `SLUG_NATIVE=off`, so it still checks the
   interpreter alone, and `make test-native-on` runs the slug suite as
   programs run by default.
 - **Known gaps.** Functions with `defer`/`onerror` blocks (their

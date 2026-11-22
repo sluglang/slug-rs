@@ -36,9 +36,9 @@ jobs:
       - name: Test the typed filesystem clutch through the CLI
         run: make test-filesystem-clutch
 
-  # The native tier on Windows, where it stays off by default until this
-  # passes: the tier's own tests, the slug suite interpreted as a baseline,
-  # then with hot chunks compiled in the background, then with every chunk
+  # The native tier on Windows: the tier's own tests, the slug suite
+  # interpreted as a baseline, then with hot chunks compiled in the
+  # background, as by default (SLUG_NATIVE unset), and with every chunk
   # compiled at its first entry. Each step runs even when an earlier one
   # fails, so a failure shows which layer breaks.
   native-tier-windows:
@@ -64,6 +64,9 @@ jobs:
       - name: The slug suite, hot chunks compiled
         if: success() || failure()
         run: SLUG_NATIVE=on cargo test -p slug --features metrics --tests --bins
+      - name: The slug suite, as programs run by default
+        if: success() || failure()
+        run: cargo test -p slug --features metrics --tests --bins
       - name: The slug suite, every chunk compiled
         if: success() || failure()
         run: SLUG_NATIVE=all cargo test -p slug --features native,metrics --tests --bins
