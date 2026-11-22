@@ -1224,10 +1224,16 @@ fn a_module_above_the_search_is_named_without_an_edit() {
     let diagnostic = json_diagnostic(&output.stderr);
     assert_eq!(diagnostic["code"], "module_not_found");
     let suggestion = &diagnostic["suggestions"][0];
+    // The path is named as the platform writes it.
+    let above = format!(
+        "`..{}jobs.slug` exists outside the directories searched",
+        std::path::MAIN_SEPARATOR
+    );
     assert!(
-        suggestion["message"].as_str().is_some_and(|message| message
-            .starts_with("`../jobs.slug` exists outside the directories searched")
-            && message.contains("move it into the `src/` of a project")),
+        suggestion["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with(&above)
+                && message.contains("move it into the `src/` of a project")),
         "{suggestion}"
     );
     assert_eq!(suggestion["edits"], serde_json::json!([]));
