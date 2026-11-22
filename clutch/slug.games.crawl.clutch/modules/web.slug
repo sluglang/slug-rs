@@ -61,7 +61,7 @@ val data = import("slug.games.crawl.data")
 val bestiary = import("slug.games.crawl.bestiary")
 val level = import("slug.games.crawl.level")
 val town = import("slug.games.crawl.town")
-val {map, filter, contains, reduce, range} = import("slug.std")
+val {map, filter, contains, reduce, range, or} = import("slug.std")
 val {chars, fromBytes} = import("slug.string")
 val math = import("slug.math")
 val mustache = import("slug.text.mustache")
@@ -874,15 +874,14 @@ export val serve = fn(listener:tcp.Listener, options:map = {}) {
     val db = options.db
     match db {
         d: sqlite.Database => {
-            // A new world is asked for, or there is none saved to carry on.
-            val saved = if (options.new ?? false) { nil } else { store.read(d) }
-            match saved {
-                {value}: store.Result.Ok => resume(value)
-                _ => {
-                    store.clear(d)
-                    fresh(options)
-                    store.write(d, game.changes())
-                }
+            // The saved world, unless a new one is asked for or none is saved.
+            val saved = if (options.new ?? false) { nil } else { store.read(d) /> or(nil) }
+            if (saved != nil) {
+                resume(saved)
+            } else {
+                store.clear(d)
+                fresh(options)
+                store.write(d, game.changes())
             }
         }
         _ => fresh(options)

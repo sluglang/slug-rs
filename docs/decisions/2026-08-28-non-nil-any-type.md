@@ -3,7 +3,9 @@
 ## Amended by
 
 [Annotations are guarantees](2026-11-22-annotations-are-guarantees.md), where
-this record says annotations add no runtime validation.
+this record says annotations add no runtime validation, and
+[Nilable type arguments](2026-11-22-nilable-type-arguments.md), which
+replaces "Bare generics remain non-nil".
 
 ## Context
 

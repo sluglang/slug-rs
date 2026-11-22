@@ -31,6 +31,7 @@
 val tcp = import("slug.net.tcp")
 val web = import("slug.games.crawl.web")
 val store = import("slug.games.crawl.store")
+val {orThrow} = import("slug.std")
 val secure = import("slug.random.secure")
 val signal = import("slug.os.signal")
 
@@ -38,10 +39,7 @@ val main = fn() {
     val host = cfg("host", "127.0.0.1")
     val listener = tcp.listen(host, cfg("port", 8080))
     val path = cfg("db", "crawl.db")
-    val db = match store.open(path) {
-        {value}: store.Result.Ok => value
-        {error}: store.Result.Error => throw Error {type: "crawl.store", msg: path + " holds " + store.describe(error)}
-    }
+    val db = store.open(path) /> orThrow(fn(e) { Error {type: "crawl.store", msg: path + " holds " + store.describe(e)} })
     defer store.close(db)
     val fresh = cfg("new", false) || !store.has(db)
     val seed = cfg("seed", -1)

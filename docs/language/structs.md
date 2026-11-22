@@ -56,7 +56,8 @@ argument per parameter; `struct<S>` leaves them unknown, as `list` leaves its
 element type. Construction infers each type argument from the fields given,
 as a generic call infers its type arguments from its arguments, so
 `Pair { first: 1, second: "a" }` has type `struct<Pair<num, str>>`. A type
-argument no given field determines is unknown, and one cannot include `nil`.
+argument no given field determines is unknown, and one may include `nil`:
+`Box { value: name }` with `name:str|nil` is a `struct<Box<str|nil>>`.
 Field reads, destructuring, and patterns see the field types with the type
 arguments filled in: `p.first` is a `num`. A copy keeps its value's type, so
 each replacement must conform to its field's type with the value's type

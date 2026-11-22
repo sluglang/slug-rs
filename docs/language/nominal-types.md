@@ -141,6 +141,11 @@ val unwrapOr = fn<T>(r:Result<T, str>, fallback:T):T {
   `{radius: 1}: Shape.Circle` matches some circles and covers none. An
   unhandled case makes a closed match non-exhaustive, and a repeated one is
   unreachable.
+- **`Result`.** `slug.std` declares `enum Result<T, E> { Ok { value: T }
+  Error { error: E } }` for operations that can fail, with `or`, `orElse`,
+  and `orThrow` to take the value out, best through the pipeline:
+  `read(path) /> or(defaults)`. `val {Result} = import("slug.std")` brings
+  the type with the value, as naming any imported type does.
 - **At run time** a payload case's value is a struct of its case's schema,
   which prints as a struct does. Type arguments are erased: a match
   constraint names a generic enum as `Result`, which matches its fieldless

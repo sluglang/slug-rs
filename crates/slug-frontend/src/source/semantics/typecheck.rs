@@ -4932,6 +4932,13 @@ fn bind_semantic_pattern(
                 let MapPatternKey::String(key) = key else {
                     continue;
                 };
+                // Naming a module's type, as `val {Result} = import(...)`,
+                // brings the type as well as its value.
+                if let (Some(member), Pattern::Binding(name)) =
+                    (binding.type_members.get(key), pattern)
+                {
+                    environment.declare_type(name.clone(), member.clone());
+                }
                 if let Some(member) = binding
                     .members
                     .get(key)
@@ -5333,13 +5340,6 @@ fn instantiate_candidate(
         }
         for (index, value) in explicit.iter().enumerate() {
             let value = resolve_static_annotation(value, type_parameters, span, environment)?;
-            if value.includes_nil() {
-                return Err(SourceError::semantic(
-                    SourceErrorCode::InvalidTypeArguments,
-                    "generic type argument cannot include nil",
-                    span.clone(),
-                ));
-            }
             substitutions.insert(index, value);
         }
     }
@@ -5583,14 +5583,18 @@ fn infer(
         if matches!(actual, Type::Unknown) {
             return Ok(());
         }
-        if actual.includes_nil() {
-            return Err(SourceError::semantic(
-                SourceErrorCode::InvalidTypeArguments,
-                "generic type argument cannot include nil",
-                span.clone(),
-            ));
-        }
+        // A type argument may include `nil`: `T` is then `str|nil`, and a
+        // body cannot assume a `T` is not `nil`.
         if let Some(previous) = substitutions.get(index) {
+            // `nil` where `T` is known widens it, so `or(result, nil)` is a
+            // `T|nil`; any other disagreement is an error.
+            if !actual.is_assignable_to(previous)
+                && (*actual == Type::Nil || *previous == Type::Nil)
+            {
+                let widened = Type::union([previous.clone(), actual.clone()]);
+                substitutions.insert(*index, widened);
+                return Ok(());
+            }
             return require(previous, actual, span);
         }
         substitutions.insert(*index, actual.clone());
@@ -5661,17 +5665,48 @@ fn infer(
             }
             Ok(())
         }
-        (Type::Tuple(expected), Type::Tuple(actual))
-        | (Type::Function(Some(expected)), Type::Function(Some(actual)))
-            if expected.len() == actual.len() =>
-        {
+        (Type::Tuple(expected), Type::Tuple(actual)) if expected.len() == actual.len() => {
             for (expected, actual) in expected.iter().zip(actual) {
                 infer(expected, actual, substitutions, span)?;
             }
             Ok(())
         }
+        // A function's result is covariant and its parameters contravariant:
+        // one that accepts more than a parameter's type will do.
+        (Type::Function(Some(expected)), Type::Function(Some(actual)))
+            if expected.len() == actual.len() =>
+        {
+            let mut pairs = expected.iter().zip(actual);
+            if let Some((expected, actual)) = pairs.next() {
+                infer(expected, actual, substitutions, span)?;
+            }
+            for (expected, actual) in pairs {
+                infer_parameter(expected, actual, substitutions, span)?;
+            }
+            Ok(())
+        }
         _ => require(&substitute(expected, substitutions), actual, span),
     }
+}
+
+/// Infers from a function argument's parameter type `actual` at a position
+/// whose type is `expected`: the parameter must accept every value of
+/// `expected`, so a type argument already known need only conform to it.
+fn infer_parameter(
+    expected: &Type,
+    actual: &Type,
+    substitutions: &mut HashMap<usize, Type>,
+    span: &SourceSpan,
+) -> Result<(), SourceError> {
+    if is_dynamic_operation_type(actual) {
+        return Ok(());
+    }
+    if let Type::Generic(index) = expected
+        && let Some(previous) = substitutions.get(index)
+    {
+        return require(actual, previous, span);
+    }
+    infer(expected, actual, substitutions, span)
 }
 
 fn infer_union(
@@ -7246,15 +7281,18 @@ mod tests {
             assert_eq!(substitutions.get(&0), Some(&Type::Str));
         }
 
+        // A bare parameter takes the whole type, `nil` included.
         let mut substitutions = HashMap::new();
-        assert!(
-            infer(
-                &Type::Generic(0),
-                &Type::union([Type::Str, Type::Nil]),
-                &mut substitutions,
-                &span
-            )
-            .is_err()
+        infer(
+            &Type::Generic(0),
+            &Type::union([Type::Str, Type::Nil]),
+            &mut substitutions,
+            &span,
+        )
+        .expect("a bare parameter may be nilable");
+        assert_eq!(
+            substitutions.get(&0),
+            Some(&Type::union([Type::Str, Type::Nil]))
         );
     }
 

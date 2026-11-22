@@ -923,7 +923,9 @@ impl Type {
         }
         match expected {
             Self::Unknown => true,
-            Self::Any => !self.includes_nil(),
+            // A type parameter may stand for a nilable type, so it is not
+            // known to be `any`.
+            Self::Any => !self.includes_nil() && !matches!(self, Self::Generic(_)),
             Self::Union(members) => members.iter().any(|member| self.is_assignable_to(member)),
             Self::List(expected) => match self {
                 Self::List(actual) => {

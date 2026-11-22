@@ -12,21 +12,17 @@
  * change, and `populations` the monster counts of chunks not made yet. `write` takes the engine's `changes`, and `read` gives back a
  * snapshot for the engine's `load`.
  *
- * `open` and `read` return a `Result`: `Result.Ok` with what they give, or
- * `Result.Error` with a `StoreError` saying why they could not.
+ * `open` and `read` return a `slug.std` `Result`: `Ok` with what they
+ * give, or `Error` with a `StoreError` saying why they could not.
  *
  * ```slug
  * val game = import("slug.games.crawl")
  * val store = import("slug.games.crawl.store")
+ * val {or, orThrow} = import("slug.std")
  *
- * val db = match store.open("crawl.db") {
- *     {value}: store.Result.Ok => value
- *     {error}: store.Result.Error => throw Error {type: "crawl.store", msg: store.describe(error)}
- * }
- * match store.read(db) {
- *     {value}: store.Result.Ok => game.load(value)
- *     _: store.Result.Error => game.newGame(7)
- * }
+ * val db = store.open("crawl.db") /> orThrow(fn(e) { Error {type: "crawl.store", msg: store.describe(e)} })
+ * val saved = store.read(db) /> or(nil)
+ * if (saved != nil) { game.load(saved) } else { game.newGame(7) }
  * store.write(db, game.changes())
  * ```
  */
@@ -34,19 +30,10 @@ val sqlite = import("slug.db.sqlite")
 val statement = import("slug.db.sqlite.statement")
 val {transaction} = import("slug.db.sqlite.transaction")
 val json = import("slug.fmt.json")
-val {map, filter, reduce} = import("slug.std")
+val {map, filter, reduce, Result} = import("slug.std")
 
 // The layout of the tables; a database written with another is refused.
 val VERSION = 1
-
-/**
- * What a store operation gives: `Ok` with its `value`, or `Error` with why
- * it could not.
- */
-export enum Result<T, E> {
-    Ok { value: T }
-    Error { error: E }
-}
 
 /**
  * Why a store operation could not: the database holds no world, or holds

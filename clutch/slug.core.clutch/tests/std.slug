@@ -1,5 +1,5 @@
-val {map, range, times, any, all, contains} = import("slug.std")
-val {assertEqual} = import("slug.test")
+val {map, range, times, any, all, contains, Result, or, orElse, orThrow} = import("slug.std")
+val {assertEqual, assertThrows} = import("slug.test")
 
 @test
 val timesCallsInOrder = fn() {
@@ -30,4 +30,37 @@ val anyAndAllStopEarly = fn() {
 val containsComparesByValue = fn() {
     assertEqual(contains([{a: 1}, "x"], {a: 1}), true)
     assertEqual(contains([1, 2], "1"), false)
+}
+
+val parsed:Result<num, str> = Result.Ok { value: 3 }
+val failed:Result<num, str> = Result.Error { error: "bad" }
+
+@test
+val orGivesTheValueOrTheFallback = fn() {
+    assertEqual(parsed /> or(0), 3)
+    assertEqual(failed /> or(0), 0)
+}
+
+@test
+val orElseRecoversOnlyFromAnError = fn() {
+    var calls = 0
+    val recover = fn(error:str):num { calls = calls + 1; len(error) }
+    assertEqual(parsed /> orElse(recover), 3)
+    assertEqual(calls, 0)
+    assertEqual(failed /> orElse(recover), 3)
+    assertEqual(calls, 1)
+}
+
+@test
+val orThrowThrowsWhatTheErrorBecomes = fn() {
+    val toError = fn(error:str) { Error {type: "test.result", msg: error} }
+    assertEqual(parsed /> orThrow(toError), 3)
+    assertThrows(fn() { failed /> orThrow(toError) }, "test.result")
+}
+
+@test
+val aResultMayHoldNil = fn() {
+    val name:str|nil = nil
+    val found:Result<str|nil, str> = Result.Ok { value: name }
+    assertEqual(found /> or("none"), nil)
 }

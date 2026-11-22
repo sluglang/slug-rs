@@ -2,10 +2,30 @@
 
 ## Unreleased
 
+- `slug.std` has a `Result` for operations that can fail: `Ok { value }` or
+  `Error { error }`. `or`, `orElse`, and `orThrow` take the value out and
+  read well through the pipeline: `read(path) /> or(defaults)`, `open(path)
+  /> orThrow(fn(e) { Error {type: "store", msg: describe(e)} })`, and
+  `/> or(nil)` for a `T|nil`.
+
+- Generic type arguments can include `nil`: `identity(name)` with
+  `name:str|nil` is a `str|nil`, and a `Box<str|nil>` or `Result<str|nil,
+  E>` can be built. Inside a generic function a `T` may be `nil`, so it is no
+  longer accepted where `any` is expected. A `nil` argument widens a type
+  argument another argument fixed, so `or(result, nil)` is a `T|nil`.
+
+- A function that accepts more than a parameter's type is accepted for it:
+  `orThrow(fn(e) { ... })`, whose `e` takes anything, no longer fails to
+  match an `E` inferred from the result.
+
+- `val {Result} = import("slug.std")` brings the type `Result` with the
+  value, so `Result<num, str>` can be written; before, only `val {*} =
+  import(...)` brought types.
+
 - Crawl's store returns its failures as values: `store.open` and
-  `store.read` give a `store.Result`, `Ok` with the database or the saved
-  world, or `Error` with a `StoreError`: `Missing` when no world is saved,
-  or `WrongLayout` with the layout found and the one expected.
+  `store.read` give a `slug.std` `Result`, `Ok` with the database or the
+  saved world, or `Error` with a `StoreError`: `Missing` when no world is
+  saved, or `WrongLayout` with the layout found and the one expected.
   `store.describe` says what an error means. They threw `crawl.store`
   errors before. A match on a `Result|nil` value no longer rejects a payload
   case as unable to match.

@@ -1425,15 +1425,20 @@ val firstOrNil = fn<T>(values:list<T>):T|nil {
 Each call instantiates a generic declaration. The checker infers a type
 argument from annotated argument positions and uses the same instantiation for
 every occurrence of that parameter. Thus `fn<T>(left:T, right:T):T` requires
-its two arguments to agree on `T`. A bare type parameter does not accept
-`nil` and cannot be instantiated with a type containing nil; use `T|nil`
-wherever a nilable argument or result is intended. Nil by itself does not infer
-`T` through a `T|nil` position, so the call must provide another inference
-position or an explicit non-nil type argument.
+its two arguments to agree on `T`, except that `nil` in one position makes
+another's `T` nilable: `fn<T>(left:T, right:T):T` called with a `str` and
+`nil` has `T` as `str|nil`. A type argument may include `nil`, inferred or
+explicit, so inside the declaration a `T` may be `nil` and does not conform to
+`any`. A `T|nil` position takes the non-nil part of its argument, so passing
+`str|nil` to `list<T|nil>` infers `T` as `str`; `nil` by itself does not infer
+`T` through such a position.
 
 Inference descends through parameterized list, map, task, channel, tuple, and
 function types. For example, passing `task<num>` to a `task<T>` parameter
-infers `T` as `num`.
+infers `T` as `num`. A function argument's parameter types are compared the
+other way round, since the function is given values of the expected type: a
+`fn(e) { ... }`, whose `e` accepts anything, may be passed where a
+`fn<any, T>` is expected whatever `T` is.
 
 Callers may provide type arguments explicitly with `name<Type>(...)`, for
 example `identity<str>("Slug")`. An explicit application must name a generic

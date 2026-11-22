@@ -503,6 +503,57 @@ fn payload_enum_cases_construct_match_and_cover() {
 }
 
 #[test]
+fn standard_results_read_through_the_pipeline() {
+    let path = fixture_path("standard-results");
+    fs::write(
+        &path,
+        "val {Result, or, orElse, orThrow} = import(\"slug.std\")\n\
+         val parse = fn(text:str):Result<num, str> {\n\
+           if (text == \"\") { Result.Error { error: \"empty\" } } else { Result.Ok { value: len(text) } }\n\
+         }\n\
+         val name:str|nil = nil\n\
+         val held:Result<str|nil, str> = Result.Ok { value: name }\n\
+         val maybe:num|nil = parse(\"\") /> or(nil)\n\
+         val main = fn() {\n\
+           println(parse(\"abc\") /> or(0), parse(\"\") /> or(0), maybe, held /> or(\"none\"))\n\
+           println(parse(\"\") /> orElse(fn(e:str):num { len(e) }))\n\
+           println(parse(\"ab\") /> orThrow(fn(e) { Error {type: \"parse\", msg: e} }))\n\
+           parse(\"\") /> orThrow(fn(e) { Error {type: \"parse\", msg: e} })\n\
+         }\n",
+    )
+    .expect("write standard results");
+    let output = slug().arg(&path).output().expect("run standard results");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "3 0 nil nil\n5\n2\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("\"type\": \"parse\", \"msg\": \"empty\""),
+        "{stderr}"
+    );
+
+    // `nil` widens an inferred type argument, and the result says so.
+    fs::write(
+        &path,
+        "val {Result, or} = import(\"slug.std\")\n\
+         val r:Result<num, str> = Result.Error { error: \"x\" }\n\
+         val n:num = r /> or(nil)\n",
+    )
+    .expect("write widened result");
+    let output = slug().arg(&path).output().expect("run widened result");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("expected num, got num|nil")
+    );
+    fs::remove_file(&path).expect("remove standard results source");
+}
+
+#[test]
 fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
     // A generic alias's closing `>` ends a line as `list<num>`'s does, while
     // a trailing comparison still continues onto the next line.

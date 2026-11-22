@@ -2117,20 +2117,34 @@ fn enforces_any_nil_and_canonical_type_rules() {
             .starts_with("slug: semantic error: expected any, got nil")
     );
 
+    // A type argument may include `nil`, but a generic body cannot assume
+    // its parameter is `any`.
     fs::write(
         &path,
-        "val identity = fn<T>(value:T):T { value }\nidentity(nil)\n",
+        "val identity = fn<T>(value:T):T { value }\nval name:str|nil = nil\nval kept:str|nil = identity(name)\nprintln(identity(nil), kept)\n",
     )
     .expect("write nil generic inference source");
     let output = slug()
         .arg(&path)
         .output()
         .expect("run nil generic inference source");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        "nil nil\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fs::write(&path, "val f = fn<T>(value:T):any { value }\n")
+        .expect("write generic-to-any source");
+    let output = slug()
+        .arg(&path)
+        .output()
+        .expect("run generic-to-any source");
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8(output.stderr)
             .expect("stderr is UTF-8")
-            .starts_with("slug: semantic error: generic type argument cannot include nil")
+            .starts_with("slug: semantic error: expected any, got T0")
     );
 
     fs::write(&path, "val invalid:nmu = 1\n").expect("write unknown annotation source");

@@ -333,6 +333,13 @@ require.
     "nothing here" returns, such as `addToPack`'s `str|nil`, are better as
     `T|nil`, as the decision record expected.
 
+  Decided: `Result` moved to `slug.std`, with `or`, `orElse`, and `orThrow`
+  read through the pipeline (`store.read(db) /> or(nil)`); no positional
+  payloads and no `?` operator. Making that work took three checker
+  changes: [nilable type arguments](../decisions/2026-11-22-nilable-type-arguments.md),
+  inference that is contravariant in function parameters, and destructured
+  imports that bring a named type.
+
 ### 5. Inference
 
 - [ ] Specify bidirectional checking: expected types for literals, lambdas,

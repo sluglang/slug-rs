@@ -2,7 +2,7 @@ val game = import("slug.games.crawl")
 val web = import("slug.games.crawl.web")
 val store = import("slug.games.crawl.store")
 val {assertEqual, assertTrue} = import("slug.test")
-val {map, filter} = import("slug.std")
+val {map, filter, Result, orThrow} = import("slug.std")
 
 val KEYS = ["h", "j", "k", "l", "y", "u", "b", "n", "enter", ",", "s"]
 
@@ -33,29 +33,21 @@ val twoPlaying = fn(seed:num):list {
     ["a", "b"]
 }
 
+val failed = fn(e) { Error {type: "test", msg: store.describe(e)} }
+
 // A database in memory; opening one never finds another layout.
-val opened = fn() {
-    match store.open(":memory:") {
-        {value}: store.Result.Ok => value
-        {error}: store.Result.Error => throw Error {type: "test", msg: store.describe(error)}
-    }
-}
+val opened = fn() { store.open(":memory:") /> orThrow(failed) }
 
 // The world `db` holds, which the test saved there.
-val saved = fn(db) {
-    match store.read(db) {
-        {value}: store.Result.Ok => value
-        {error}: store.Result.Error => throw Error {type: "test", msg: store.describe(error)}
-    }
-}
+val saved = fn(db) { store.read(db) /> orThrow(failed) }
 
 @test
 val aMissingWorldIsAnError = fn() {
     val db = opened()
     defer store.close(db)
     val result = store.read(db)
-    assertEqual(result, store.Result.Error { error: store.StoreError.Missing })
-    assertEqual(match result { {error}: store.Result.Error => store.describe(error); _ => "" }, "no world saved")
+    assertEqual(result, Result.Error { error: store.StoreError.Missing })
+    assertEqual(match result { {error}: Result.Error => store.describe(error); _ => "" }, "no world saved")
 }
 
 @test
@@ -70,8 +62,8 @@ val anotherLayoutIsRefused = fn() {
     sqlite.exec(raw, "INSERT OR REPLACE INTO meta VALUES ('version', '99')")
     sqlite.close(raw)
     val result = store.open(path)
-    assertEqual(result, store.Result.Error { error: store.StoreError.WrongLayout { found: 99, expected: 1 } })
-    assertEqual(match result { {error}: store.Result.Error => store.describe(error); _ => "" }, "a world saved in layout 99, not 1")
+    assertEqual(result, Result.Error { error: store.StoreError.WrongLayout { found: 99, expected: 1 } })
+    assertEqual(match result { {error}: Result.Error => store.describe(error); _ => "" }, "a world saved in layout 99, not 1")
 }
 
 @test

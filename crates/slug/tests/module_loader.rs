@@ -2338,17 +2338,12 @@ fn imported_callable_snapshots_preserve_access_paths_generics_and_cache_identity
         assert!(error.to_string().starts_with("expected str, got num"));
     }
 
-    let error = loader
+    loader
         .compile_source(
             &main_path.to_string_lossy(),
-            "val { identity } = import(\"typed\")\nidentity(nil)\n",
+            "val { identity } = import(\"typed\")\nval n:nil = identity(nil)\n",
         )
-        .expect_err("imported generic rejects nil inference");
-    assert!(
-        error
-            .to_string()
-            .starts_with("generic type argument cannot include nil")
-    );
+        .expect("an imported generic infers a nilable type argument");
 
     fs::write(
         &typed_path,

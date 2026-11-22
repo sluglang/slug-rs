@@ -5,7 +5,10 @@
 Accepted; implemented on 2026-11-22
 ([payload cases](../language/nominal-types.md#payload-cases)). The pattern
 form is the whole-pattern type constraint only; no constructor-shaped pattern
-was added.
+was added. After typing Crawl's store with `Result`, positional payloads and
+an error-propagating operator were declined in favour of library functions:
+`slug.std` declares `Result` with `or`, `orElse`, and `orThrow`, which read
+through the pipeline and leave the language as it is.
 
 ## Supersedes
 

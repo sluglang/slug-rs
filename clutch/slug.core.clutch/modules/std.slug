@@ -202,3 +202,58 @@ export val times = fn(n:num, f:fn):nil {
 	}
 	go(0)
 }
+
+/**
+ * what an operation that can fail gives: `Ok` with its `value`, or `Error`
+ * with its `error`, a value saying why it could not.
+ *
+ * A function that may fail in a way its caller should handle, such as a file
+ * that is not there, returns a `Result` rather than throwing. `or`, `orElse`,
+ * and `orThrow` take the value out, best with the pipeline:
+ *
+ *     val config = read(path) /> or(defaults)
+ *
+ * A match takes it apart: `{value}: Result.Ok => value`. Use `T|nil` for a
+ * value that may simply be absent.
+ */
+export enum Result<T, E> {
+	Ok { value: T }
+	Error { error: E }
+}
+
+/**
+ * the value of `result` when it is `Ok`, or `fallback` when it is `Error`.
+ *
+ * `fallback` is computed whether or not it is needed; `orElse` computes a
+ * value only on an error.
+ */
+export val or = fn<T, E>(result:Result<T, E>, fallback:T):T {
+	match result {
+		{value}: Result.Ok => value
+		_: Result.Error => fallback
+	}
+}
+
+/**
+ * the value of `result` when it is `Ok`, or what `recover` returns, given
+ * the error, when it is `Error`.
+ */
+export val orElse = fn<T, E>(result:Result<T, E>, recover:fn<T, E>):T {
+	match result {
+		{value}: Result.Ok => value
+		{error}: Result.Error => recover(error)
+	}
+}
+
+/**
+ * the value of `result` when it is `Ok`; when it is `Error`, throws what
+ * `toError` returns, given the error, usually an `Error`.
+ *
+ *     val db = store.open(path) /> orThrow(fn(e) { Error {type: "store", msg: describe(e)} })
+ */
+export val orThrow = fn<T, E>(result:Result<T, E>, toError:fn<any, E>):T {
+	match result {
+		{value}: Result.Ok => value
+		{error}: Result.Error => throw toError(error)
+	}
+}
