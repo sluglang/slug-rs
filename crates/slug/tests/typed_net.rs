@@ -1,7 +1,6 @@
 //! `slug.net.tcp` on typed native bindings, built as clutch staging builds
 //! it. Every test serves and connects on loopback with port 0, so tests run
-//! in parallel without colliding. Unix-only, as the clutch is.
-#![cfg(unix)]
+//! in parallel without colliding.
 
 use std::{
     env,
@@ -29,6 +28,7 @@ fn platform() -> &'static str {
         ("macos", "aarch64") => "macos-aarch64",
         ("macos", "x86_64") => "macos-x86_64",
         ("linux", "x86_64") => "linux-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
         (os, architecture) => panic!("unsupported native test platform {os}-{architecture}"),
     }
 }

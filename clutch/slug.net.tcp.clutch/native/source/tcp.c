@@ -1,3 +1,13 @@
+#if defined(_WIN32)
+/* WSAPoll and its pollfd need Windows Vista's API. */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
 /* POSIX sockets; shims build with -std=c11. */
 #define _POSIX_C_SOURCE 200809L
 #if defined(__APPLE__)
@@ -6,19 +16,23 @@
 #if defined(__linux__)
 #define _GNU_SOURCE
 #endif
+#endif
 
 #include "slug_net_tcp.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
-#include <stdatomic.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -32,7 +46,8 @@
 #define SLUG_TCP_EPOLL 1
 #include <sys/epoll.h>
 #else
-#error "slug.net.tcp needs kqueue or epoll"
+#error "slug.net.tcp needs kqueue, epoll, or Winsock"
+#endif
 #endif
 
 /* Bytes a connection receives at once, and so the largest chunk it sends. */
@@ -44,13 +59,159 @@
 /* Kernel events taken at once. */
 #define EVENTS 256
 
+/* --- The system: sockets, errors, locks, threads ---------------------------- */
+
+#if defined(_WIN32)
+
+typedef SOCKET socket_t;
+#define NO_SOCKET INVALID_SOCKET
+#define SHUT_WR SD_SEND
+#define SHUT_RDWR SD_BOTH
+
+/* Winsock's numbers for the errors the code tells apart; ENOMEM and EINVAL
+ * are the C library's, as on POSIX. */
+#define NET_EINTR WSAEINTR
+#define NET_EINPROGRESS WSAEWOULDBLOCK
+#define NET_ECONNREFUSED WSAECONNREFUSED
+#define NET_ETIMEDOUT WSAETIMEDOUT
+#define NET_EPIPE WSAESHUTDOWN
+
+static int socket_error(void) { return WSAGetLastError(); }
+static bool would_block(int error) { return error == WSAEWOULDBLOCK; }
+static void close_socket(socket_t socket) { closesocket(socket); }
+
+typedef SRWLOCK mutex_t;
+#define MUTEX_INITIALIZER SRWLOCK_INIT
+static void mutex_init(mutex_t *mutex) { InitializeSRWLock(mutex); }
+static void mutex_lock(mutex_t *mutex) { AcquireSRWLockExclusive(mutex); }
+static void mutex_unlock(mutex_t *mutex) { ReleaseSRWLockExclusive(mutex); }
+static void mutex_destroy(mutex_t *mutex) { (void)mutex; }
+
+typedef HANDLE thread_t;
+#define THREAD_FUNCTION(name) static DWORD WINAPI name(LPVOID argument)
+#define THREAD_RETURN return 0
+typedef DWORD(WINAPI *thread_body)(LPVOID);
+
+/* Starts `body`, returning 0 or the error it failed with. */
+static int thread_start(thread_t *thread, thread_body body, void *argument) {
+  *thread = CreateThread(NULL, 0, body, argument, 0, NULL);
+  return *thread == NULL ? (int)GetLastError() : 0;
+}
+static void thread_join(thread_t thread) {
+  WaitForSingleObject(thread, INFINITE);
+  CloseHandle(thread);
+}
+static void thread_detach(thread_t thread) { CloseHandle(thread); }
+
+static void pause_briefly(void) { Sleep(1); }
+static int64_t now_ms(void) { return (int64_t)GetTickCount64(); }
+
+static void set_close_on_exec(socket_t socket) {
+  SetHandleInformation((HANDLE)socket, HANDLE_FLAG_INHERIT, 0);
+}
+
+static void set_blocking(socket_t socket, bool blocking) {
+  u_long nonblocking = blocking ? 0 : 1;
+  ioctlsocket(socket, (long)FIONBIO, &nonblocking);
+}
+
+/* Winsock, started once for the process: 0, or the error it failed with. */
+static INIT_ONCE network_once = INIT_ONCE_STATIC_INIT;
+static int network_error = 0;
+static BOOL CALLBACK start_network(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+  WSADATA data;
+  (void)once;
+  (void)parameter;
+  (void)context;
+  network_error = WSAStartup(MAKEWORD(2, 2), &data);
+  return TRUE;
+}
+static int ensure_network(void) {
+  InitOnceExecuteOnce(&network_once, start_network, NULL, NULL);
+  return network_error;
+}
+
+static int64_t socket_send(socket_t socket, const uint8_t *data, size_t length) {
+  return send(socket, (const char *)data, (int)length, 0);
+}
+static int64_t socket_receive(socket_t socket, uint8_t *buffer, size_t length) {
+  return recv(socket, (char *)buffer, (int)length, 0);
+}
+
+#else
+
+typedef int socket_t;
+#define NO_SOCKET (-1)
+
+#define NET_EINTR EINTR
+#define NET_EINPROGRESS EINPROGRESS
+#define NET_ECONNREFUSED ECONNREFUSED
+#define NET_ETIMEDOUT ETIMEDOUT
+#define NET_EPIPE EPIPE
+
+static int socket_error(void) { return errno; }
+static bool would_block(int error) { return error == EAGAIN || error == EWOULDBLOCK; }
+static void close_socket(socket_t socket) { close(socket); }
+
+typedef pthread_mutex_t mutex_t;
+#define MUTEX_INITIALIZER PTHREAD_MUTEX_INITIALIZER
+static void mutex_init(mutex_t *mutex) { pthread_mutex_init(mutex, NULL); }
+static void mutex_lock(mutex_t *mutex) { pthread_mutex_lock(mutex); }
+static void mutex_unlock(mutex_t *mutex) { pthread_mutex_unlock(mutex); }
+static void mutex_destroy(mutex_t *mutex) { pthread_mutex_destroy(mutex); }
+
+typedef pthread_t thread_t;
+#define THREAD_FUNCTION(name) static void *name(void *argument)
+#define THREAD_RETURN return NULL
+typedef void *(*thread_body)(void *);
+
+static int thread_start(thread_t *thread, thread_body body, void *argument) {
+  return pthread_create(thread, NULL, body, argument);
+}
+static void thread_join(thread_t thread) { pthread_join(thread, NULL); }
+static void thread_detach(thread_t thread) { pthread_detach(thread); }
+
+static void pause_briefly(void) {
+  struct timespec delay = {0, 1000000};
+  nanosleep(&delay, NULL);
+}
+
+static int64_t now_ms(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static void set_close_on_exec(socket_t fd) { fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC); }
+
+static void set_blocking(socket_t fd, bool blocking) {
+  int flags = fcntl(fd, F_GETFL);
+  fcntl(fd, F_SETFL, blocking ? flags & ~O_NONBLOCK : flags | O_NONBLOCK);
+}
+
+static int ensure_network(void) { return 0; }
+
+static int64_t socket_send(socket_t fd, const uint8_t *data, size_t length) {
+  int flags = 0;
+#if defined(MSG_NOSIGNAL)
+  flags = MSG_NOSIGNAL;
+#endif
+  return (int64_t)send(fd, data, length, flags);
+}
+static int64_t socket_receive(socket_t fd, uint8_t *buffer, size_t length) {
+  return (int64_t)recv(fd, buffer, length, 0);
+}
+
+#endif
+
 /* Every connection's reading and writing happens on one thread, the I/O
- * thread, which waits on all their sockets at once (kqueue or epoll) and
- * starts with the first connection. Threads that write queue the bytes and
- * hand the connection to the I/O thread, which sends what the peer takes;
- * what arrives it sends through the connection's `chunks` producer. A
- * thread or two per connection would hold a stack each, and memory the
- * allocator keeps per thread, for as long as the connection is open. */
+ * thread, which waits on all their sockets at once (kqueue, epoll, or
+ * WSAPoll) and starts with the first connection. Threads that write queue
+ * the bytes and hand the connection to the I/O thread, which sends what the
+ * peer takes; what arrives it sends through the connection's `chunks`
+ * producer. A thread or two per connection would hold a stack each, and
+ * memory the allocator keeps per thread, for as long as the connection is
+ * open. */
 
 /* Bytes waiting to be sent, oldest first. */
 struct pending {
@@ -61,7 +222,7 @@ struct pending {
 };
 
 struct slug_tcp_connection {
-  int fd;
+  socket_t fd;
   /* The resource holds one reference, the I/O thread one from `start` until
    * it has finished with the connection, and the I/O thread's list of
    * connections to look at one while it is on it. The socket closes when
@@ -72,11 +233,11 @@ struct slug_tcp_connection {
   char peer[64];
 
   /* Guarded by `lock`. */
-  pthread_mutex_t lock;
+  mutex_t lock;
   struct pending *first;
   struct pending *last;
   size_t queued;
-  /* The errno a failed send ended writing with, or 0. */
+  /* The error a failed send ended writing with, or 0. */
   int write_error;
   /* Set by `slug_tcp_wait_writable`: the I/O thread sends a tick through
    * `writable` when the queue next shrinks. */
@@ -103,8 +264,8 @@ struct slug_tcp_connection {
   bool want_read;
   bool want_write;
   bool finished;
-  /* Bytes the chunk channel had no room for, or with `held_error` an errno,
-   * sent again once it does; meanwhile the socket is not read. */
+  /* Bytes the chunk channel had no room for, or with `held_error` an error
+   * number, sent again once it does; meanwhile the socket is not read. */
   uint8_t *held;
   size_t held_length;
   int held_error;
@@ -119,19 +280,26 @@ struct slug_tcp_connection {
   /* Finished connections whose reference the I/O thread drops at the end of
    * a round, after any events it took for them in it. */
   struct slug_tcp_connection *next_retired;
+#if defined(_WIN32)
+  /* Its place in the I/O thread's list of the sockets it polls. */
+  size_t watch_index;
+#endif
 };
 
 struct slug_tcp_listener {
-  int fd;
-  /* Writing to wake[1] stops the accept thread's poll. */
+  socket_t fd;
+#if !defined(_WIN32)
+  /* Writing to wake[1] stops the accept thread's poll. On Windows, closing
+   * the listening socket stops its `accept`. */
   int wake[2];
+#endif
   int64_t port;
-  pthread_t thread;
+  thread_t thread;
   slug_producer *ready;
   atomic_bool closing;
-  pthread_mutex_t lock;
+  mutex_t lock;
   /* Accepted sockets not yet adopted, oldest first. */
-  int *queue;
+  socket_t *queue;
   size_t queued;
   size_t capacity;
 };
@@ -141,35 +309,17 @@ struct slug_tcp_connecting {
   char port[8];
   int64_t timeout_ms;
   slug_producer *done;
-  pthread_mutex_t lock;
+  mutex_t lock;
   /* The connect thread and the resource each hold one reference. */
   atomic_int references;
   int32_t status;
   int64_t detail;
-  int fd;
+  socket_t fd;
 };
-
-static void pause_briefly(void) {
-  struct timespec delay = {0, 1000000};
-  nanosleep(&delay, NULL);
-}
-
-static int64_t now_ms(void) {
-  struct timespec now;
-  clock_gettime(CLOCK_MONOTONIC, &now);
-  return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
-
-static void set_close_on_exec(int fd) { fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC); }
-
-static void set_blocking(int fd, bool blocking) {
-  int flags = fcntl(fd, F_GETFL);
-  fcntl(fd, F_SETFL, blocking ? flags & ~O_NONBLOCK : flags | O_NONBLOCK);
-}
 
 /* A connected socket: non-blocking, for the I/O thread, closed on exec, and
  * never raising SIGPIPE where the platform has a socket option for it. */
-static void prepare_connected(int fd) {
+static void prepare_connected(socket_t fd) {
   set_blocking(fd, false);
   set_close_on_exec(fd);
 #if defined(SO_NOSIGPIPE)
@@ -179,7 +329,7 @@ static void prepare_connected(int fd) {
 }
 
 /* The peer's address as `host:port`, or `[host]:port` for IPv6. */
-static void describe_peer(int fd, char *buffer, size_t size) {
+static void describe_peer(socket_t fd, char *buffer, size_t size) {
   struct sockaddr_storage address;
   socklen_t length = sizeof address;
   char host[INET6_ADDRSTRLEN + 8];
@@ -193,17 +343,17 @@ static void describe_peer(int fd, char *buffer, size_t size) {
   snprintf(buffer, size, address.ss_family == AF_INET6 ? "[%s]:%s" : "%s:%s", host, port);
 }
 
-static slug_tcp_connection *new_connection(int fd) {
+static slug_tcp_connection *new_connection(socket_t fd) {
   slug_tcp_connection *connection = calloc(1, sizeof *connection);
   if (connection == NULL) {
-    close(fd);
+    close_socket(fd);
     return NULL;
   }
   connection->fd = fd;
   atomic_init(&connection->references, 1);
   atomic_init(&connection->closed, false);
   atomic_init(&connection->started, false);
-  pthread_mutex_init(&connection->lock, NULL);
+  mutex_init(&connection->lock);
   connection->write_timeout_ms = DEFAULT_WRITE_TIMEOUT_MS;
   describe_peer(fd, connection->peer, sizeof connection->peer);
   return connection;
@@ -213,6 +363,14 @@ static bool format_port(int64_t port, char *buffer, size_t size) {
   if (port < 0 || port > 65535) return false;
   snprintf(buffer, size, "%d", (int)port);
   return true;
+}
+
+/* A copy of `text`, or NULL. */
+static char *copy_text(const char *text) {
+  size_t length = strlen(text) + 1;
+  char *copy = malloc(length);
+  if (copy != NULL) memcpy(copy, text, length);
+  return copy;
 }
 
 /* Sends `value`, retrying while the channel is full. Returns false when the
@@ -235,55 +393,89 @@ static bool send_value(slug_producer *producer, int64_t value, atomic_bool *stop
 
 /* --- Listening -------------------------------------------------------------- */
 
-static bool enqueue(slug_tcp_listener *listener, int fd) {
-  pthread_mutex_lock(&listener->lock);
+static bool enqueue(slug_tcp_listener *listener, socket_t fd) {
+  mutex_lock(&listener->lock);
   if (atomic_load(&listener->closing)) {
-    pthread_mutex_unlock(&listener->lock);
+    mutex_unlock(&listener->lock);
     return false;
   }
   if (listener->queued == listener->capacity) {
     size_t capacity = listener->capacity == 0 ? 16 : listener->capacity * 2;
-    int *queue = realloc(listener->queue, capacity * sizeof *queue);
+    socket_t *queue = realloc(listener->queue, capacity * sizeof *queue);
     if (queue == NULL) {
-      pthread_mutex_unlock(&listener->lock);
+      mutex_unlock(&listener->lock);
       return false;
     }
     listener->queue = queue;
     listener->capacity = capacity;
   }
   listener->queue[listener->queued++] = fd;
-  pthread_mutex_unlock(&listener->lock);
+  mutex_unlock(&listener->lock);
   return true;
 }
 
-static void *accept_loop(void *argument) {
-  slug_tcp_listener *listener = argument;
+/* Waits for the next connection, or returns NO_SOCKET with `error` set: 0
+ * when the listener is closing, or a fatal error. */
+static socket_t next_connection(slug_tcp_listener *listener, int *error) {
+#if defined(_WIN32)
+  /* A blocking accept, which closing the socket ends. */
+  for (;;) {
+    socket_t fd = accept(listener->fd, NULL, NULL);
+    if (fd != NO_SOCKET) return fd;
+    *error = socket_error();
+    if (atomic_load(&listener->closing)) {
+      *error = 0;
+      return NO_SOCKET;
+    }
+    if (*error == WSAEINTR || *error == WSAECONNRESET || *error == WSAEWOULDBLOCK) continue;
+    if (*error == WSAEMFILE || *error == WSAENOBUFS) {
+      /* Out of sockets or memory: wait for some to be released. */
+      pause_briefly();
+      continue;
+    }
+    return NO_SOCKET;
+  }
+#else
   struct pollfd fds[2] = {{listener->fd, POLLIN, 0}, {listener->wake[0], POLLIN, 0}};
   while (!atomic_load(&listener->closing)) {
     if (poll(fds, 2, -1) < 0) {
       if (errno == EINTR) continue;
-      send_value(listener->ready, -errno, &listener->closing);
-      break;
+      *error = errno;
+      return NO_SOCKET;
     }
     if (fds[1].revents != 0) break;
     if (fds[0].revents == 0) continue;
     int fd = accept(listener->fd, NULL, NULL);
-    if (fd < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR || errno == ECONNABORTED ||
-          errno == EPROTO) {
-        continue;
-      }
-      if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
-        /* Out of descriptors or memory: wait for some to be released. */
-        pause_briefly();
-        continue;
-      }
-      send_value(listener->ready, -errno, &listener->closing);
+    if (fd >= 0) return fd;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR || errno == ECONNABORTED ||
+        errno == EPROTO) {
+      continue;
+    }
+    if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+      /* Out of descriptors or memory: wait for some to be released. */
+      pause_briefly();
+      continue;
+    }
+    *error = errno;
+    return NO_SOCKET;
+  }
+  *error = 0;
+  return NO_SOCKET;
+#endif
+}
+
+THREAD_FUNCTION(accept_loop) {
+  slug_tcp_listener *listener = argument;
+  while (!atomic_load(&listener->closing)) {
+    int error = 0;
+    socket_t fd = next_connection(listener, &error);
+    if (fd == NO_SOCKET) {
+      if (error != 0) send_value(listener->ready, -(int64_t)error, &listener->closing);
       break;
     }
     prepare_connected(fd);
     if (!enqueue(listener, fd)) {
-      close(fd);
+      close_socket(fd);
       break;
     }
     if (!send_value(listener->ready, 0, &listener->closing)) break;
@@ -291,7 +483,7 @@ static void *accept_loop(void *argument) {
   slug_producer_close(listener->ready);
   slug_producer_release(listener->ready);
   listener->ready = NULL;
-  return NULL;
+  THREAD_RETURN;
 }
 
 /* Resolves `host` and `port` into `addresses`, returning a status. */
@@ -310,6 +502,18 @@ static int32_t resolve(const char *host, const char *port, bool passive,
   return SLUG_TCP_OK;
 }
 
+/* Lets a listener take its port again at once after a restart. Windows'
+ * SO_REUSEADDR would let another socket take a port in use instead, so
+ * there the port is kept exclusive. */
+static void claim_port(socket_t fd) {
+  int on = 1;
+#if defined(_WIN32)
+  setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&on, sizeof on);
+#else
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+#endif
+}
+
 int32_t slug_tcp_listen(const char *host, int64_t port, int64_t backlog, slug_producer *ready,
                         slug_tcp_listener **listener, int64_t *detail) {
   *listener = NULL;
@@ -320,54 +524,66 @@ int32_t slug_tcp_listen(const char *host, int64_t port, int64_t backlog, slug_pr
     *detail = EINVAL;
     return SLUG_TCP_ERROR;
   }
+  int error = ensure_network();
+  if (error != 0) {
+    slug_producer_release(ready);
+    *detail = error;
+    return SLUG_TCP_ERROR;
+  }
   struct addrinfo *addresses;
   int32_t status = resolve(host, service, true, &addresses, detail);
   if (status != SLUG_TCP_OK) {
     slug_producer_release(ready);
     return status;
   }
-  int fd = -1;
-  int error = 0;
+  socket_t fd = NO_SOCKET;
   for (struct addrinfo *address = addresses; address != NULL; address = address->ai_next) {
     fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-    if (fd < 0) {
-      error = errno;
+    if (fd == NO_SOCKET) {
+      error = socket_error();
       continue;
     }
-    int on = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
-    if (bind(fd, address->ai_addr, address->ai_addrlen) == 0 &&
+    claim_port(fd);
+    if (bind(fd, address->ai_addr, (socklen_t)address->ai_addrlen) == 0 &&
         listen(fd, backlog > 0 && backlog < 65536 ? (int)backlog : 128) == 0) {
       break;
     }
-    error = errno;
-    close(fd);
-    fd = -1;
+    error = socket_error();
+    close_socket(fd);
+    fd = NO_SOCKET;
   }
   freeaddrinfo(addresses);
-  if (fd < 0) {
+  if (fd == NO_SOCKET) {
     slug_producer_release(ready);
     *detail = error;
     return SLUG_TCP_ERROR;
   }
   set_close_on_exec(fd);
-  set_blocking(fd, false);
 
   slug_tcp_listener *created = calloc(1, sizeof *created);
+#if defined(_WIN32)
+  if (created == NULL) {
+    error = ENOMEM;
+#else
+  /* The accept thread polls, so the socket never blocks it. */
+  set_blocking(fd, false);
   if (created == NULL || pipe(created->wake) != 0) {
     error = created == NULL ? ENOMEM : errno;
+#endif
     free(created);
-    close(fd);
+    close_socket(fd);
     slug_producer_release(ready);
     *detail = error;
     return SLUG_TCP_ERROR;
   }
+#if !defined(_WIN32)
   set_close_on_exec(created->wake[0]);
   set_close_on_exec(created->wake[1]);
+#endif
   created->fd = fd;
   created->ready = ready;
   atomic_init(&created->closing, false);
-  pthread_mutex_init(&created->lock, NULL);
+  mutex_init(&created->lock);
   struct sockaddr_storage bound;
   socklen_t length = sizeof bound;
   if (getsockname(fd, (struct sockaddr *)&bound, &length) == 0) {
@@ -375,12 +591,14 @@ int32_t slug_tcp_listen(const char *host, int64_t port, int64_t backlog, slug_pr
                         ? ntohs(((struct sockaddr_in6 *)&bound)->sin6_port)
                         : ntohs(((struct sockaddr_in *)&bound)->sin_port);
   }
-  if ((error = pthread_create(&created->thread, NULL, accept_loop, created)) != 0) {
+  if ((error = thread_start(&created->thread, accept_loop, created)) != 0) {
+#if !defined(_WIN32)
     close(created->wake[0]);
     close(created->wake[1]);
-    pthread_mutex_destroy(&created->lock);
+#endif
+    mutex_destroy(&created->lock);
     free(created);
-    close(fd);
+    close_socket(fd);
     slug_producer_release(ready);
     *detail = error;
     return SLUG_TCP_ERROR;
@@ -393,31 +611,37 @@ int64_t slug_tcp_local_port(slug_tcp_listener *listener) { return listener->port
 
 int32_t slug_tcp_adopt(slug_tcp_listener *listener, slug_tcp_connection **connection) {
   *connection = NULL;
-  pthread_mutex_lock(&listener->lock);
+  mutex_lock(&listener->lock);
   if (listener->queued == 0) {
-    pthread_mutex_unlock(&listener->lock);
+    mutex_unlock(&listener->lock);
     return SLUG_TCP_CLOSED;
   }
-  int fd = listener->queue[0];
+  socket_t fd = listener->queue[0];
   listener->queued--;
   memmove(listener->queue, listener->queue + 1, listener->queued * sizeof *listener->queue);
-  pthread_mutex_unlock(&listener->lock);
+  mutex_unlock(&listener->lock);
   *connection = new_connection(fd);
   return *connection == NULL ? SLUG_TCP_CLOSED : SLUG_TCP_OK;
 }
 
 void slug_tcp_listener_release(slug_tcp_listener *listener) {
   atomic_store(&listener->closing, true);
+#if defined(_WIN32)
+  /* Ends the accept thread's `accept`. */
+  close_socket(listener->fd);
+  thread_join(listener->thread);
+#else
   char wake = 0;
   while (write(listener->wake[1], &wake, 1) < 0 && errno == EINTR) {
   }
-  pthread_join(listener->thread, NULL);
-  for (size_t i = 0; i < listener->queued; i++) close(listener->queue[i]);
-  free(listener->queue);
+  thread_join(listener->thread);
   close(listener->fd);
   close(listener->wake[0]);
   close(listener->wake[1]);
-  pthread_mutex_destroy(&listener->lock);
+#endif
+  for (size_t i = 0; i < listener->queued; i++) close_socket(listener->queue[i]);
+  free(listener->queue);
+  mutex_destroy(&listener->lock);
   free(listener);
 }
 
@@ -425,98 +649,127 @@ void slug_tcp_listener_release(slug_tcp_listener *listener) {
 
 static void drop_connecting(slug_tcp_connecting *connecting) {
   if (atomic_fetch_sub(&connecting->references, 1) != 1) return;
-  if (connecting->fd >= 0) close(connecting->fd);
-  pthread_mutex_destroy(&connecting->lock);
+  if (connecting->fd != NO_SOCKET) close_socket(connecting->fd);
+  mutex_destroy(&connecting->lock);
   free(connecting->host);
   free(connecting);
 }
 
-/* Connects to one address within `deadline`, returning the socket or -1 with
- * `status` and `error` set. */
-static int connect_one(const struct addrinfo *address, int64_t deadline, int32_t *status,
-                       int *error) {
-  int fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-  if (fd < 0) {
-    *status = SLUG_TCP_ERROR;
-    *error = errno;
-    return -1;
+/* Waits until a non-blocking connect of `fd` is done or `deadline` passes:
+ * returns false at the deadline. */
+static bool wait_connected(socket_t fd, int64_t deadline) {
+  for (;;) {
+    int64_t remaining = deadline - now_ms();
+    if (remaining <= 0) return false;
+#if defined(_WIN32)
+    /* `select`, as WSAPoll reports no failed connect on older Windows: a
+     * failure is an exception. */
+    fd_set writable;
+    fd_set failed;
+    struct timeval timeout;
+    FD_ZERO(&writable);
+    FD_ZERO(&failed);
+    FD_SET(fd, &writable);
+    FD_SET(fd, &failed);
+    timeout.tv_sec = (long)(remaining / 1000);
+    timeout.tv_usec = (long)(remaining % 1000) * 1000;
+    int selected = select(0, NULL, &writable, &failed, &timeout);
+    if (selected <= 0) continue;
+#else
+    struct pollfd ready = {fd, POLLOUT, 0};
+    int polled = poll(&ready, 1, remaining > 2147483647 ? 2147483647 : (int)remaining);
+    if (polled <= 0) continue;
+#endif
+    return true;
   }
+}
+
+/* Connects to one address within `deadline`, returning the socket or
+ * NO_SOCKET with `status` and `error` set. */
+static socket_t connect_one(const struct addrinfo *address, int64_t deadline, int32_t *status,
+                            int *error) {
+  socket_t fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+  if (fd == NO_SOCKET) {
+    *status = SLUG_TCP_ERROR;
+    *error = socket_error();
+    return NO_SOCKET;
+  }
+  set_close_on_exec(fd);
   set_blocking(fd, false);
-  if (connect(fd, address->ai_addr, address->ai_addrlen) != 0) {
-    if (errno != EINPROGRESS) {
-      *error = errno;
-      *status = errno == ECONNREFUSED ? SLUG_TCP_REFUSED : SLUG_TCP_ERROR;
-      close(fd);
-      return -1;
+  if (connect(fd, address->ai_addr, (socklen_t)address->ai_addrlen) != 0) {
+    int failure = socket_error();
+    if (failure != NET_EINPROGRESS) {
+      *error = failure;
+      *status = failure == NET_ECONNREFUSED ? SLUG_TCP_REFUSED : SLUG_TCP_ERROR;
+      close_socket(fd);
+      return NO_SOCKET;
     }
-    for (;;) {
-      int64_t remaining = deadline - now_ms();
-      if (remaining <= 0) {
-        *status = SLUG_TCP_TIMEOUT;
-        *error = ETIMEDOUT;
-        close(fd);
-        return -1;
-      }
-      struct pollfd ready = {fd, POLLOUT, 0};
-      int polled = poll(&ready, 1, remaining > 2147483647 ? 2147483647 : (int)remaining);
-      if (polled < 0 && errno == EINTR) continue;
-      if (polled <= 0) continue;
-      break;
+    if (!wait_connected(fd, deadline)) {
+      *status = SLUG_TCP_TIMEOUT;
+      *error = NET_ETIMEDOUT;
+      close_socket(fd);
+      return NO_SOCKET;
     }
-    int failure = 0;
+    failure = 0;
     socklen_t length = sizeof failure;
-    getsockopt(fd, SOL_SOCKET, SO_ERROR, &failure, &length);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&failure, &length);
     if (failure != 0) {
       *error = failure;
-      *status = failure == ECONNREFUSED ? SLUG_TCP_REFUSED : SLUG_TCP_ERROR;
-      close(fd);
-      return -1;
+      *status = failure == NET_ECONNREFUSED ? SLUG_TCP_REFUSED : SLUG_TCP_ERROR;
+      close_socket(fd);
+      return NO_SOCKET;
     }
   }
   prepare_connected(fd);
   return fd;
 }
 
-static void *connect_thread(void *argument) {
+THREAD_FUNCTION(connect_thread) {
   slug_tcp_connecting *connecting = argument;
   int64_t deadline = now_ms() + connecting->timeout_ms;
   struct addrinfo *addresses;
   int64_t detail = 0;
   int32_t status = resolve(connecting->host, connecting->port, false, &addresses, &detail);
-  int fd = -1;
+  socket_t fd = NO_SOCKET;
   if (status == SLUG_TCP_OK) {
     int error = 0;
     status = SLUG_TCP_ERROR;
-    for (struct addrinfo *address = addresses; address != NULL && fd < 0;
+    for (struct addrinfo *address = addresses; address != NULL && fd == NO_SOCKET;
          address = address->ai_next) {
       fd = connect_one(address, deadline, &status, &error);
       if (status == SLUG_TCP_TIMEOUT) break;
     }
     freeaddrinfo(addresses);
-    if (fd >= 0) {
+    if (fd != NO_SOCKET) {
       status = SLUG_TCP_OK;
     } else {
       detail = error;
     }
   }
-  pthread_mutex_lock(&connecting->lock);
+  mutex_lock(&connecting->lock);
   connecting->status = status;
   connecting->detail = detail;
   connecting->fd = fd;
-  pthread_mutex_unlock(&connecting->lock);
+  mutex_unlock(&connecting->lock);
   send_value(connecting->done, status, NULL);
   slug_producer_close(connecting->done);
   slug_producer_release(connecting->done);
   drop_connecting(connecting);
-  return NULL;
+  THREAD_RETURN;
 }
 
 int32_t slug_tcp_connect(const char *host, int64_t port, int64_t timeout_ms, slug_producer *done,
                          slug_tcp_connecting **connecting, int64_t *detail) {
   *connecting = NULL;
   *detail = 0;
+  int error = ensure_network();
+  if (error != 0) {
+    slug_producer_release(done);
+    *detail = error;
+    return SLUG_TCP_ERROR;
+  }
   slug_tcp_connecting *created = calloc(1, sizeof *created);
-  if (created == NULL || (created->host = strdup(host)) == NULL) {
+  if (created == NULL || (created->host = copy_text(host)) == NULL) {
     free(created);
     slug_producer_release(done);
     *detail = ENOMEM;
@@ -532,20 +785,20 @@ int32_t slug_tcp_connect(const char *host, int64_t port, int64_t timeout_ms, slu
   created->timeout_ms = timeout_ms < 0 ? 0 : timeout_ms;
   created->done = done;
   created->status = SLUG_TCP_CLOSED;
-  created->fd = -1;
+  created->fd = NO_SOCKET;
   atomic_init(&created->references, 2);
-  pthread_mutex_init(&created->lock, NULL);
-  pthread_t thread;
-  int error = pthread_create(&thread, NULL, connect_thread, created);
+  mutex_init(&created->lock);
+  thread_t thread;
+  error = thread_start(&thread, connect_thread, created);
   if (error != 0) {
-    pthread_mutex_destroy(&created->lock);
+    mutex_destroy(&created->lock);
     free(created->host);
     free(created);
     slug_producer_release(done);
     *detail = error;
     return SLUG_TCP_ERROR;
   }
-  pthread_detach(thread);
+  thread_detach(thread);
   *connecting = created;
   return SLUG_TCP_OK;
 }
@@ -553,16 +806,16 @@ int32_t slug_tcp_connect(const char *host, int64_t port, int64_t timeout_ms, slu
 int32_t slug_tcp_finish_connect(slug_tcp_connecting *connecting,
                                 slug_tcp_connection **connection, int64_t *detail) {
   *connection = NULL;
-  pthread_mutex_lock(&connecting->lock);
+  mutex_lock(&connecting->lock);
   int32_t status = connecting->status;
   *detail = connecting->detail;
-  int fd = connecting->fd;
+  socket_t fd = connecting->fd;
   if (status == SLUG_TCP_OK) {
-    connecting->fd = -1;
+    connecting->fd = NO_SOCKET;
     /* Taken once: a second call finds no connection. */
     connecting->status = SLUG_TCP_CLOSED;
   }
-  pthread_mutex_unlock(&connecting->lock);
+  mutex_unlock(&connecting->lock);
   if (status == SLUG_TCP_OK && (*connection = new_connection(fd)) == NULL) {
     *detail = ENOMEM;
     return SLUG_TCP_ERROR;
@@ -586,21 +839,32 @@ static void drop_connection(slug_tcp_connection *connection) {
   if (atomic_fetch_sub(&connection->references, 1) != 1) return;
   free_pending(connection->first);
   free(connection->held);
-  pthread_mutex_destroy(&connection->lock);
-  close(connection->fd);
+  mutex_destroy(&connection->lock);
+  close_socket(connection->fd);
   free(connection);
 }
 
 /* The I/O thread. */
 static struct {
+#if defined(_WIN32)
+  INIT_ONCE once;
+  /* A UDP socket connected to itself: a byte sent on it wakes the thread to
+   * look at `changed`. */
+  socket_t wake;
+  /* The I/O thread's own: the connections whose sockets it polls. */
+  slug_tcp_connection **watched;
+  size_t watched_count;
+  size_t watched_capacity;
+#else
   pthread_once_t once;
-  /* The errno starting it failed with, or 0. */
-  int error;
   int poller;
   /* Writing to wake[1] wakes the thread to look at `changed`. */
   int wake[2];
-  pthread_t thread;
-  pthread_mutex_t lock;
+#endif
+  /* The error starting it failed with, or 0. */
+  int error;
+  thread_t thread;
+  mutex_t lock;
   /* Connections to look at, each once, and whether a wake is on its way. */
   slug_tcp_connection *changed;
   bool woken;
@@ -609,12 +873,16 @@ static struct {
   slug_tcp_connection *blocked;
   slug_tcp_connection *retired;
   uint8_t buffer[READ_BUFFER];
-} io = {.once = PTHREAD_ONCE_INIT, .lock = PTHREAD_MUTEX_INITIALIZER};
+#if defined(_WIN32)
+} io = {.once = INIT_ONCE_STATIC_INIT, .lock = MUTEX_INITIALIZER};
+#else
+} io = {.once = PTHREAD_ONCE_INIT, .lock = MUTEX_INITIALIZER};
+#endif
 
 /* Hands `connection` to the I/O thread, which looks at what it must do: start
  * it, send what is queued, shut it down, or finish it once closed. */
 static void request(slug_tcp_connection *connection) {
-  pthread_mutex_lock(&io.lock);
+  mutex_lock(&io.lock);
   if (!connection->changed) {
     connection->changed = true;
     atomic_fetch_add(&connection->references, 1);
@@ -623,20 +891,59 @@ static void request(slug_tcp_connection *connection) {
   }
   bool wake = !io.woken;
   io.woken = true;
-  pthread_mutex_unlock(&io.lock);
+  mutex_unlock(&io.lock);
   if (wake) {
     char byte = 0;
+#if defined(_WIN32)
+    send(io.wake, &byte, 1, 0);
+#else
     while (write(io.wake[1], &byte, 1) < 0 && errno == EINTR) {
     }
+#endif
   }
 }
+
+#if defined(_WIN32)
+
+/* Adds `connection` to the sockets the I/O thread polls; false when memory
+ * ran out, which leaves it unwatched until it is asked again. */
+static bool watch(slug_tcp_connection *connection) {
+  if (io.watched_count == io.watched_capacity) {
+    size_t capacity = io.watched_capacity == 0 ? 64 : io.watched_capacity * 2;
+    slug_tcp_connection **grown = realloc(io.watched, capacity * sizeof *grown);
+    if (grown == NULL) return false;
+    io.watched = grown;
+    io.watched_capacity = capacity;
+  }
+  connection->watch_index = io.watched_count;
+  io.watched[io.watched_count++] = connection;
+  return true;
+}
+
+static void unwatch(slug_tcp_connection *connection) {
+  slug_tcp_connection *last = io.watched[--io.watched_count];
+  io.watched[connection->watch_index] = last;
+  last->watch_index = connection->watch_index;
+}
+
+#endif
 
 /* Tells the kernel which of reading and writing `connection` waits for. */
 static void set_interest(slug_tcp_connection *connection, bool read, bool write) {
   if (connection->registered && connection->want_read == read && connection->want_write == write) {
     return;
   }
-#if defined(SLUG_TCP_KQUEUE)
+#if defined(_WIN32)
+  /* As with epoll below, a socket waiting for nothing is not polled, since
+   * a hang-up is reported even then. */
+  if (read || write) {
+    if (!connection->registered && !watch(connection)) return;
+    connection->registered = true;
+  } else if (connection->registered) {
+    unwatch(connection);
+    connection->registered = false;
+  }
+#elif defined(SLUG_TCP_KQUEUE)
   struct kevent changes[2];
   int count = 0;
   if (!connection->registered) {
@@ -677,7 +984,9 @@ static void set_interest(slug_tcp_connection *connection, bool read, bool write)
 
 static void deregister(slug_tcp_connection *connection) {
   if (!connection->registered) return;
-#if defined(SLUG_TCP_KQUEUE)
+#if defined(_WIN32)
+  unwatch(connection);
+#elif defined(SLUG_TCP_KQUEUE)
   struct kevent changes[2];
   EV_SET(&changes[0], connection->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
   EV_SET(&changes[1], connection->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
@@ -732,14 +1041,29 @@ static void list_blocked(slug_tcp_connection *connection, bool on) {
   connection->on_blocked = on;
 }
 
+static void stop_reading(slug_tcp_connection *connection);
+
 /* Once neither reading nor writing remains, the I/O thread lets go of the
  * connection, at the end of the round. */
 static void finish_if_done(slug_tcp_connection *connection) {
-  if (connection->finished || connection->reading) return;
-  pthread_mutex_lock(&connection->lock);
+  if (connection->finished) return;
+#if !defined(_WIN32)
+  if (connection->reading) return;
+#endif
+  mutex_lock(&connection->lock);
   bool writing = connection->writing;
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   if (writing) return;
+#if defined(_WIN32)
+  /* A shutdown ends a POSIX socket's reading by waking its read with the
+   * end of the stream; Winsock may wake nothing, so a closed connection with
+   * nothing left to send stops reading here. */
+  if (connection->reading && atomic_load(&connection->closed)) {
+    stop_reading(connection);
+    return;
+  }
+#endif
+  if (connection->reading) return;
   connection->finished = true;
   list_held(connection, false);
   list_blocked(connection, false);
@@ -789,13 +1113,9 @@ static void stop_writing(slug_tcp_connection *connection) {
  * side when asked once the queue is empty, and ends writing once the
  * connection is closed and everything is sent. */
 static void flush(slug_tcp_connection *connection) {
-  int flags = 0;
-#if defined(MSG_NOSIGNAL)
-  flags = MSG_NOSIGNAL;
-#endif
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   if (!connection->writing) {
-    pthread_mutex_unlock(&connection->lock);
+    mutex_unlock(&connection->lock);
     list_blocked(connection, false);
     update_interest(connection);
     finish_if_done(connection);
@@ -814,14 +1134,15 @@ static void flush(slug_tcp_connection *connection) {
     }
     size_t length = pending->length - pending->sent;
     if (length > WRITE_SLICE) length = WRITE_SLICE;
-    ssize_t sent = send(connection->fd, pending->data + pending->sent, length, flags);
+    int64_t sent = socket_send(connection->fd, pending->data + pending->sent, length);
     if (sent < 0) {
-      if (errno == EINTR) continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      int error = socket_error();
+      if (error == NET_EINTR) continue;
+      if (would_block(error)) {
         blocked = true;
         break;
       }
-      connection->write_error = errno;
+      connection->write_error = error;
       free_pending(connection->first);
       connection->first = connection->last = NULL;
       connection->queued = 0;
@@ -844,7 +1165,7 @@ static void flush(slug_tcp_connection *connection) {
   }
   connection->blocked = blocked && connection->writing;
   bool now_blocked = connection->blocked;
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   if (now_blocked && (progress || !connection->on_blocked)) connection->progress_ms = now_ms();
   list_blocked(connection, now_blocked);
   update_interest(connection);
@@ -899,19 +1220,19 @@ static void hold(slug_tcp_connection *connection, const uint8_t *data, size_t le
 /* Receives what the socket has, at most one chunk, and sends it on. */
 static void receive(slug_tcp_connection *connection) {
   if (!connection->reading || connection->holding) return;
-  ssize_t received = recv(connection->fd, io.buffer, READ_BUFFER, 0);
+  int64_t received = socket_receive(connection->fd, io.buffer, READ_BUFFER);
   if (received == 0) {
     stop_reading(connection);
     return;
   }
   if (received < 0) {
-    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return;
+    int error = socket_error();
+    if (error == NET_EINTR || would_block(error)) return;
     /* A shutdown by `close` is not a failure. */
     if (atomic_load(&connection->closed)) {
       stop_reading(connection);
       return;
     }
-    int error = errno;
     switch (slug_producer_send_i64(connection->chunks, error)) {
       case SLUG_PRODUCER_FULL:
         hold(connection, NULL, 0, error);
@@ -957,21 +1278,21 @@ static void retry_held(void) {
 }
 
 /* Writes that the peer has taken nothing of for the write timeout: a waiting
- * `write` is told, or once the connection is closed, writing ends with
- * ETIMEDOUT. Returns the milliseconds until the next such timeout, or -1. */
+ * `write` is told, or once the connection is closed, writing ends with a
+ * timeout. Returns the milliseconds until the next such timeout, or -1. */
 static int64_t check_timeouts(void) {
   int64_t now = now_ms();
   int64_t next = -1;
   slug_tcp_connection *connection = io.blocked;
   while (connection != NULL) {
     slug_tcp_connection *following = connection->next_blocked;
-    pthread_mutex_lock(&connection->lock);
+    mutex_lock(&connection->lock);
     int64_t timeout = connection->write_timeout_ms;
     bool expired = timeout > 0 && now - connection->progress_ms >= timeout;
     bool ended = false;
     if (expired) {
       if (atomic_load(&connection->closed)) {
-        connection->write_error = ETIMEDOUT;
+        connection->write_error = NET_ETIMEDOUT;
         free_pending(connection->first);
         connection->first = connection->last = NULL;
         connection->queued = 0;
@@ -983,7 +1304,7 @@ static int64_t check_timeouts(void) {
         connection->progress_ms = now;
       }
     }
-    pthread_mutex_unlock(&connection->lock);
+    mutex_unlock(&connection->lock);
     if (ended) {
       list_blocked(connection, false);
       update_interest(connection);
@@ -998,7 +1319,151 @@ static int64_t check_timeouts(void) {
   return next;
 }
 
-static void *io_loop(void *argument) {
+/* The end of the I/O thread's round: what other threads handed over, held
+ * chunks, and the connections it finished with. */
+static void finish_round(void) {
+  mutex_lock(&io.lock);
+  slug_tcp_connection *changed = io.changed;
+  io.changed = NULL;
+  io.woken = false;
+  mutex_unlock(&io.lock);
+  while (changed != NULL) {
+    /* Once its flag is clear, another thread may hand the connection over
+     * again, onto the next list, which overwrites its link: take the link
+     * first. */
+    mutex_lock(&io.lock);
+    slug_tcp_connection *next = changed->next_changed;
+    changed->changed = false;
+    mutex_unlock(&io.lock);
+    look_at(changed);
+    /* The list's reference. A connection the I/O thread finished with
+     * keeps its own reference until the retired are dropped. */
+    drop_connection(changed);
+    changed = next;
+  }
+  if (io.held != NULL) retry_held();
+  while (io.retired != NULL) {
+    slug_tcp_connection *connection = io.retired;
+    io.retired = connection->next_retired;
+    drop_connection(connection);
+  }
+}
+
+/* How long the I/O thread may wait for events: until the next write timeout,
+ * and briefly while a chunk waits for room. */
+static int64_t wait_time(void) {
+  int64_t wait_ms = check_timeouts();
+  if (io.held != NULL && (wait_ms < 0 || wait_ms > 1)) wait_ms = 1;
+  return wait_ms;
+}
+
+/* Handles a socket's readiness. */
+static void ready(slug_tcp_connection *connection, bool readable, bool writable) {
+  if (connection->finished) return;
+  if (readable) receive(connection);
+  if (writable && connection->on_blocked) flush(connection);
+}
+
+#if defined(_WIN32)
+
+THREAD_FUNCTION(io_loop) {
+  (void)argument;
+  WSAPOLLFD *fds = NULL;
+  slug_tcp_connection **owners = NULL;
+  size_t capacity = 0;
+  for (;;) {
+    int64_t wait_ms = wait_time();
+    size_t wanted = io.watched_count + 1;
+    if (wanted > capacity) {
+      size_t grown_capacity = wanted * 2;
+      WSAPOLLFD *grown_fds = realloc(fds, grown_capacity * sizeof *grown_fds);
+      if (grown_fds != NULL) fds = grown_fds;
+      slug_tcp_connection **grown_owners =
+          grown_fds == NULL ? NULL : realloc(owners, grown_capacity * sizeof *grown_owners);
+      if (grown_owners != NULL) owners = grown_owners;
+      if (grown_fds == NULL || grown_owners == NULL) {
+        /* Without memory to poll them all, wait for some to be released. */
+        pause_briefly();
+        finish_round();
+        continue;
+      }
+      capacity = grown_capacity;
+    }
+    size_t used = 0;
+    fds[used].fd = io.wake;
+    fds[used].events = POLLRDNORM;
+    fds[used].revents = 0;
+    owners[used++] = NULL;
+    for (size_t i = 0; i < io.watched_count; i++) {
+      slug_tcp_connection *connection = io.watched[i];
+      fds[used].fd = connection->fd;
+      fds[used].events =
+          (SHORT)((connection->want_read ? POLLRDNORM : 0) | (connection->want_write ? POLLWRNORM : 0));
+      fds[used].revents = 0;
+      owners[used++] = connection;
+    }
+    int count = WSAPoll(fds, (ULONG)used,
+                        wait_ms < 0 ? -1 : (wait_ms > INT_MAX ? INT_MAX : (INT)wait_ms));
+    for (size_t i = 0; count > 0 && i < used; i++) {
+      SHORT revents = fds[i].revents;
+      if (revents == 0) continue;
+      if (owners[i] == NULL) {
+        char drain[64];
+        while (recv(io.wake, drain, (int)sizeof drain, 0) > 0) {
+        }
+        continue;
+      }
+      ready(owners[i], (revents & (POLLRDNORM | POLLHUP | POLLERR)) != 0,
+            (revents & (POLLWRNORM | POLLHUP | POLLERR)) != 0);
+    }
+    finish_round();
+  }
+  THREAD_RETURN;
+}
+
+/* Makes the wake socket: UDP on the loopback, connected to itself. */
+static int make_wake(void) {
+  struct sockaddr_in address;
+  int length = sizeof address;
+  io.wake = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (io.wake == NO_SOCKET) return socket_error();
+  memset(&address, 0, sizeof address);
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  if (bind(io.wake, (struct sockaddr *)&address, sizeof address) != 0 ||
+      getsockname(io.wake, (struct sockaddr *)&address, &length) != 0 ||
+      connect(io.wake, (struct sockaddr *)&address, sizeof address) != 0) {
+    return socket_error();
+  }
+  set_close_on_exec(io.wake);
+  set_blocking(io.wake, false);
+  return 0;
+}
+
+static void start_io(void) {
+  io.error = ensure_network();
+  if (io.error != 0) return;
+  io.error = make_wake();
+  if (io.error != 0) return;
+  io.error = thread_start(&io.thread, io_loop, NULL);
+  if (io.error != 0) return;
+  thread_detach(io.thread);
+}
+
+static BOOL CALLBACK start_io_once(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+  (void)once;
+  (void)parameter;
+  (void)context;
+  start_io();
+  return TRUE;
+}
+
+static void ensure_io(void) { InitOnceExecuteOnce(&io.once, start_io_once, NULL, NULL); }
+
+#else
+
+THREAD_FUNCTION(io_loop) {
   (void)argument;
 #if defined(SLUG_TCP_KQUEUE)
   struct kevent events[EVENTS];
@@ -1006,8 +1471,7 @@ static void *io_loop(void *argument) {
   struct epoll_event events[EVENTS];
 #endif
   for (;;) {
-    int64_t wait_ms = check_timeouts();
-    if (io.held != NULL && (wait_ms < 0 || wait_ms > 1)) wait_ms = 1;
+    int64_t wait_ms = wait_time();
 #if defined(SLUG_TCP_KQUEUE)
     struct timespec timeout = {(time_t)(wait_ms / 1000), (long)(wait_ms % 1000) * 1000000};
     int count = kevent(io.poller, NULL, 0, events, EVENTS, wait_ms < 0 ? NULL : &timeout);
@@ -1031,37 +1495,11 @@ static void *io_loop(void *argument) {
         }
         continue;
       }
-      if (connection->finished) continue;
-      if (readable) receive(connection);
-      if (writable && connection->on_blocked) flush(connection);
+      ready(connection, readable, writable);
     }
-    pthread_mutex_lock(&io.lock);
-    slug_tcp_connection *changed = io.changed;
-    io.changed = NULL;
-    io.woken = false;
-    pthread_mutex_unlock(&io.lock);
-    while (changed != NULL) {
-      /* Once its flag is clear, another thread may hand the connection over
-       * again, onto the next list, which overwrites its link: take the link
-       * first. */
-      pthread_mutex_lock(&io.lock);
-      slug_tcp_connection *next = changed->next_changed;
-      changed->changed = false;
-      pthread_mutex_unlock(&io.lock);
-      look_at(changed);
-      /* The list's reference. A connection the I/O thread finished with
-       * keeps its own reference until the retired are dropped. */
-      drop_connection(changed);
-      changed = next;
-    }
-    if (io.held != NULL) retry_held();
-    while (io.retired != NULL) {
-      slug_tcp_connection *connection = io.retired;
-      io.retired = connection->next_retired;
-      drop_connection(connection);
-    }
+    finish_round();
   }
-  return NULL;
+  THREAD_RETURN;
 }
 
 static void start_io(void) {
@@ -1099,19 +1537,23 @@ static void start_io(void) {
     return;
   }
 #endif
-  int error = pthread_create(&io.thread, NULL, io_loop, NULL);
+  int error = thread_start(&io.thread, io_loop, NULL);
   if (error != 0) {
     io.error = error;
     return;
   }
-  pthread_detach(io.thread);
+  thread_detach(io.thread);
 }
+
+static void ensure_io(void) { pthread_once(&io.once, start_io); }
+
+#endif
 
 void slug_tcp_connection_release(slug_tcp_connection *connection) {
   atomic_store(&connection->closed, true);
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   bool writing = connection->writing;
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   /* Without writing to finish, shut down now, which ends reading. Otherwise
    * the I/O thread shuts down once it has sent what is queued. */
   if (!writing) shutdown(connection->fd, SHUT_RDWR);
@@ -1127,7 +1569,7 @@ int32_t slug_tcp_start(slug_tcp_connection *connection, slug_producer *chunks,
     slug_producer_release(writable);
     return SLUG_TCP_OK;
   }
-  pthread_once(&io.once, start_io);
+  ensure_io();
   if (io.error != 0) {
     slug_producer_release(chunks);
     slug_producer_release(writable);
@@ -1141,10 +1583,10 @@ int32_t slug_tcp_start(slug_tcp_connection *connection, slug_producer *chunks,
   }
   connection->chunks = chunks;
   connection->reading = true;
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   connection->writable = writable;
   connection->writing = true;
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   /* The I/O thread's reference, until it has finished with the connection. */
   atomic_fetch_add(&connection->references, 1);
   request(connection);
@@ -1155,10 +1597,10 @@ int32_t slug_tcp_start(slug_tcp_connection *connection, slug_producer *chunks,
 static int32_t writable_status(slug_tcp_connection *connection, int64_t *detail) {
   if (connection->write_error != 0) {
     *detail = connection->write_error;
-    return *detail == ETIMEDOUT ? SLUG_TCP_TIMEOUT : SLUG_TCP_ERROR;
+    return *detail == NET_ETIMEDOUT ? SLUG_TCP_TIMEOUT : SLUG_TCP_ERROR;
   }
   if (connection->shutdown_requested) {
-    *detail = EPIPE;
+    *detail = NET_EPIPE;
     return SLUG_TCP_ERROR;
   }
   return connection->writing ? SLUG_TCP_OK : SLUG_TCP_CLOSED;
@@ -1168,18 +1610,18 @@ static int32_t writable_status(slug_tcp_connection *connection, int64_t *detail)
 static int32_t queue_write(slug_tcp_connection *connection, const uint8_t *data, size_t length,
                            int64_t *queued, int64_t *detail) {
   *detail = 0;
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   *queued = (int64_t)connection->queued;
   int32_t status = writable_status(connection, detail);
   if (status != SLUG_TCP_OK) {
-    pthread_mutex_unlock(&connection->lock);
+    mutex_unlock(&connection->lock);
     return status;
   }
   bool hand_over = false;
   if (length > 0) {
     struct pending *pending = malloc(sizeof *pending + length);
     if (pending == NULL) {
-      pthread_mutex_unlock(&connection->lock);
+      mutex_unlock(&connection->lock);
       *detail = ENOMEM;
       return SLUG_TCP_ERROR;
     }
@@ -1199,7 +1641,7 @@ static int32_t queue_write(slug_tcp_connection *connection, const uint8_t *data,
     connection->queued += length;
     *queued = (int64_t)connection->queued;
   }
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   if (hand_over) request(connection);
   return SLUG_TCP_OK;
 }
@@ -1217,23 +1659,23 @@ int32_t slug_tcp_write_text(slug_tcp_connection *connection, const char *text, s
 int32_t slug_tcp_wait_writable(slug_tcp_connection *connection, int64_t *queued,
                                int64_t *detail) {
   *detail = 0;
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   *queued = (int64_t)connection->queued;
   int32_t status = writable_status(connection, detail);
   if (status == SLUG_TCP_OK) connection->waiting = true;
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   return status;
 }
 
 void slug_tcp_set_write_timeout(slug_tcp_connection *connection, int64_t milliseconds) {
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   connection->write_timeout_ms = milliseconds < 0 ? 0 : milliseconds;
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
 }
 
 int32_t slug_tcp_shutdown_write(slug_tcp_connection *connection, int64_t *detail) {
   *detail = 0;
-  pthread_mutex_lock(&connection->lock);
+  mutex_lock(&connection->lock);
   int32_t status = writable_status(connection, detail);
   bool hand_over = false;
   if (status == SLUG_TCP_OK) {
@@ -1244,24 +1686,63 @@ int32_t slug_tcp_shutdown_write(slug_tcp_connection *connection, int64_t *detail
     status = SLUG_TCP_OK;
     *detail = 0;
   }
-  pthread_mutex_unlock(&connection->lock);
+  mutex_unlock(&connection->lock);
   if (hand_over) request(connection);
   return status;
 }
 
 const char *slug_tcp_peer(slug_tcp_connection *connection) { return connection->peer; }
 
+#if defined(_WIN32)
+
+/* The system's description of a Winsock or Windows error, as UTF-8, or the
+ * C library's for its own numbers; the system's is in the user's language,
+ * which a code page may not hold, so it is taken as UTF-16. */
+static const char *system_message(int64_t detail) {
+  static _Thread_local char message[512];
+  wchar_t wide[256];
+  DWORD length;
+  if (detail > 0 && detail < 10000) return strerror((int)detail);
+  length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
+                          (DWORD)detail, 0, wide, sizeof wide / sizeof wide[0], NULL);
+  /* Without the trailing ".\r\n" the system adds. */
+  while (length > 0 &&
+         (wide[length - 1] == L'\r' || wide[length - 1] == L'\n' || wide[length - 1] == L'.')) {
+    length--;
+  }
+  int written = length == 0 ? 0
+                            : WideCharToMultiByte(CP_UTF8, 0, wide, (int)length, message,
+                                                  (int)sizeof message - 1, NULL, NULL);
+  if (written <= 0) {
+    snprintf(message, sizeof message, "system error %lld", (long long)detail);
+    return message;
+  }
+  message[written] = '\0';
+  return message;
+}
+
+#endif
+
 const char *slug_tcp_message(int32_t status, int64_t detail) {
   switch (status) {
     case SLUG_TCP_OK:
       return "success";
     case SLUG_TCP_ADDRESS:
+#if defined(_WIN32)
+      /* getaddrinfo's errors are Winsock errors there. */
+      return system_message(detail);
+#else
       return gai_strerror((int)detail);
+#endif
     case SLUG_TCP_TIMEOUT:
       return "the operation timed out";
     case SLUG_TCP_CLOSED:
       return "the connection is closed";
     default:
+#if defined(_WIN32)
+      return system_message(detail);
+#else
       return strerror((int)detail);
+#endif
   }
 }

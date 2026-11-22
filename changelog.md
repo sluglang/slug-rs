@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `slug.net.tcp` is ported to Windows, on Winsock: one I/O thread still
+  serves every connection, polling their sockets with `WSAPoll`. On Windows
+  a failure's message is the system's own description, in the user's
+  language.
+
 - `slug.io.fs` is ported to Windows. It also gains `separator`, the system's
   path separator (`\` on Windows, `/` elsewhere), and `join`, which builds
   a path from a list of parts with it. On Windows a failure's `errno` is

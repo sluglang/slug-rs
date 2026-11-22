@@ -13,6 +13,10 @@ sources = ["native/source/tcp.c"]
 "macos-aarch64" = "native/macos-aarch64/libslug_net_tcp.dylib"
 "macos-x86_64" = "native/macos-x86_64/libslug_net_tcp.dylib"
 "linux-x86_64" = "native/linux-x86_64/libslug_net_tcp.so"
+"windows-x86_64" = "native/windows-x86_64/slug_net_tcp.dll"
+
+[native.link_args]
+"windows-x86_64" = ["-lws2_32"]
 
 [native.resources."slug.net.tcp".ListenerHandle]
 type = "slug_tcp_listener"

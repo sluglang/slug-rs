@@ -53,10 +53,9 @@ jobs:
         with:
           toolchain: 1.96.1
       # The clutches with a Windows build, which the suite imports from
-      # this checkout: slug.db.sqlite needs a system SQLite, and
-      # slug.net.tcp is not ported yet.
+      # this checkout; slug.db.sqlite needs a system SQLite.
       - name: Stage the native clutches that build on Windows
-        run: sh scripts/stage-native-clutches.sh slug.core.clutch slug.crypto.clutch slug.random.secure.clutch slug.io.fs.clutch
+        run: sh scripts/stage-native-clutches.sh slug.core.clutch slug.crypto.clutch slug.random.secure.clutch slug.io.fs.clutch slug.net.tcp.clutch
       - name: The tier's own tests and differential tests
         run: make test-native-tier
       - name: The slug suite, interpreted
