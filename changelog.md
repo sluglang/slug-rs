@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- An annotation on a call's result fills in what its arguments leave open:
+  `val names:list<str> = reduce(xs, [], fn(acc, n) { ... })` makes `acc` a
+  `list<str>` where `[]` said nothing, so `acc :+ n` with a number is
+  caught. `int` is known to take and return a `num`, and `stacktrace` to
+  return a `str`.
+
 - `slug.std`'s `map`, `filter`, `reduce`, `each`, `flatMap`, `find`, `any`,
   `all`, and `times` have generic signatures, so a function passed to them
   takes its parameter's type from the list, and their results say what they

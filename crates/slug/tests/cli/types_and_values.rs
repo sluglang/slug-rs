@@ -618,7 +618,7 @@ fn function_literals_take_parameter_types_from_where_they_are_used() {
         // `U` is inferred from the literal's result.
         (
             "val r:list<str> = mapped([1, 2], fn(n) { n * 2 })",
-            "expected list<str>, got list<num>",
+            "expected str, got num (generic U was inferred as str)",
         ),
         // `s` is a `str`, from the list.
         ("mapped([\"a\"], fn(s) { s - 2 })", "expected num, got str"),
@@ -676,6 +676,48 @@ fn a_match_body_binds_its_arguments_with_their_types() {
             .contains("expected num, got str")
     );
     fs::remove_file(&path).expect("remove typed match body source");
+}
+
+#[test]
+fn an_annotation_on_a_call_fills_in_what_its_arguments_leave_open() {
+    let path = fixture_path("expected-call-results");
+    fs::write(
+        &path,
+        "val {reduce, find} = import(\"slug.std\")\n\
+         val names:list<str> = reduce([1, 2], [], fn(acc, n) { acc :+ (\"#\" + n) })\n\
+         val lengths:list<num> = [\"a\", \"bb\"] /> reduce([], fn(acc, s) { acc :+ len(s) })\n\
+         val found:num|nil = find([nil, 3, 4], fn(v) { v != nil && v > 3 })\n\
+         println(names, lengths, found, int(3.7) + 1)\n",
+    )
+    .expect("write expected call results");
+    let output = slug()
+        .arg(&path)
+        .output()
+        .expect("run expected call results");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "[\"#1\", \"#2\"] [1, 2] 4 4\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (source, message) in [
+        // The accumulator is a `list<str>`, from the annotation, not `[]`.
+        (
+            "val {reduce} = import(\"slug.std\")\nval names:list<str> = reduce([1, 2], [], fn(acc, n) { acc :+ n })",
+            "expected list<str>, got list<num|str> (generic A was inferred as list<str>)",
+        ),
+        (
+            "val n = int(3) + \"x\"",
+            "operator `+` does not accept num and str",
+        ),
+    ] {
+        fs::write(&path, format!("{source}\n")).expect("write expected call error");
+        let output = slug().arg(&path).output().expect("run expected call error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove expected call result source");
 }
 
 #[test]

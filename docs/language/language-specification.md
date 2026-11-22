@@ -1455,6 +1455,12 @@ fn<T, U>(xs:list<T>, f:fn<U, T>):list<U>`, `n` is a `num` and the result a
 `num`. These types replace what the body alone would imply, so a body that
 needs something else is a source error. An overloaded callee gives none.
 
+An annotation on a call's result fills in the type arguments its arguments
+leave open: in `val names:list<str> = reduce(xs, [], f)`, the empty `[]`
+says nothing of the accumulator's elements, so the annotation makes it a
+`list<str>`, and `f` is given and held to one. A type argument an argument
+determines keeps the argument's type.
+
 Callers may provide type arguments explicitly with `name<Type>(...)`, for
 example `identity<str>("Slug")`. An explicit application must name a generic
 function, provide exactly one type argument per declared parameter, and be

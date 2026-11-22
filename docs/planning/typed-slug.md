@@ -342,11 +342,22 @@ require.
 
 ### 5. Inference
 
-- [ ] Specify bidirectional checking: expected types for literals, lambdas,
-  and generic calls; where a type flows down.
-- [ ] Infer generic arguments from expected types as well as arguments.
-- [ ] Measure annotations needed on the repository's programs before and
-  after.
+- [x] Specify bidirectional checking: expected types for literals, lambdas,
+  and generic calls; where a type flows down. A function literal takes its
+  parameters' types from the callee's signature or an annotation, a match
+  body's patterns from the parameters, and an annotated call's result fills
+  in undetermined type arguments.
+- [x] Infer generic arguments from expected types as well as arguments.
+- [x] Measure annotations needed on the repository's programs before and
+  after (below).
+- [ ] Deferred: compare function types with a covariant result and
+  contravariant parameters, rather than equal pairs. Inference already does,
+  which is enough for `each`. As a type relation it changes the outcome of
+  the trial check that infers a `var`'s type, which breaks a `var` and `val`
+  overload pair in `module_loader`'s `selected_inferred_alternative_rejects_a_replaced_live_binding`.
+- [ ] Deferred: a function literal passed to a function declared later in
+  its module gets no expected types, since the callee's signature is not yet
+  known; `slug.std` declares `reduce` before `flatMap` for this reason.
 
 Survey, 2026-11-22, before any inference work. Each expression the checker
 saw was classed by its type: known, partial (a part is unknown, as `list`

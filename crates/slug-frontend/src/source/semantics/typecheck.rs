@@ -1932,6 +1932,7 @@ fn analyze_expressions(
             environment.install_implicit_export(&builtins, name);
         }
     }
+    declare_vm_builtins(&mut environment);
     let mut exports = HashMap::new();
     let mut types = HashMap::new();
     let mut resource_names = HashSet::new();
@@ -2802,17 +2803,36 @@ fn check_expression_inner(
                 ..
             } => {
                 // An annotated function literal takes its parameters' types
-                // from the annotation; a wrong annotation is reported below.
-                if let (Some(annotation), ExprKind::Function { .. }) = (annotation, &value.kind)
-                    && let Ok(Type::Function(Some(types))) = resolve_static_annotation(
+                // from the annotation, and an annotated call its result's;
+                // a wrong annotation is reported below.
+                if let Some(annotation) = annotation
+                    && let Ok(expected) = resolve_static_annotation(
                         annotation,
                         type_parameters,
                         &expression.span,
                         environment,
                     )
-                    && let Some((_, parameters)) = types.split_first()
                 {
-                    environment.expect_parameters(value.span.clone(), parameters.to_vec());
+                    match (&value.kind, &expected) {
+                        (ExprKind::Function { .. }, Type::Function(Some(types))) => {
+                            if let Some((_, parameters)) = types.split_first() {
+                                environment
+                                    .expect_parameters(value.span.clone(), parameters.to_vec());
+                            }
+                        }
+                        (ExprKind::Call { .. }, _) => {
+                            environment.expect_result(value.span.clone(), expected);
+                        }
+                        (
+                            ExprKind::Binary {
+                                operator: Binary::Pipeline,
+                                right,
+                                ..
+                            },
+                            _,
+                        ) => environment.expect_result(right.span.clone(), expected),
+                        _ => {}
+                    }
                 }
                 let callable = if let Pattern::Binding(name) = pattern {
                     callable_signature(value, &expression.span, environment)?
@@ -4796,6 +4816,33 @@ fn static_map_member_binding(
     })
 }
 
+/// Declares the VM's own builtins with a fixed result. `cfg` gives a
+/// configured value as it is when it does not convert to its fallback's type,
+/// and `describe` a module's shape, so they stay dynamic.
+fn declare_vm_builtins(environment: &mut Environment) {
+    for (name, label, parameter, result) in [
+        ("int", "value", Type::Num, Type::Num),
+        ("stacktrace", "error", Type::universal(), Type::Str),
+    ] {
+        if environment.lookup(name).is_none() {
+            let mut binding = SemanticBinding::callable(CallableSignature {
+                generic_arity: 0,
+                type_parameter_names: Vec::new(),
+                parameters: vec![super::environment::CallableParameter {
+                    label: Some(label.into()),
+                    value_type: parameter,
+                    has_default: false,
+                    variadic: false,
+                }],
+                result,
+                inferred_alternatives: Vec::new(),
+            });
+            binding.implicit = true;
+            environment.declare(name.into(), binding);
+        }
+    }
+}
+
 /// Declares the enum type `name` and its binding, whose members are its
 /// fieldless cases; [`declare_enum_payloads`] adds its payload cases.
 fn declare_enum(environment: &mut Environment, expression: &Expr, module_name: Option<&str>) {
@@ -5264,6 +5311,7 @@ fn check_call(
                 }
             }),
         };
+        let expected_result = environment.expected_result(&expression.span);
         let mut actuals = piped.into_iter().collect::<Vec<_>>();
         let piped_count = actuals.len();
         for (position, argument) in arguments.iter().enumerate() {
@@ -5273,6 +5321,7 @@ fn check_call(
                     piped_count + position,
                     argument,
                     &actuals,
+                    expected_result.as_ref(),
                     environment,
                 );
             }
@@ -5333,6 +5382,7 @@ fn check_call(
                 &expression.span,
                 environment,
                 callables.len() == 1,
+                expected_result.as_ref().filter(|_| callables.len() == 1),
             )? {
                 applicable.push(candidate);
             }
@@ -5430,6 +5480,7 @@ fn expect_function_argument(
     position: usize,
     argument: &CallArgument,
     earlier: &[Type],
+    expected_result: Option<&Type>,
     environment: &Environment,
 ) {
     let (value, parameter) = match argument {
@@ -5449,7 +5500,9 @@ fn expect_function_argument(
     if parameter.variadic {
         return;
     }
-    let mut substitutions = HashMap::new();
+    let mut substitutions = expected_result.map_or_else(HashMap::new, |expected| {
+        expected_seed(signature, earlier, expected, &value.span)
+    });
     for (earlier_parameter, actual) in signature.parameters.iter().zip(earlier) {
         if earlier_parameter.variadic || is_dynamic_operation_type(actual) {
             continue;
@@ -5468,6 +5521,48 @@ fn expect_function_argument(
     {
         environment.expect_parameters(value.span.clone(), parameters.to_vec());
     }
+}
+
+/// The type arguments the type an annotation gives a call's result
+/// determines and its non-function arguments do not, as the accumulator of
+/// `val names:list<str> = reduce(xs, [], f)`, which `[]` leaves open. An
+/// argument that says more wins: `find([nil, 3], f)` keeps `num|nil`.
+fn expected_seed(
+    signature: &CallableSignature,
+    actuals: &[Type],
+    expected: &Type,
+    span: &SourceSpan,
+) -> HashMap<usize, Type> {
+    let mut from_arguments = HashMap::new();
+    for (parameter, actual) in signature.parameters.iter().zip(actuals) {
+        if parameter.variadic
+            || is_dynamic_operation_type(actual)
+            || matches!(actual, Type::Function(_))
+        {
+            continue;
+        }
+        let _ = infer(&parameter.value_type, actual, &mut from_arguments, span);
+    }
+    let mut from_expected = HashMap::new();
+    let _ = infer(&signature.result, expected, &mut from_expected, span);
+    from_expected
+        .into_iter()
+        .filter(|(index, _)| from_arguments.get(index).is_none_or(is_undetermined))
+        .collect()
+}
+
+/// Whether inference learned nothing of a type argument's contents: an
+/// unknown, or a collection of unknown elements, as `[]` gives.
+fn is_undetermined(value_type: &Type) -> bool {
+    matches!(
+        value_type,
+        Type::Unknown
+            | Type::List(None)
+            | Type::Map(None)
+            | Type::Function(None)
+            | Type::Task(None)
+            | Type::Channel(None)
+    )
 }
 
 fn check_argument(
@@ -5511,8 +5606,15 @@ fn instantiate_candidate(
     span: &SourceSpan,
     environment: &Environment,
     report_mismatch: bool,
+    expected_result: Option<&Type>,
 ) -> Result<Option<InstantiatedCandidate>, SourceError> {
-    let mut substitutions = HashMap::new();
+    let mut substitutions = if explicit.is_none()
+        && let Some(expected) = expected_result
+    {
+        expected_seed(signature, actuals, expected, span)
+    } else {
+        HashMap::new()
+    };
     if let Some(explicit) = explicit {
         if explicit.len() != signature.generic_arity {
             if report_mismatch {
@@ -7668,6 +7770,7 @@ mod tests {
             &SourceSpan::new("test", 1, 1),
             &Environment::new(),
             true,
+            None,
         );
         let Err(error) = result else {
             panic!("incompatible generic arguments must fail");

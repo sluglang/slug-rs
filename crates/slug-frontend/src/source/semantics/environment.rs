@@ -272,6 +272,8 @@ pub(super) struct SemanticAnalysis {
 
 #[derive(Clone, Debug, Default)]
 struct SemanticRecords {
+    /// For a call whose result an annotation describes, that type.
+    expected_results: HashMap<SourceSpan, Type>,
     /// For a function body that is a `match` without a subject, the type of
     /// the arguments it matches.
     implicit_subjects: HashMap<SourceSpan, Type>,
@@ -903,6 +905,19 @@ impl Environment {
     /// The type of the arguments the subject-less `match` at `span` matches.
     pub(super) fn implicit_subject(&self, span: &SourceSpan) -> Option<Type> {
         self.records.borrow().implicit_subjects.get(span).cloned()
+    }
+
+    /// Records the type an annotation gives the result of the call at `span`.
+    pub(super) fn expect_result(&self, span: SourceSpan, value_type: Type) {
+        self.records
+            .borrow_mut()
+            .expected_results
+            .insert(span, value_type);
+    }
+
+    /// The type an annotation gives the result of the call at `span`.
+    pub(super) fn expected_result(&self, span: &SourceSpan) -> Option<Type> {
+        self.records.borrow().expected_results.get(span).cloned()
     }
 
     /// Records the parameter types expected of the function literal at
