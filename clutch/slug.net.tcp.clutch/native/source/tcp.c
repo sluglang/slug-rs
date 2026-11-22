@@ -1702,7 +1702,13 @@ static const char *system_message(int64_t detail) {
   static _Thread_local char message[512];
   wchar_t wide[256];
   DWORD length;
-  if (detail > 0 && detail < 10000) return strerror((int)detail);
+  if (detail > 0 && detail < 10000) {
+    /* MSVC's C library deprecates `strerror`, which shares one buffer. */
+    if (strerror_s(message, sizeof message, (int)detail) != 0) {
+      snprintf(message, sizeof message, "error %lld", (long long)detail);
+    }
+    return message;
+  }
   length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL,
                           (DWORD)detail, 0, wide, sizeof wide / sizeof wide[0], NULL);
   /* Without the trailing ".\r\n" the system adds. */
