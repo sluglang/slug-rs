@@ -2427,6 +2427,7 @@ fn function_type(
             .transpose()?
             .unwrap_or(Type::Unknown),
         inferred_alternatives: Vec::new(),
+        result_unproven: None,
     })
 }
 
@@ -2603,6 +2604,10 @@ fn check_function_body_in_scope(
                 }
             })?;
             scoped.record_boundary_check(span, &completed, expected, CheckPlace::Result);
+            note_generic_result(&scoped, &completed, expected);
+        }
+        if scoped.result_unproven() {
+            scoped.record_unproven_result(span.clone());
         }
         // The function produces its body's value or any `return`'s, which were
         // each checked against `expected` where they occur.
@@ -2875,7 +2880,12 @@ fn check_expression_inner(
                     && let Type::Function(Some(types)) = &actual
                     && let Some(result) = types.first()
                 {
-                    environment.update_callable_result(name, &signature.identity(), result.clone());
+                    environment.update_callable_result(
+                        name,
+                        &signature.identity(),
+                        result.clone(),
+                        environment.has_unproven_result(&value.span),
+                    );
                 }
                 let declared = annotation
                     .as_ref()
@@ -2927,7 +2937,7 @@ fn check_expression_inner(
             ExprKind::Foreign {
                 name, signature, ..
             } => {
-                let callable = function_type(
+                let mut callable = function_type(
                     &signature.type_parameters,
                     &signature.parameters,
                     signature.return_annotation.as_ref(),
@@ -2935,12 +2945,20 @@ fn check_expression_inner(
                     environment,
                     None,
                 )?;
+                // Its result is checked when the host function returns.
+                callable.result_unproven = Some(false);
                 environment.record_foreign(
                     expression.span.clone(),
                     callable.identity(),
                     super::environment::foreign_resource_signature(&callable),
                 );
                 let value_type = function_value_type(&callable);
+                environment.record_boundary_check(
+                    &expression.span,
+                    &Type::Unknown,
+                    &callable.result,
+                    CheckPlace::ForeignResult,
+                );
                 environment.declare_callable(name.clone(), callable, &expression.span)?;
                 for parameter in &signature.parameters {
                     if let Some(default) = &parameter.default {
@@ -3247,6 +3265,7 @@ fn check_expression_inner(
                         &expected,
                         CheckPlace::Result,
                     );
+                    note_generic_result(environment, &actual, &expected);
                 }
                 environment.record_return(actual.clone());
                 Ok(actual)
@@ -3269,6 +3288,7 @@ fn check_expression_inner(
                             &expected,
                             CheckPlace::Result,
                         );
+                        note_generic_result(environment, &handled, &expected);
                     }
                     environment.record_return(handled);
                 }
@@ -3654,6 +3674,12 @@ fn check_expression_inner(
                         .with_extent(value));
                     }
                     let actual = check_expression(value, environment, type_parameters)?;
+                    if schema_binding.is_none() {
+                        environment.record_runtime_check(
+                            &expression.span,
+                            CheckPlace::SchemaField(name.clone()),
+                        );
+                    }
                     if let Some(schema) = &schema_binding {
                         let expected = schema.members.get(name).ok_or_else(|| {
                             SourceError::semantic(
@@ -3725,6 +3751,12 @@ fn check_expression_inner(
                         .with_extent(replacement));
                     }
                     let actual = check_expression(replacement, environment, type_parameters)?;
+                    if schema.is_none() && may_be_struct_of_unknown_schema(&result) {
+                        environment.record_runtime_check(
+                            &expression.span,
+                            CheckPlace::SchemaField(name.clone()),
+                        );
+                    }
                     map_replacements.push(actual.clone());
                     record_fields.push((name.clone(), actual.clone()));
                     if let Some(schema) = &schema {
@@ -4899,6 +4931,7 @@ fn declare_vm_builtins(environment: &mut Environment) {
                 }],
                 result,
                 inferred_alternatives: Vec::new(),
+                result_unproven: Some(false),
             });
             binding.implicit = true;
             environment.declare(name.into(), binding);
@@ -5499,8 +5532,122 @@ fn check_call(
             environment
                 .record_selected_call(expression.span.clone(), most_specific[0].identity.clone());
         }
+        check_generic_result(
+            &callables,
+            most_specific[0],
+            arguments,
+            &actuals[..piped_count],
+            expression,
+            environment,
+        );
         Ok(most_specific[0].result.clone())
     })
+}
+
+/// Records a check of a generic call's result where its callee cannot
+/// vouch for it, at a type parameter: when the callee's result is unproven,
+/// which a callee declared later in the module is only known to be once the
+/// module is checked, or when a type argument may come from a function
+/// value, whose type nothing enforced, as `map(xs, g)` for a `g` that was
+/// only checked to be a function.
+fn check_generic_result(
+    callables: &[CallableSignature],
+    selected: &InstantiatedCandidate,
+    arguments: &[CallArgument],
+    piped: &[Type],
+    expression: &Expr,
+    environment: &Environment,
+) {
+    let Some(signature) = callables
+        .iter()
+        .find(|signature| signature.identity() == selected.identity)
+    else {
+        return;
+    };
+    if first_generic_parameter(&signature.result).is_none() || selected.result.accepts_every_value()
+    {
+        return;
+    }
+    let unproven_function = piped.iter().any(holds_function_signature)
+        || arguments.iter().any(|argument| match argument {
+            CallArgument::Positional(value) | CallArgument::Named { value, .. } => {
+                is_unproven_function_value(value, environment)
+            }
+            CallArgument::Spread(_) => false,
+        });
+    if !unproven_function && signature.result_unproven != Some(true) {
+        if signature.result_unproven.is_none() {
+            environment.record_conditional_result(
+                expression.span.clone(),
+                selected.result.clone(),
+                selected.identity.clone(),
+            );
+        }
+        return;
+    }
+    environment.record_boundary_check(
+        &expression.span,
+        &Type::Unknown,
+        &selected.result,
+        CheckPlace::CallResult,
+    );
+}
+
+/// Whether `value` may hold a function whose type the checker has but
+/// nothing enforced: one that is neither a function literal nor a declared
+/// function, which are checked as they are defined, but has a function type,
+/// as a parameter `g:fn<num, str>` does, or holds one.
+fn is_unproven_function_value(value: &Expr, environment: &Environment) -> bool {
+    if matches!(value.kind, ExprKind::Function { .. })
+        || expression_binding(value, environment)
+            .is_some_and(|binding| !binding.callables.is_empty())
+    {
+        return false;
+    }
+    environment
+        .recorded_expression_type(&value.span)
+        .is_some_and(|value_type| holds_function_signature(&value_type))
+}
+
+/// Whether a value of `value_type` is, or holds, a function of known type.
+fn holds_function_signature(value_type: &Type) -> bool {
+    match value_type {
+        Type::Function(signature) => signature.is_some(),
+        Type::List(Some(value)) | Type::Task(Some(value)) | Type::Channel(Some(value)) => {
+            holds_function_signature(value)
+        }
+        Type::Map(Some((key, value))) => {
+            holds_function_signature(key) || holds_function_signature(value)
+        }
+        Type::Tuple(values) | Type::Union(values) => values.iter().any(holds_function_signature),
+        Type::Record { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| holds_function_signature(value)),
+        Type::Struct(_, arguments) | Type::Enum(_, arguments) => {
+            arguments.iter().any(holds_function_signature)
+        }
+        Type::Recursive { .. } => holds_function_signature(&value_type.unfolded()),
+        _ => false,
+    }
+}
+
+/// Whether a copy of a value of `value_type` may copy a struct whose schema
+/// the checker does not know, whose fields' annotations are then known only
+/// when it runs.
+fn may_be_struct_of_unknown_schema(value_type: &Type) -> bool {
+    match value_type {
+        Type::Unknown | Type::Any | Type::Struct(None, _) => true,
+        Type::Union(members) => members.iter().any(may_be_struct_of_unknown_schema),
+        _ => false,
+    }
+}
+
+/// Notes, for a function whose declared result `expected` has a type
+/// parameter, whether `actual` proves it there.
+fn note_generic_result(environment: &Environment, actual: &Type, expected: &Type) {
+    if first_generic_parameter(expected).is_some() {
+        environment.note_result(actual, expected);
+    }
 }
 
 fn check_function_value_call(
@@ -6894,6 +7041,84 @@ mod tests {
     }
 
     #[test]
+    fn a_generic_call_checks_a_result_its_callee_could_not_prove() {
+        let checks = recorded_checks(
+            "val dynamic = fn(x) { x }\n\
+             val launder = fn<T>(x:T):T { dynamic(x) }\n\
+             val n:num = launder(1)\n\
+             val early = fn():num { later(1) }\n\
+             val later = fn<T>(x:T):T { dynamic(x) }\n\
+             val identity = fn<T>(x:T):T { x }\n\
+             val m:num = identity(1)\n\
+             val outer = fn():num {\n\
+               val first = fn():num { second(1) }\n\
+               val second = fn<T>(x:T):T { dynamic(x) }\n\
+               first()\n\
+             }\n",
+        );
+        assert_eq!(
+            checks,
+            vec![
+                (3, CheckPlace::CallResult, "num".into()),
+                // A call before its callee is checked has an unknown
+                // result, which its caller checks.
+                (4, CheckPlace::Result, "num".into()),
+                (9, CheckPlace::Result, "num".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_type_argument_from_an_unchecked_function_value_leaves_the_result_unproven() {
+        let checks = recorded_checks(
+            "val apply = fn<T, U>(x:T, f:fn<U, T>):U { f(x) }\n\
+             val viaValue = fn(g:fn<str, num>):str { apply(1, g) }\n\
+             val viaLiteral = fn():str { apply(1, fn(n) { \"s\" }) }\n",
+        );
+        let parameter = |name: &str, index| CheckPlace::Parameter {
+            name: name.into(),
+            index,
+            inferred: false,
+        };
+        assert_eq!(
+            checks,
+            vec![
+                (1, parameter("f", 1), "fn<T1, T0>".into()),
+                (2, CheckPlace::CallResult, "str".into()),
+                (2, parameter("g", 0), "fn<str, num>".into()),
+                (
+                    3,
+                    CheckPlace::Parameter {
+                        name: "n".into(),
+                        index: 0,
+                        inferred: true,
+                    },
+                    "num".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_foreign_result_and_a_struct_of_unknown_schema_are_checked() {
+        let checks = recorded_checks(
+            "foreign raw = fn(x:num):num\n\
+             foreign loose = fn(x)\n\
+             val make = fn(s) { s { name: \"x\" } }\n\
+             val change = fn(p) { p copy { name: \"x\" } }\n\
+             val record = {name: \"a\"} copy { name: \"b\" }\n",
+        );
+        assert_eq!(
+            checks,
+            vec![
+                (1, CheckPlace::ForeignResult, "num".into()),
+                (3, CheckPlace::SchemaField("name".into()), "unknown".into()),
+                (4, CheckPlace::SchemaField("name".into()), "unknown".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn inferred_signatures_propagate_direct_calls() {
         let signatures = analyzed_signatures(
             "export val divide = fn(value) { value / 10 }\n\
@@ -6966,6 +7191,7 @@ mod tests {
                 parameters: Vec::new(),
                 result: Type::Unknown,
                 inferred_alternatives: Vec::new(),
+                result_unproven: Some(false),
             }
             .identity(),
         }
@@ -7647,6 +7873,7 @@ mod tests {
             }],
             result: Type::union([Type::Generic(0), Type::Nil]),
             inferred_alternatives: Vec::new(),
+            result_unproven: Some(false),
         };
         let database = Type::Resource(ResourceIdentity::declared("db.slug", "Database"));
         let status = Type::Enum(
@@ -7817,6 +8044,7 @@ mod tests {
             }],
             result: Type::union([Type::Generic(0), Type::Nil]),
             inferred_alternatives: Vec::new(),
+            result_unproven: Some(false),
         };
         let actual = Type::List(Some(Box::new(Type::Str)));
         let mut inferred = HashMap::new();
@@ -7958,6 +8186,7 @@ mod tests {
             ],
             result: Type::Generic(0),
             inferred_alternatives: Vec::new(),
+            result_unproven: Some(false),
         };
         let result = instantiate_candidate(
             &signature,

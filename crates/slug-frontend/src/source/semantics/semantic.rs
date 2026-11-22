@@ -280,18 +280,34 @@ pub(super) fn with_type_parameter_names<R>(names: &[String], work: impl FnOnce()
     result
 }
 
+/// How assignability is being decided.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Proving {
+    /// What may be assigned: an undetermined part conforms to anything.
+    Allowed,
+    /// What a runtime check would not reject, which tests nothing of a type
+    /// parameter.
+    Checked,
+    /// What is certain, a type parameter included.
+    Exact,
+}
+
 std::thread_local! {
-    /// Whether assignability is being proven, by `is_proven_assignable_to`,
-    /// rather than allowed.
-    static PROVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PROVING: std::cell::Cell<Proving> = const { std::cell::Cell::new(Proving::Allowed) };
 }
 
 fn proving() -> bool {
-    PROVING.with(std::cell::Cell::get)
+    PROVING.with(std::cell::Cell::get) != Proving::Allowed
 }
 
-/// Runs `work` with assignability proven or allowed, as `proving` says.
-fn with_proving<R>(proving: bool, work: impl FnOnce() -> R) -> R {
+/// Whether a type parameter accepts any value, as a runtime check of it,
+/// which is erased, does.
+fn parameters_accept_any_value() -> bool {
+    PROVING.with(std::cell::Cell::get) != Proving::Exact
+}
+
+/// Runs `work` deciding assignability as `proving` says.
+fn with_proving<R>(proving: Proving, work: impl FnOnce() -> R) -> R {
     let outer = PROVING.with(|flag| flag.replace(proving));
     let result = work();
     PROVING.with(|flag| flag.set(outer));
@@ -783,7 +799,7 @@ impl Type {
 
     pub(super) fn union(members: impl IntoIterator<Item = Self>) -> Self {
         // A union is normalized by what may be assigned, even while proving.
-        with_proving(false, || Self::normalized_union(members))
+        with_proving(Proving::Allowed, || Self::normalized_union(members))
     }
 
     fn normalized_union(members: impl IntoIterator<Item = Self>) -> Self {
@@ -951,18 +967,31 @@ impl Type {
     /// parameter, those conform by kind alone, and a type parameter accepts
     /// any value.
     pub(super) fn is_proven_assignable_to(&self, expected: &Self) -> bool {
-        self.is_assignable_to(expected) && with_proving(true, || self.is_assignable_to(expected))
+        self.is_assignable_to(expected)
+            && with_proving(Proving::Checked, || self.is_assignable_to(expected))
+    }
+
+    /// Whether every value of this type certainly conforms to `expected`,
+    /// type parameters included: as `is_proven_assignable_to`, except that a
+    /// type parameter accepts only itself. A function whose result is
+    /// proven only as far as a check goes may return, for its `T`, a value
+    /// the checker could not determine.
+    pub(super) fn is_exactly_assignable_to(&self, expected: &Self) -> bool {
+        self.is_proven_assignable_to(expected)
+            && with_proving(Proving::Exact, || self.is_assignable_to(expected))
     }
 
     /// Whether every value conforms to this type, as far as a runtime check
     /// can tell: `any|nil`, `unknown`, or a union with a type parameter.
     pub(super) fn accepts_every_value(&self) -> bool {
         match self {
-            Self::Unknown | Self::Generic(_) => true,
+            Self::Unknown => true,
+            Self::Generic(_) => parameters_accept_any_value(),
             Self::Union(members) => {
-                members
-                    .iter()
-                    .any(|member| matches!(member, Self::Generic(_)))
+                (parameters_accept_any_value()
+                    && members
+                        .iter()
+                        .any(|member| matches!(member, Self::Generic(_))))
                     || (members.contains(&Self::Any) && members.contains(&Self::Nil))
             }
             Self::Recursive { .. } => self.unfolded().accepts_every_value(),
@@ -989,7 +1018,13 @@ impl Type {
         if self == expected || matches!(self, Self::Never) {
             return true;
         }
-        if proving() && expected.accepts_every_value() {
+        // A type parameter stands for some type, nilable or not, which
+        // `any|nil` covers either way.
+        if (proving() && expected.accepts_every_value())
+            || (matches!(self, Self::Generic(_))
+                && matches!(expected, Self::Union(members)
+                    if members.contains(&Self::Any) && members.contains(&Self::Nil)))
+        {
             return true;
         }
         if matches!(self, Self::Unknown) {
@@ -1074,16 +1109,9 @@ impl Type {
                 }
                 _ => false,
             },
-            Self::Tuple(expected) => match self {
-                Self::Tuple(actual) => {
-                    actual.len() == expected.len()
-                        && actual
-                            .iter()
-                            .zip(expected)
-                            .all(|(actual, expected)| actual.is_assignable_to(expected))
-                }
-                _ => false,
-            },
+            Self::Tuple(expected) => {
+                matches!(self, Self::Tuple(actual) if tuple_assignable(actual, expected))
+            }
             _ => false,
         }
     }
@@ -1187,6 +1215,16 @@ impl Type {
             _ => false,
         }
     }
+}
+
+/// Whether a tuple of `actual` elements conforms to one of `expected`
+/// elements: of the same length, element by element.
+fn tuple_assignable(actual: &[Type], expected: &[Type]) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual.is_assignable_to(expected))
 }
 
 /// Whether every field of a record type accepts every value.

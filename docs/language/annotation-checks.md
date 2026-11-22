@@ -43,9 +43,18 @@ runtime checks it at the value's source instead:
 | A receive from a `chan<T>`, or a `select` receive case | The channel was only checked to be a channel | The received value, against `T` |
 | An `await` of a `task<T>` | The task was only checked to be a task | The task's result, against `T` |
 | A call to a `foreign` function with a result annotation | Host code is not typed | The result, when the host function returns |
+| A generic call whose callee may return, at a type parameter, a value it could not prove | A type parameter's check is erased, so the callee cannot check it | The result, at the call, against the type the call instantiates |
+| A generic call with an argument that is, or holds, a function value other than a function literal or a declared function | The value was only checked to be a function, and a type argument may come from its type | The result, at the call, against the type the call instantiates |
 
 A function type's result, `T`, or a payload, that is a type parameter or
 `any|nil` is not checked: nothing relies on it.
+
+So in `fn<T>(x:T):T { helper(x) }`, with `helper` unannotated, the function
+cannot check what it returns, and `val n:num = launder(1)` checks `n`'s
+value at the call. And `map(xs, g)`, where `g` is a parameter of type
+`fn<num, str>`, checks that its result is a `list<num>`, since nothing made
+`g` return numbers; `map(xs, fn(s) { len(s) })` checks nothing there, as the
+literal's result is proven.
 
 A builtin's result is proven: the runtime provides the builtins and their
 signatures together.
@@ -64,6 +73,7 @@ is made.
 | A rest parameter `...name:list<T>` | The list of rest arguments | On entry |
 | A function's result annotation `:T` | The value it completes with, by reaching the end of its body or by `return` | When it returns |
 | A struct field `name:T` | The field's value against `T`, with the struct's type arguments | At construction, and at a `copy` that replaces the field |
+| A field of a struct whose schema the checker does not know, as `s { name: v }` or `p copy { name: v }` for unannotated `s` and `p` | The value against the schema's annotation for the field, read when it runs | At construction or the copy |
 | The sources in the table above | As described there | At the source |
 
 **What the checker relied on is checked, annotated or not.** A `var`'s type

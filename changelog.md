@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A generic function may pass a value of its type parameter to a function
+  that takes any value: `fn<T>(x:T):T { log(x); x }` was rejected with
+  `expected any|nil, got T` when `log`'s parameter was unannotated or
+  `any|nil`.
+
 - An annotation on a call's result fills in what its arguments leave open:
   `val names:list<str> = reduce(xs, [], fn(acc, n) { ... })` makes `acc` a
   `list<str>` where `[]` said nothing, so `acc :+ n` with a number is

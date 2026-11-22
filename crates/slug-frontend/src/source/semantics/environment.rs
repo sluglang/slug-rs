@@ -24,6 +24,11 @@ pub(super) struct CallableSignature {
     pub(super) parameters: Vec<CallableParameter>,
     pub(super) result: Type,
     pub(super) inferred_alternatives: Vec<InferredAlternative>,
+    /// Whether a value the checker could not prove may reach a type
+    /// parameter in the result, where the function cannot check it: a
+    /// caller then checks the result it instantiates. `None` until the
+    /// function's body is checked, for a call that precedes it.
+    pub(super) result_unproven: Option<bool>,
 }
 
 impl CallableSignature {
@@ -276,9 +281,15 @@ pub(super) enum CheckPlace {
     },
     /// The field `name` of a struct being constructed or copied.
     Field(String),
-    /// What a call through a function value returns, which the function
-    /// value's type describes but nothing enforced.
+    /// What a call returns where nothing enforced its type: a call through
+    /// a function value, whose type describes it, or a generic call whose
+    /// instantiated result the callee could not prove.
     CallResult,
+    /// What a `foreign` function returns, which host code gives.
+    ForeignResult,
+    /// The field `name` of a struct whose schema is known only when it runs,
+    /// constructed or copied: checked against that schema's annotation.
+    SchemaField(String),
 }
 
 /// A runtime check where a value whose type the checker could not prove
@@ -328,6 +339,14 @@ struct SemanticRecords {
     match_constraints: HashMap<SourceSpan, Vec<Option<Type>>>,
     expression_types: HashMap<SourceSpan, Type>,
     boundary_checks: HashMap<SourceSpan, Vec<BoundaryCheck>>,
+    /// The function literals whose result a value the checker could not
+    /// prove may reach at a type parameter.
+    unproven_results: HashSet<SourceSpan>,
+    /// Generic calls whose result is checked if their callee, by identity,
+    /// turns out to be one of `unproven_results`, which a callee declared
+    /// later in the module is not yet known to be: each as the call, its
+    /// instantiated result, and the callee.
+    conditional_results: Vec<(SourceSpan, Type, CallableIdentity)>,
     selected_globals: HashSet<String>,
     unknown_selection: bool,
 }
@@ -378,6 +397,9 @@ type Scope = HashMap<String, Rc<SemanticBinding>>;
 struct FunctionReturns {
     expected: Option<Type>,
     returned: Vec<Type>,
+    /// Whether a value the checker could not prove may reach a type
+    /// parameter in the result.
+    result_unproven: bool,
 }
 
 impl Environment {
@@ -463,6 +485,7 @@ impl Environment {
         self.function = Some(Rc::new(RefCell::new(FunctionReturns {
             expected,
             returned: Vec::new(),
+            result_unproven: false,
         })));
     }
 
@@ -471,6 +494,71 @@ impl Environment {
         self.function
             .as_ref()
             .and_then(|function| function.borrow().expected.clone())
+    }
+
+    /// Notes that the function being checked may complete with a value of
+    /// type `actual`, where its declared result is `expected`: when a part
+    /// of it the checker could not prove reaches a type parameter, which a
+    /// runtime check cannot test, the result is unproven.
+    pub(super) fn note_result(&self, actual: &Type, expected: &Type) {
+        if let Some(function) = &self.function
+            && !actual.is_exactly_assignable_to(expected)
+        {
+            function.borrow_mut().result_unproven = true;
+        }
+    }
+
+    /// Whether the function being checked has an unproven result.
+    pub(super) fn result_unproven(&self) -> bool {
+        self.function
+            .as_ref()
+            .is_some_and(|function| function.borrow().result_unproven)
+    }
+
+    /// Records that the function literal at `span` has an unproven result.
+    pub(super) fn record_unproven_result(&self, span: SourceSpan) {
+        if !self.in_trial() {
+            self.records.borrow_mut().unproven_results.insert(span);
+        }
+    }
+
+    /// Whether the function literal at `span` has an unproven result.
+    pub(super) fn has_unproven_result(&self, span: &SourceSpan) -> bool {
+        self.records.borrow().unproven_results.contains(span)
+    }
+
+    /// Records that the generic call at `site`, of the callee `identity`,
+    /// checks its result against `result` if the callee's result is
+    /// unproven, which may be known only once the module is checked.
+    pub(super) fn record_conditional_result(
+        &self,
+        site: SourceSpan,
+        result: Type,
+        identity: CallableIdentity,
+    ) {
+        if !self.in_trial() {
+            self.records
+                .borrow_mut()
+                .conditional_results
+                .push((site, result, identity));
+        }
+    }
+
+    /// Records that a runtime check is made at `site` whatever the checker
+    /// knows, as `place` says: one against a type known only when it runs.
+    pub(super) fn record_runtime_check(&self, site: &SourceSpan, place: CheckPlace) {
+        if self.in_trial() {
+            return;
+        }
+        let check = BoundaryCheck {
+            expected: Type::Unknown,
+            place,
+        };
+        let mut records = self.records.borrow_mut();
+        let checks = records.boundary_checks.entry(site.clone()).or_default();
+        if !checks.contains(&check) {
+            checks.push(check);
+        }
     }
 
     /// Records the type a `return` in the current function produces.
@@ -590,6 +678,7 @@ impl Environment {
         name: &str,
         identity: &CallableIdentity,
         result: Type,
+        result_unproven: bool,
     ) {
         let Some(binding) = self.innermost_binding_mut(name) else {
             return;
@@ -600,6 +689,7 @@ impl Environment {
             .find(|signature| signature.identity() == *identity)
         {
             signature.result = result;
+            signature.result_unproven = Some(result_unproven);
             binding.value_type = function_value_type(signature);
         }
     }
@@ -1025,6 +1115,26 @@ impl Environment {
 
     pub(super) fn analysis(&self, snapshot: ModuleSnapshot) -> SemanticAnalysis {
         let records = self.records.borrow();
+        // A generic call checks its result when its callee, declared here,
+        // turned out to have an unproven result.
+        let unproven = records
+            .unproven_results
+            .iter()
+            .filter_map(|span| records.function_identities.get(span))
+            .collect::<Vec<_>>();
+        let mut boundary_checks = records.boundary_checks.clone();
+        for (site, result, identity) in &records.conditional_results {
+            if unproven.contains(&identity) {
+                let check = BoundaryCheck {
+                    expected: result.clone(),
+                    place: CheckPlace::CallResult,
+                };
+                let checks = boundary_checks.entry(site.clone()).or_default();
+                if !checks.contains(&check) {
+                    checks.push(check);
+                }
+            }
+        }
         SemanticAnalysis {
             snapshot,
             session_snapshot: self.session_snapshot(),
@@ -1034,7 +1144,7 @@ impl Environment {
             foreign_resource_signatures: records.foreign_resource_signatures.clone(),
             match_constraints: records.match_constraints.clone(),
             expression_types: records.expression_types.clone(),
-            boundary_checks: records.boundary_checks.clone(),
+            boundary_checks,
             selected_globals: (!records.unknown_selection)
                 .then(|| records.selected_globals.clone()),
         }
@@ -1095,6 +1205,7 @@ mod tests {
             }],
             result,
             inferred_alternatives: Vec::new(),
+            result_unproven: Some(false),
         }
     }
 

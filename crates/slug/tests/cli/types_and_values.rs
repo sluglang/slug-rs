@@ -3256,3 +3256,23 @@ fn a_declaration_replaces_an_implicit_builtin_of_the_same_name() {
     assert_eq!(code, Some(1));
     assert!(stderr.contains("semantic error: expected num"), "{stderr}");
 }
+
+#[test]
+fn a_type_parameter_reaches_a_parameter_of_any_value() {
+    let path = fixture_path("generic-to-top");
+    fs::write(
+        &path,
+        "val show = fn(x:any|nil) { x }\n\
+         val loose = fn(x) { x }\n\
+         val pass = fn<T>(x:T):T { show(x)\nloose(x)\nx }\n\
+         println(pass(1), pass(nil))\n",
+    )
+    .expect("write generic to top");
+    let output = slug().arg(&path).output().expect("run generic to top");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "1 nil\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -444,7 +444,7 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
 
   75 sites check against a type with a type parameter, whose check is
   partly erased.
-- [ ] Close the gaps the survey found before anything relies on the checks:
+- [x] Close the gaps the survey found before anything relies on the checks:
   - A dynamic value reaching a type parameter in a generic function's
     result, as `fn<T>(x:T):T { helper(x) }`, cannot be checked inside it, so
     the caller must check the instantiated result.
@@ -455,6 +455,24 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   - A `foreign` function's result annotation is not yet recorded as a check.
   - A copy of a struct whose schema the checker does not know needs the
     runtime to check the replaced fields against the schema's annotations.
+
+  Closed in the checker. A function notes whether a value it could not
+  prove reaches a type parameter in its result, by
+  `is_exactly_assignable_to`, where a type parameter accepts only itself,
+  and its signature carries that to callers and importers; a generic call
+  then checks its instantiated result, as it does when an argument is a
+  function value of unenforced type. A call to a callee checked later has an
+  unknown result, which its caller checks already; one whose callee is not
+  yet known is settled when the module is checked. A `foreign` result is a
+  check where it is declared, and a construction or copy of a struct of
+  unknown schema records a check against the schema read when it runs,
+  which the VM needs schemas to carry field types for. The survey then
+  counts 5,956 sites: 215 `foreign` results, 211 fields of structs of
+  unknown schema, mostly copies of values that are maps when they run, for
+  which the check does nothing, and 24 call results, 14 more than before. On
+  the way, a type
+  parameter now conforms to `any|nil`, which it did not: `fn<T>(x:T) {
+  show(x) }` was rejected for a `show` with an unannotated parameter.
 - [ ] Implement the checks in the compiler and the VM, inserting them only
   where the checker recorded one; with native-tier support, since a
   function with an op the tier does not compile runs interpreted.
