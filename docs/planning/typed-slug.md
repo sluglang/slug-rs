@@ -1,0 +1,380 @@
+# Toward a Statically Typed Slug
+
+This document plans moving Slug from optional static checking to sound
+gradual typing, with strict typing everywhere as the end goal to evaluate. It
+is a dependency-ordered roadmap, not a source-language specification: each
+stage must state its user-visible rules in the documents under
+[`language/`](../language/README.md), and record durable choices in
+[`decisions/`](../decisions/), before it is implemented.
+
+It builds on [the type-system plan](type-system-plan.md), whose stages 1–4
+are essentially done, and on [the native tier](native-tier.md), which is the
+main runtime consumer of type facts.
+
+## Purpose
+
+Slug's types today describe programs but promise nothing: an annotation
+neither coerces nor checks a value, and the checker reports only
+contradictions it can prove. That keeps every dynamic program valid, but it
+means no part of the system may rely on a type. The compiler cannot drop a
+check, the native tier cannot keep a `num` unboxed, and a reader cannot trust
+that `name:str` holds a string.
+
+The goal is types that hold: where code is typed, its types are guaranteed at
+run time, so the compiler, the native tier, and readers can depend on them.
+Untyped code stays valid, and the boundary between the two is checked.
+Whether to then require types everywhere is a separate decision, taken on
+evidence once gradual typing works (see [Strict typing as the end
+goal](#strict-typing-as-the-end-goal)).
+
+## What exists
+
+Assessed on 2026-11-22.
+
+| Area | Exists | Gap |
+| --- | --- | --- |
+| Annotations | Bindings, parameters, results, foreign declarations, struct fields. | Non-coercive and unchecked at run time. |
+| Unions and nil | `A\|B`, `str\|nil`, `any` (non-nil top), `any\|nil`. | No source-visible dynamic type; the checker's `unknown` is private. |
+| Generics | `fn<T>` with call-site inference and explicit application. | No generic aliases, structs, or enums; no bounds. |
+| Narrowing | Nil tests, `&&`/`\|\|`, match constraints, branch joins. | Broader predicates stay conservative. |
+| Records | Nominal schemas, `struct<S>`, checked construction, copies, field reads. | No structural record types; maps (most programs' records) are `map<K, V>` only. |
+| Enums | Fieldless, nominal, closed-match coverage. | No payloads; [the variants ADR](../decisions/2026-08-29-named-closed-variants.md) is proposed, deferred. |
+| Aliases | Transparent, exported, non-recursive. | Not generic, not recursive. |
+| Inference | Body-derived parameter facts, return unions, structural `fn` types, generic arguments at calls. | Local and partial; a binding keeps a value's dynamic part ([decision](../decisions/2026-10-18-a-binding-keeps-a-values-dynamic-type.md)). |
+| Runtime type tests | Match constraints test value categories, nominal types, unions, and `list<T>`/`map<K, V>` recursively. | Function types, tuples, task/channel payloads, and generic parameters are not runtime-checkable. |
+
+Two properties of the runtime make soundness cheaper than in most dynamic
+languages. Lists, maps, bytes, structs, and enum values are immutable
+([invariants](immutable-collection-value-redesign.md#invariants)), so a value
+that once satisfied `list<num>` always does; a check's result can be kept with
+the value. And every value is tagged, so a first-order check is one compare,
+which the native tier already performs as a guard.
+
+## The rule under review
+
+[The type-system plan's invariants](type-system-plan.md#scope-and-invariants)
+and [unified source type checking](../decisions/2026-09-05-unified-source-type-checking.md)
+fix three rules:
+
+1. Annotations neither coerce nor add runtime validation.
+2. Only provable contradictions are reported; incomplete information widens
+   conservatively rather than rejecting a program.
+3. No runtime type tags, coercion, or reflection are introduced incidentally.
+
+Rule 3 should stay in spirit: values are already tagged, and soundness needs
+no new representation, only checks. Rule 1 is the one to replace, because it
+is exactly what makes types unreliable. Rule 2 stays for unannotated code,
+which a gradual checker must accept when it cannot type it, but not for
+annotated code, as the second rule below says:
+
+> **Proposed rule.** An annotation is a guarantee. Where a value whose type
+> the checker could not prove flows into a place with a declared or inferred
+> static type, a runtime check verifies it there, and a failed check is a
+> checked runtime error naming that place. Within typed code, the compiler
+> and runtime may rely on every type the checker proved. Annotations still
+> never coerce.
+
+> **Proposed rule.** An annotation is accurate and complete. The type the
+> checker infers for what an annotation describes must conform to it: a
+> function annotated `:num` whose body may return `num|str` is a source
+> error, though today it is accepted because it may return a `num`. Only a
+> part of the inferred type the checker could not determine, coming from
+> unannotated code, is left to a runtime check.
+
+Inferred types need no rule of their own: what inference proves holds, so it
+needs no check, and what it cannot prove stays dynamic, as unannotated code
+is.
+
+This changes behavior for one kind of program: one whose annotations are
+wrong but which never ran into the wrong value's use. Such a program fails
+earlier, at the annotation. That is the intended effect, and the migration
+stage measures how often it happens in the repository's own code.
+
+## The soundness model
+
+Gradual type systems differ in what a boundary check covers. The choice
+decides the cost of soundness and how far the compiler may trust a type.
+
+| Model | Boundary check | Trust inside typed code | Cost |
+| --- | --- | --- | --- |
+| Erasure (today) | None | None | None |
+| Deep / guarded (Typed Racket) | Full value; functions and mutable data wrapped in contracts | Complete | Can be very high: wrappers, repeated deep checks, lost identity |
+| Transient (Reticulated Python) | First-order shape at each boundary and at each use of an element or result | First-order: the tag of what is in hand | Small, spread across uses |
+| Concrete (Thorn, StrongScript) | Values carry their static type; check is a tag compare | Complete for concretely typed values | Needs typed constructors; untyped values cannot enter concrete types |
+
+**Proposal: transient checks, with deep checks for immutable collections.**
+
+- A first-order check at each boundary: a value entering a `num`, `str`,
+  `struct<S>`, enum, or resource type has its tag or identity checked.
+- Immutable collections are checked deeply, once: `list<num>` scans its
+  elements the first time a value crosses into it, and the result is kept
+  with the value (a summary of its element kinds), so later crossings and
+  every element read are free. A value built in typed code from typed
+  elements is born checked.
+- Functions are checked transiently: a typed function checks its arguments
+  on entry when its caller is not proven typed, and a typed caller checks a
+  result it could not prove. No wrappers, so function identity and equality
+  are unchanged.
+- Generic parameters are erased: `fn<T>(x:T):T` checks nothing about `T`,
+  since nothing typed can depend on it beyond what its uses check.
+- Channel and task payloads are checked when a value is received into a
+  typed binding, not when sent.
+
+This gives the native tier what it needs, the tag of the value in hand, at
+the cost of a compare it often already makes. Whether deep collection checks
+cost too much on real programs is measured in stage 6 before they are
+relied on.
+
+**No dynamic type in the source.** Unannotated code is the dynamic part of a
+program: what the checker cannot type there stays unchecked until it meets a
+static type, where it is checked. A `dynamic` annotation would only be a
+bridge to strict typing, and unannotated code already is one. Strict typing
+needs no escape hatch of that kind either: data whose type is not known, such
+as a parsed JSON value, a host value, or a `describe` result, has the top type
+`any|nil`, which code narrows with match constraints and nil tests before it
+relies on more, as sound languages handle an unknown value. The cost is that
+an annotation cannot leave part of a type deliberately unchecked
+(`map<str, dynamic>`); it says `any|nil` and narrows, or the place stays
+unannotated.
+
+## Language features
+
+These are the features the plan adds, in dependency order. Stages 1–5 are
+checker-only and ship under today's rules, so they are useful before
+soundness lands.
+
+- **Generic type aliases.** `type Optional<T> = T|nil`, `type Pair<T, U> =
+  [T, U]`. Transparent, as aliases are now; parameters are erased. An alias
+  may be recursive when every reference to itself is inside a type
+  constructor (`list<>`, `map<>`, a record field, a function or tuple type)
+  and a generic one refers to itself with the same parameters: `type Json =
+  nil|bool|num|str|list<Json>|map<str, Json>` is allowed, `type T = T|nil`
+  and `Tree<T>` referring to `Tree<list<T>>` are not. These rules keep
+  checking decidable; the checker compares recursive types coinductively, and
+  diagnostics print the alias name. A nominal struct or enum may always refer
+  to itself.
+- **Structural record types.** `type Named = {name: str}` describes any value
+  with at least a `name` field holding a string: a map with that string key,
+  or a struct whose schema has that field. Open (width) subtyping, so
+  `{name: str, age: num}` conforms to `Named`. Fields are named by string
+  keys only. There are no optional fields: `age: num|nil` says a field may be
+  absent, since a map without the key reads `nil` there, as it does now.
+  This is the feature real Slug code needs most, since Crawl and most
+  programs pass maps as records.
+- **Generic nominal types.** `struct Pair<T, U> { first: T, second: U }`,
+  and generic schemas behind `struct<S>`. Shares type-parameter machinery
+  with enums.
+- **Payload-bearing and generic enums.** `enum Result<T, E> { Ok { value: T }
+  Error { error: E } }`, constructed as `Result.Ok { value: 3 }`. This
+  revives [the variants ADR](../decisions/2026-08-29-named-closed-variants.md),
+  whose record-shaped payloads it keeps, for consistency with struct
+  construction, and extends with generics. A variant is a distinct nominal
+  identity, coverage is exhaustive, and construction reuses schemas at run
+  time. Payloads are named only. Positional payloads (`Some(T)`) would add
+  a second construction form and new pattern syntax; their main use
+  elsewhere, `Option`, is `T|nil` in Slug already, with nil narrowing doing
+  what matching `None` does. They are revisited once a clutch is typed with
+  `Result`, when a single positional payload could become sugar for one
+  named field.
+- **Inference.** Bidirectional, local inference: types flow down from
+  annotations and expected types and up from expressions, with generic
+  arguments solved per call. Global Hindley–Milner inference is not the
+  target: unions, structural records, and nil narrowing make principal types
+  awkward, and local inference gives errors at the expression that caused
+  them. The measure is how many annotations a typed program needs, not
+  whether none are.
+
+Variance follows from immutability: `list<T>`, `map<K, V>`, records, and
+enum payloads are covariant, and function parameters contravariant. No
+variance annotations are planned.
+
+## What the runtime gains
+
+Measured so far, so expectations are realistic:
+
+- **Numeric code gains most.** The native tier's prototype ran `fib(32)` in
+  24 ms with boxed values and 8.2 ms with typed integers (interpreter 242
+  ms). Proven `num` lets native code keep numbers in registers and drop tag
+  checks.
+- **Data-heavy code gains little from types alone.** In a hand-compiled Crawl
+  function, 92% of native time was runtime work, chiefly map reads and copies.
+  Struct reads were about 0% of Crawl's reads, because it uses maps. Records
+  with a known shape could get a fixed layout, but only once typed code
+  builds them as such: structural record types alone do not change a map.
+- **The `typed-*` benchmark twins** ran the same instruction count as their
+  untyped twins: annotations do nothing at run time today. They are the
+  first measure of stage 7.
+
+So the first payoff is correctness and diagnostics everywhere, and speed in
+numeric code; layout work for records is a later, separate step.
+
+## Strict typing as the end goal
+
+Strict typing everywhere means every module must type-check before it runs:
+inference or annotations type every value, and data of unknown type is
+`any|nil`, narrowed before use. Unannotated code stays allowed wherever
+inference types it. It is
+worth serious evaluation, not adoption by default, because its benefits and
+costs are both large.
+
+**Benefits.** Every value's type is known statically, so boundary checks
+disappear, leaving the narrowing that code writes itself; the native tier can specialize all code;
+tooling (completion, `describe`, typed holes in [the agent-facing
+direction](agent-facing-direction.md)) becomes complete; and a reviewer can
+trust every signature.
+
+**Costs.** Every existing program, clutch, and the standard library must be
+typed. Agents write much of Slug's code, and type errors cost them attempts:
+[a binding keeps a value's dynamic type](../decisions/2026-10-18-a-binding-keeps-a-values-dynamic-type.md)
+was decided because an agent hit a spurious `expected list, got any|nil` and
+had to annotate two functions to continue. Strictness multiplies that
+friction unless inference and diagnostics are good enough to remove it.
+
+**Preconditions.** Strict typing is worth adopting only when, measured on
+the repository's programs and the agent evaluation projects:
+
+- typed programs need few annotations beyond function signatures (target to
+  set in stage 8, such as one per exported function);
+- every type error carries the expected and actual types, and a fix where
+  one is unambiguous;
+- the standard library and shipped clutches are fully typed;
+- agents complete the evaluation projects with no more fix attempts than
+  they need today;
+- the runtime gain is measured, not assumed.
+
+**Path.** Gradual typing first, then opt-in strict modules (a module
+declares it is strict, and everything in it must type), then strict as the
+default once the preconditions hold. Each step is reversible until the
+default changes.
+
+## Stages
+
+Each stage lands its normative documents, grammar changes, support matrix,
+tests, and changelog in the same change, as the [docs rules](../AGENTS.md)
+require.
+
+### 0. Decisions
+
+- [ ] Decision record: annotations are guarantees (replace rule 1 above),
+  and accurate and complete (an annotated place's inferred type must
+  conform), keeping rule 2 for unannotated code and rule 3.
+- [ ] Decision record: the soundness model (transient, deep checks for
+  immutable collections, erased generics), with what is and is not checked.
+- [ ] Decision record: no dynamic source type; unannotated code is the
+  dynamic part, and `any|nil` with narrowing types unknown data.
+- [ ] Update [the type-system plan](type-system-plan.md)'s invariants to
+  point here.
+
+### 1. Generic type aliases
+
+- [ ] Specify parameters, expansion, arity errors, export, and import.
+- [ ] Specify recursive aliases: contractive and regular, compared
+  coinductively.
+- [ ] Implement in the checker; aliases stay transparent and erased.
+
+### 2. Structural record types
+
+- [ ] Specify `{field: Type}` types: which maps and structs conform, width
+  subtyping, absent fields as `nil`, and how they meet `map<K, V>` and
+  `struct<S>`.
+- [ ] Check field reads, construction, copies, and destructuring against
+  them; narrow with match constraints.
+- [ ] Make record types runtime-checkable for match constraints, so stage 6
+  can check them at boundaries.
+
+### 3. Generic nominal types
+
+- [ ] Specify generic schemas and `struct<S<T>>`, construction with
+  inferred type arguments, and field types under substitution.
+- [ ] Implement; type arguments are erased at run time.
+
+### 4. Payload-bearing and generic enums
+
+- [ ] Supersede [the variants ADR](../decisions/2026-08-29-named-closed-variants.md):
+  braced named payloads, generics, construction, patterns, and coverage.
+- [ ] Implement variants as distinct schema identities under the enum's
+  namespace, as the ADR proposed; extend coverage to payload variants.
+- [ ] Type `Result`-style returns in one clutch as the test of the design,
+  and revisit positional payloads then.
+
+### 5. Inference
+
+- [ ] Specify bidirectional checking: expected types for literals, lambdas,
+  and generic calls; where a type flows down.
+- [ ] Infer generic arguments from expected types as well as arguments.
+- [ ] Measure annotations needed on the repository's programs before and
+  after.
+
+### 6. Sound boundaries
+
+- [ ] Specify where checks occur: binding, argument, result, field, element
+  read, receive; the error, with the annotation's location.
+- [ ] Implement the checks in the compiler, inserting them only where a
+  value's type is not proven.
+- [ ] Keep a checked-element summary with immutable collections, and mark
+  values built in typed code as checked.
+- [ ] Measure the cost on every benchmark (interleaved PGO A/B, hold-outs
+  untouched) and on the clutch suites, before anything relies on the checks.
+- [ ] Measure how many of the repository's programs and clutches fail a new
+  check, and fix them or their annotations.
+
+### 7. The runtime uses proven types
+
+- [ ] Native tier: keep proven `num` values unboxed and drop guards the
+  checker made redundant; start with arithmetic loops.
+- [ ] Measure on the `typed-*` twins and on typed versions of Crawl's hot
+  functions.
+- [ ] Evaluate fixed layouts for records typed code builds, separately.
+
+### 8. Typed libraries and strict modules
+
+- [ ] Type the standard library and shipped clutches; record the
+  annotations each needed.
+- [ ] Specify opt-in strict modules, where everything must type and unknown
+  data is narrowed from `any|nil`.
+- [ ] Run the agent evaluation projects in strict and gradual modes and
+  compare fix attempts and completion.
+
+### 9. Strict by default
+
+- [ ] Decide against the preconditions above. If they hold, make strict the
+  default with a migration path; if not, record why gradual typing stays.
+
+## Risks
+
+- **Boundary cost.** Deep collection checks on large values crossing often
+  could cost more than they save. The checked-element summary and stage 6's
+  measurements bound this before the native tier depends on it.
+- **Breaking wrong annotations.** Programs with incorrect annotations that
+  happened to work will fail at the annotation. Stage 6 measures and fixes
+  the repository's own first.
+- **Agent friction.** More type errors cost agents attempts. Diagnostics with
+  expected and actual types, and fixes, are a precondition, not a follow-up.
+- **Specification size.** Generics, records, and variants add rules agents
+  must learn; the spec's size is itself a design constraint
+  ([agent-facing direction](agent-facing-direction.md)).
+- **Two semantics during the transition.** Gradual code checks at boundaries
+  and strict code would not; the tests must cover both until one remains.
+
+## Decisions so far
+
+Taken on 2026-11-22, to be recorded in `decisions/` in stage 0:
+
+- **No dynamic source type.** Unannotated code is the dynamic part during
+  the gradual phase; under strict typing, unknown data is `any|nil`,
+  narrowed before use.
+- **An annotation is accurate and complete.** An annotated place whose
+  inferred type is wider than the annotation is a source error; only parts
+  coming from unannotated code are checked at run time.
+- **Record types have no optional fields.** `field: T|nil` covers absence,
+  as for any nilable value, and only string keys name fields.
+- **Enum payloads are braced named fields,** `Ok { value: T }`, consistent
+  with struct construction. Positional payloads are revisited after a clutch
+  is typed with `Result`.
+- **Recursive aliases** are allowed when contractive and regular; nominal
+  structs and enums may always refer to themselves.
+
+## Open questions
+
+- What annotation density makes strict typing acceptable, and how is it
+  measured fairly?
