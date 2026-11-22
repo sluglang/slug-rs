@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A send on a channel no longer hands its value to a task in a fork that
+  was just cancelled, or in one of that fork's own forks, before the fork
+  has stopped waiting: the value was lost, and a live receiver waited
+  forever. A cancelled fork's pending send is no longer received either.
+
 - Calls to native and foreign functions no longer scan their result for
   non-finite numbers twice: a result is known not to hold one unless the
   function made a float that is not finite, which is still refused. A
