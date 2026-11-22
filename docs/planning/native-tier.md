@@ -1169,6 +1169,43 @@ Leads, outside the tier: skip the non-finite check where a result cannot
 hold a float, and make the foreign-call path cheaper; both help the
 interpreter too.
 
+### The branch after the merge: result (2026-11-22)
+
+`feature/native-match-locals` holds the work after the tier's merge
+(22c18841): parameter matches and defaults, task views and settled-chunk
+retries, Phase 4, the non-finite double scan in native calls, the fork
+cancellation fix, a cap on native frame size, and Windows: the tier on by
+default there, and `slug.io.fs` (with long paths) and `slug.net.tcp`
+ported, all in CI on `windows-latest`.
+
+Against `master` at 22c18841, the branch at 1350122c (9 padded PGO
+rounds): tuned 0.97x, hold-outs 0.98x.
+
+| Workload | Ratio | Spread | Why |
+|---|---:|---:|---|
+| `defer-errors` | 0.83x | 2%/1% | deferred actions run natively |
+| `closure-accumulate` | 0.87x | 3%/2% | parameter matches and defaults |
+| `crawl-game` | 0.90x | 6%/2% | the same, and fewer exits |
+| `crawl-crowd` | 0.94x | 1%/1% | calls in task views |
+| `crawl-history` | 0.96x | 2%/2% | |
+| `http-server` | 0.97x | 2%/6% | |
+| `fannkuch-redux`, `typed-spectral-norm` | 0.97x | | |
+| hold-outs `crawl-pages`, `text-wrap`, `expression-evaluator` | 0.97x | | |
+
+The rest lie from 0.98x to 1.03x, inside their spreads (`higher-order`
+1.03x at 5%/4%; `function-call`, `typed-n-body`, `fib` 1.02x). Memory
+fell where the frame-locals pool had grown (`crawl-game` -5.2 MB,
+`tiny-interpreter` -3.5 MB, `invaders-game` -2.3 MB) and rose where more
+compiles (`crawl-ticks` +4.5 MB, `closure-accumulate` +1.6 MB,
+`higher-order` +0.9 MB); whether `crawl-ticks`' rise is fixed or grows
+with a run is not yet known.
+
+What remains is outside the tier's plan: `Spawn`, `Select`, and
+`CallSelectedPooled` stay interpreted on evidence (Phase 4 closed above);
+the time left in the workloads profiled goes to value copies, builtin and
+foreign calls, and runtime helpers native code calls; and Windows has run
+only in CI, not yet under a real program's load.
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.
