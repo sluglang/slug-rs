@@ -348,6 +348,54 @@ require.
 - [ ] Measure annotations needed on the repository's programs before and
   after.
 
+Survey, 2026-11-22, before any inference work. Each expression the checker
+saw was classed by its type: known, partial (a part is unknown, as `list`
+or `map<str, unknown>`), or unknown (`unknown` or `any|nil`).
+
+| Programs | Expressions | Known | Partial | Unknown | Unknown unannotated parameters |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Crawl | 30,600 | 56% | 24% | 20% | 253 of 303 |
+| `slug.text.markdown` | 17,766 | 90% | 5% | 6% | 3 of 4 |
+| `slug.net.http` | 5,972 | 76% | 10% | 14% | 20 of 20 |
+| `slug.text.mustache` | 2,936 | 58% | 23% | 19% | 16 of 16 |
+| `slug.core` | 9,230 | 60% | 12% | 29% | 339 of 361 |
+| Benchmarks | 16,879 | 61% | 15% | 24% | 415 of 442 |
+
+Where the unknowns come from, most first:
+
+1. **Lambdas passed to untyped higher-order functions.** In Crawl, 241 of
+   the 253 unknown parameters belong to a function literal passed as an
+   argument, mostly to `map`, `filter`, `reduce`, and `each`. Those take
+   `vs:list, f:fn` and return `list`, so neither the lambda's parameters
+   nor the result's elements are known. Generic signatures, as
+   `fn<T, U>(vs:list<T>, f:fn<U, T>):list<U>`, need bidirectional checking:
+   a function literal checked against an expected `fn<R, P...>` takes its
+   parameter types from it, and its result infers `U`. This is the main
+   inference gain.
+2. **Untyped builtins.** Only `chan`, `close`, and `Error` take their
+   `slug.builtin` signatures; `len`, `keys`, and the rest return unknown,
+   639 times for `len` alone. Typing `len` and `keys` cuts unknown
+   expressions in Crawl from 20% to 18%, in http from 14% to 8%, in
+   mustache from 19% to 13%. It breaks two programs (`slug.fmt.json`'s
+   `trimHigh`, the tinylang benchmark): body-derived inference takes `len`'s
+   `str|bytes|list|map` parameter as a constraint on an unannotated
+   parameter, which a later slice then contradicts. A parameter type that
+   is a union of families should not constrain body-derived inference.
+3. **Bare container annotations.** Of Crawl's parameter annotations, 305 of
+   1,283 are bare `map`, `list`, `fn`, or `struct`, and 232 of its 467
+   result annotations are `map` or `list`; most unknown field reads, 1,833,
+   are on a bare `map`. Inference cannot recover these: record types and
+   generic schemas can, through the annotation pass of stage 8.
+4. **Dynamic data.** `slug.fmt.json` results, SQLite rows, and `import` are
+   unknown by nature; stage 6's boundary checks cover them.
+5. **Unannotated top-level functions.** In the benchmarks and `slug.core`,
+   most unknown parameters are top-level functions that use them only
+   dynamically. Local inference does not look at callers, by design.
+
+The order this suggests: type the builtins, with the body-derived fix;
+check function literals against expected function types; give
+`slug.std`'s higher-order functions generic signatures; then measure again.
+
 ### 6. Sound boundaries
 
 - [ ] Specify where checks occur: binding, argument, result, field, element
