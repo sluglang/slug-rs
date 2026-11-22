@@ -239,10 +239,11 @@ fn returns_lengths_for_supported_values_and_rejects_other_values() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
+    // `len` has its builtin signature, so the checker rejects `nil`.
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("`len` expects str, bytes, list, or map, got Nil")
+            .contains("expected bytes|list|map|str, got nil")
     );
 }
 

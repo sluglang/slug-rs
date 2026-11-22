@@ -853,6 +853,12 @@ impl ParameterConstraints {
                                     } => argument,
                                     CallArgument::Spread(_) => continue,
                                 };
+                                // A builtin's parameter open to several kinds
+                                // of value, as `len`'s `str|bytes|list|map`,
+                                // says nothing about which one the body has.
+                                if binding.implicit && spans_families(&selected[*index]) {
+                                    continue;
+                                }
                                 self.require(argument, selected[*index].clone())?;
                             }
                         }
@@ -1922,7 +1928,7 @@ fn analyze_expressions(
     };
     let mut environment = Environment::with_imports_and_session(imports, session);
     if let Some(builtins) = environment.import_snapshot("slug.builtin") {
-        for name in ["chan", "close", "Error"] {
+        for name in ["chan", "close", "Error", "print", "println", "len", "keys"] {
             environment.install_implicit_export(&builtins, name);
         }
     }
@@ -4472,6 +4478,21 @@ fn with_subject_arguments(constraint: &Type, subject: &Type) -> Type {
         ),
         other => other.clone(),
     }
+}
+
+/// Whether `value_type` is a union of more than one kind of non-nil value,
+/// as `str|list`: `str|nil` and `list<num>|list<str>` are not.
+fn spans_families(value_type: &Type) -> bool {
+    let Type::Union(members) = value_type else {
+        return false;
+    };
+    let mut families = members
+        .iter()
+        .filter(|member| **member != Type::Nil)
+        .map(std::mem::discriminant)
+        .collect::<Vec<_>>();
+    families.dedup();
+    families.len() > 1
 }
 
 /// Whether `pattern` matches every struct of `schema`: a struct has each of

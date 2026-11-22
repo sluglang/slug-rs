@@ -1236,7 +1236,10 @@ resolved callee signature to constrain a parameter passed to one of its bound
 argument positions. This is still body-derived inference: the call does not
 derive or alter the callee's signature. Dynamic or structural calls, spreads,
 ambiguous alternatives, and unsupported recursive inference cycles do not add
-such a constraint and retain dynamic behavior. Division, modulo, and unary
+such a constraint and retain dynamic behavior, and neither does a builtin's
+parameter that accepts several kinds of value: `len(value)` leaves `value`
+unconstrained, since `len`'s `str|bytes|list|map` says nothing about which one
+the body has. Division, modulo, and unary
 negation infer `num` when they require an unannotated parameter to be numeric.
 An ordering comparison infers `num` for an unannotated parameter compared with
 a number literal and `str` for one compared with a string literal. Comparing

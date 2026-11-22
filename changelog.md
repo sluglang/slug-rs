@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The checker knows the builtins' types: `len` and `keys` return a `num` and
+  a `list`, `print` and `println` are checked like any function, and
+  `len(nil)` is a source error rather than a runtime one. More of a program's
+  types are known as a result: in Crawl, 18% of expressions have an unknown
+  type, down from 20%; in `slug.net.http`, 8%, down from 14%. Calling `len`
+  on an unannotated parameter still leaves the parameter's type open.
+
 - A program with an enum compiles to a `.cslug` artifact: enum values are now
   valid artifact constants. Before, `slug compile` failed on any enum with
   "non-source literal value".
