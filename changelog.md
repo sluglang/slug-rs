@@ -8,6 +8,9 @@
   the Windows error code, and its `code` is the same portable name as
   elsewhere.
 
+- `slug test` finds a clutch's name and its test modules on Windows, where
+  the clutch's path is written with `\`.
+
 - A send on a channel no longer hands its value to a task in a fork that
   was just cancelled, or in one of that fork's own forks, before the fork
   has stopped waiting: the value was lost, and a live receiver waited

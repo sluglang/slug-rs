@@ -29,12 +29,16 @@ val readText = fn(path:str):str {
     join(go([]), "\n")
 }
 
+// Whether `c` separates a path's parts: `/`, or the system's own, as `\` on
+// Windows.
+val isSeparator = fn(c:str):bool { c == "/" || c == fs.separator }
+
 // The clutch's name: its directory's name without `.clutch`.
 val clutchName = fn(path:str):str {
     val parts = chars(path)
-    val trimmed = fn(end:num):num { if (end > 0 && parts[end - 1] == "/") { recur(end - 1) } else { end } }
+    val trimmed = fn(end:num):num { if (end > 0 && isSeparator(parts[end - 1])) { recur(end - 1) } else { end } }
     val end = trimmed(len(parts))
-    val start = fn(i:num):num { if (i > 0 && parts[i - 1] != "/") { recur(i - 1) } else { i } }
+    val start = fn(i:num):num { if (i > 0 && !isSeparator(parts[i - 1])) { recur(i - 1) } else { i } }
     val directory = join(parts[start(end):end])
     val suffix = ".clutch"
     if (len(directory) <= len(suffix) || directory[len(directory) - len(suffix):] != suffix) {
