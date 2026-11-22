@@ -42,7 +42,7 @@ impl NominalIdentity {
         }
     }
 
-    fn is_unresolved(&self) -> bool {
+    pub(super) fn is_unresolved(&self) -> bool {
         self.declaration_path.is_empty()
     }
 
@@ -115,6 +115,58 @@ pub(super) enum Type {
     /// A generic alias applied to type arguments, as `Optional<num>`, until
     /// annotation resolution looks the alias up and fills in its body.
     AliasApplication(String, Vec<Type>),
+    /// A recursive alias's type: its body, in which `RecursionVar(name)`
+    /// stands for the whole type again. It carries its own definition, so it
+    /// unfolds without the environment.
+    Recursive {
+        name: String,
+        body: Box<Type>,
+    },
+    /// Inside a `Recursive` body named `name`, the recursive type itself.
+    RecursionVar(String),
+}
+
+std::thread_local! {
+    /// Pairs of types being compared while one of them is recursive: a pair
+    /// met again is assumed to conform, as recursive types are compared
+    /// coinductively.
+    static ASSUMED: std::cell::RefCell<Vec<(Type, Type)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `body` with each free `RecursionVar(name)` replaced by `replacement`: a
+/// nested recursive type of the same name binds its own.
+fn replace_recursion(body: &Type, name: &str, replacement: &Type) -> Type {
+    let recur = |value: &Type| replace_recursion(value, name, replacement);
+    match body {
+        Type::RecursionVar(var) if var == name => replacement.clone(),
+        Type::Recursive { name: inner, .. } if inner == name => body.clone(),
+        Type::Recursive { name: inner, body } => Type::Recursive {
+            name: inner.clone(),
+            body: Box::new(recur(body)),
+        },
+        Type::List(element) => {
+            Type::List(element.as_deref().map(|element| Box::new(recur(element))))
+        }
+        Type::Map(entries) => Type::Map(
+            entries
+                .as_ref()
+                .map(|(key, value)| (Box::new(recur(key)), Box::new(recur(value)))),
+        ),
+        Type::Function(signature) => Type::Function(
+            signature
+                .as_ref()
+                .map(|types| types.iter().map(recur).collect()),
+        ),
+        Type::Task(result) => Type::Task(result.as_deref().map(|result| Box::new(recur(result)))),
+        Type::Channel(value) => Type::Channel(value.as_deref().map(|value| Box::new(recur(value)))),
+        Type::Tuple(elements) => Type::Tuple(elements.iter().map(recur).collect()),
+        Type::Union(members) => Type::Union(members.iter().map(recur).collect()),
+        Type::AliasApplication(alias, arguments) => {
+            Type::AliasApplication(alias.clone(), arguments.iter().map(recur).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// A variable whose meaning is scoped to one inferred overload alternative.
@@ -472,7 +524,11 @@ impl Type {
             | Self::Task(Some(_))
             | Self::Channel(Some(_))
             | Self::Tuple(_)
-            | Self::Generic(_) => false,
+            | Self::Generic(_)
+            // A recursive type needs a recursive runtime check, which match
+            // constraints do not have yet.
+            | Self::Recursive { .. }
+            | Self::RecursionVar(_) => false,
         }
     }
     pub(super) fn universal() -> Self {
@@ -522,7 +578,21 @@ impl Type {
         }
     }
 
+    /// The type with a recursive type at its top unfolded once, as many times
+    /// as it takes to show its structure; any other type as it is. A
+    /// recursive type's body is contractive, so this ends.
+    pub(super) fn unfolded(&self) -> Self {
+        let mut value = self.clone();
+        while let Self::Recursive { name, body } = &value {
+            value = replace_recursion(body, name, &value);
+        }
+        value
+    }
+
     pub(super) fn includes_nil(&self) -> bool {
+        if let Self::Recursive { .. } = self {
+            return self.unfolded().includes_nil();
+        }
         match self {
             Self::Unknown | Self::Nil => true,
             Self::Union(members) => members.iter().any(Self::includes_nil),
@@ -531,6 +601,9 @@ impl Type {
     }
 
     pub(super) fn without_nil(&self) -> Self {
+        if let Self::Recursive { .. } = self {
+            return self.unfolded().without_nil();
+        }
         match self {
             Self::Nil => Self::Unknown,
             Self::Union(members) => Self::union(
@@ -598,6 +671,18 @@ impl Type {
     pub(super) fn is_assignable_to(&self, expected: &Self) -> bool {
         if self == expected || matches!(self, Self::Never | Self::Unknown) {
             return true;
+        }
+        if matches!(self, Self::Recursive { .. }) || matches!(expected, Self::Recursive { .. }) {
+            let pair = (self.clone(), expected.clone());
+            if ASSUMED.with(|assumed| assumed.borrow().contains(&pair)) {
+                return true;
+            }
+            ASSUMED.with(|assumed| assumed.borrow_mut().push(pair));
+            let assignable = self.unfolded().is_assignable_to(&expected.unfolded());
+            ASSUMED.with(|assumed| {
+                assumed.borrow_mut().pop();
+            });
+            return assignable;
         }
         if let Self::Union(members) = self {
             return members
@@ -766,6 +851,7 @@ impl fmt::Display for Type {
                     .join(", ")
             ),
             Self::Generic(index) => write!(formatter, "T{index}"),
+            Self::Recursive { name, .. } | Self::RecursionVar(name) => formatter.write_str(name),
             Self::AliasApplication(name, arguments) => write!(
                 formatter,
                 "{name}<{}>",
@@ -901,6 +987,10 @@ pub(super) fn resolve_resource_references(
                     .map(Type::Resource),
             }
         }
+        Type::Recursive { name, body } => Ok(Type::Recursive {
+            name,
+            body: Box::new(resolve_resource_references(*body, span, environment)?),
+        }),
         Type::AliasApplication(name, arguments) => {
             let arguments = arguments
                 .into_iter()
@@ -978,6 +1068,10 @@ pub(super) fn resolve_schema_references(
                     .map(Type::Resource),
             }
         }
+        Type::Recursive { name, body } => Ok(Type::Recursive {
+            name,
+            body: Box::new(resolve_schema_references(*body, span, environment)?),
+        }),
         Type::AliasApplication(name, arguments) => {
             let arguments = arguments
                 .into_iter()
@@ -1219,6 +1313,10 @@ pub(super) fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>
                 .map(|argument| substitute(argument, substitutions))
                 .collect(),
         ),
+        Type::Recursive { name, body } => Type::Recursive {
+            name: name.clone(),
+            body: Box::new(substitute(body, substitutions)),
+        },
         other => other.clone(),
     }
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Type aliases can be recursive, for trees and nested data: `type Json =
+  nil|bool|num|str|list<Json>|map<str, Json>` and `type Tree<T> = [T,
+  list<Tree<T>>]`, directly or through other aliases. A reference back must be
+  inside a type such as `list` or `map`, and a generic alias must refer back
+  with its own type arguments; `type Loop = Loop|nil` is still an error. A
+  recursive type cannot be a match type constraint yet.
+
 - Type aliases can take type parameters: `type Optional<T> = T|nil` and
   `type Pair<T, U> = [T, U]` are filled in at each use, as `Optional<str>`,
   in annotations, other aliases, generic functions, match constraints, and

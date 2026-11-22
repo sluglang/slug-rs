@@ -2113,13 +2113,11 @@ fn resolve_type_aliases(
             ));
         }
     }
-    let mut visiting = Vec::new();
-    let mut resolved = HashSet::new();
     for expression in expressions {
         let ExprKind::TypeAlias { name, .. } = &expression.kind else {
             continue;
         };
-        resolve_type_alias(name, &aliases, environment, &mut visiting, &mut resolved)?;
+        resolve_type_alias(name, &aliases, environment)?;
     }
     Ok(())
 }
@@ -2128,91 +2126,245 @@ fn resolve_type_aliases(
 /// where it is declared.
 type AliasDeclarations<'a> = HashMap<String, (&'a TypeAnnotation, &'a [String], SourceSpan)>;
 
+/// Declares alias `name`, expanding the module's aliases in its body. A
+/// generic alias's parameters resolve to `Type::Generic`, which each use
+/// fills in.
 fn resolve_type_alias(
     name: &str,
     aliases: &AliasDeclarations<'_>,
     environment: &mut Environment,
-    visiting: &mut Vec<String>,
-    resolved: &mut HashSet<String>,
 ) -> Result<(), SourceError> {
-    super::stack::grow(|| {
-        if resolved.contains(name) {
-            return Ok(());
+    let (_, parameters, span) = &aliases[name];
+    let own = (0..parameters.len()).map(Type::Generic).collect::<Vec<_>>();
+    let expanded = expand_alias(name, &own, aliases, environment, &mut Vec::new())?;
+    // Schema bindings are value declarations, so `struct<S>` keeps its
+    // unresolved schema reference until the alias is used after `S` exists.
+    // Resource and enum identities, by contrast, belong to the type namespace
+    // and are available while aliases are collected.
+    let value_type = resolve_resource_references(expanded, span, environment)?;
+    let member = if parameters.is_empty() {
+        super::environment::TypeMember::Alias(value_type)
+    } else {
+        super::environment::TypeMember::GenericAlias {
+            parameters: parameters.len(),
+            body: value_type,
         }
-        let (annotation, parameters, span) = aliases
-            .get(name)
-            .expect("alias name came from the alias declaration table");
-        if let Some(start) = visiting.iter().position(|entry| entry == name) {
-            let mut chain = visiting[start..].to_vec();
-            chain.push(name.into());
+    };
+    environment.declare_type(name.into(), member);
+    Ok(())
+}
+
+/// An alias on the path of aliases being expanded: the arguments it was
+/// given, and whether its body refers back to it.
+struct AliasExpansion {
+    name: String,
+    arguments: Vec<Type>,
+    recursive: bool,
+}
+
+/// Alias `name` of this module with `arguments`, its body expanded. A
+/// reference back to an alias on `path` is its recursion variable, and the
+/// alias it names becomes a recursive type.
+fn expand_alias(
+    name: &str,
+    arguments: &[Type],
+    aliases: &AliasDeclarations<'_>,
+    environment: &Environment,
+    path: &mut Vec<AliasExpansion>,
+) -> Result<Type, SourceError> {
+    super::stack::grow(|| {
+        let (annotation, parameters, span) = &aliases[name];
+        if arguments.len() != parameters.len() {
+            let message = if parameters.is_empty() {
+                format!("type alias `{name}` cannot accept type arguments")
+            } else if arguments.is_empty() {
+                format!(
+                    "type alias `{name}` needs {} type argument(s)",
+                    parameters.len()
+                )
+            } else {
+                format!(
+                    "type alias `{name}` takes {} type argument(s), got {}",
+                    parameters.len(),
+                    arguments.len()
+                )
+            };
             return Err(SourceError::semantic(
-                SourceErrorCode::RecursiveTypeAlias,
-                format!("recursive type alias: {}", chain.join(" -> ")),
+                SourceErrorCode::InvalidTypeArguments,
+                message,
                 span.clone(),
             ));
         }
-        visiting.push(name.into());
-        let mut dependencies = Vec::new();
-        alias_dependencies(annotation, aliases, &mut dependencies)?;
-        for dependency in dependencies {
-            resolve_type_alias(&dependency, aliases, environment, visiting, resolved)?;
-        }
-        // Schema bindings are value declarations, so `struct<S>` must keep its
-        // unresolved schema reference until the alias is used after `S` exists.
-        // Resource and enum identities, by contrast, belong to the type namespace
-        // and are available while aliases are collected.
-        // A generic alias's parameters resolve to `Type::Generic`, which each
-        // use fills in.
-        let value_type = resolve_resource_references(
-            resolve_annotation(annotation, parameters, span)?,
-            span,
-            environment,
-        )?;
-        let member = if parameters.is_empty() {
-            super::environment::TypeMember::Alias(value_type)
-        } else {
-            super::environment::TypeMember::GenericAlias {
-                parameters: parameters.len(),
-                body: value_type,
+        let body = resolve_annotation(annotation, parameters, span)?;
+        let substitutions = arguments.iter().cloned().enumerate().collect();
+        let body = super::semantic::substitute(&body, &substitutions);
+        path.push(AliasExpansion {
+            name: name.into(),
+            arguments: arguments.to_vec(),
+            recursive: false,
+        });
+        let expanded = expand_alias_body(body, aliases, environment, path, false, span);
+        let expansion = path.pop().expect("this alias's expansion was pushed");
+        let expanded = expanded?;
+        Ok(if expansion.recursive {
+            Type::Recursive {
+                name: name.into(),
+                body: Box::new(expanded),
             }
-        };
-        environment.declare_type(name.into(), member);
-        visiting.pop();
-        resolved.insert(name.into());
-        Ok(())
+        } else {
+            expanded
+        })
     })
 }
 
-fn alias_dependencies(
-    annotation: &TypeAnnotation,
+/// `value` with the module's aliases in it expanded. `guarded` says whether
+/// it lies inside a type constructor, where a reference back to an alias on
+/// the path may be.
+fn expand_alias_body(
+    value: Type,
     aliases: &AliasDeclarations<'_>,
-    dependencies: &mut Vec<String>,
-) -> Result<(), SourceError> {
+    environment: &Environment,
+    path: &mut Vec<AliasExpansion>,
+    guarded: bool,
+    span: &SourceSpan,
+) -> Result<Type, SourceError> {
     super::stack::grow(|| {
-        match annotation {
-            TypeAnnotation::Name(name) => {
-                if aliases.contains_key(name) {
-                    dependencies.push(name.clone());
-                }
+        let inside = |value: Type, path: &mut Vec<AliasExpansion>| {
+            expand_alias_body(value, aliases, environment, path, true, span)
+        };
+        Ok(match value {
+            Type::Resource(identity)
+                if identity.is_unresolved() && aliases.contains_key(&identity.name) =>
+            {
+                alias_reference(
+                    &identity.name,
+                    &[],
+                    aliases,
+                    environment,
+                    path,
+                    guarded,
+                    span,
+                )?
             }
-            TypeAnnotation::Apply { name, arguments } => {
-                // A generic alias used in another, as `Pair<T, T>`; whether
-                // it takes those arguments is checked where it is expanded.
-                if aliases.contains_key(name) {
-                    dependencies.push(name.clone());
-                }
-                for argument in arguments {
-                    alias_dependencies(argument, aliases, dependencies)?;
-                }
+            Type::AliasApplication(name, arguments) if aliases.contains_key(&name) => {
+                alias_reference(&name, &arguments, aliases, environment, path, guarded, span)?
             }
-            TypeAnnotation::Tuple(elements) | TypeAnnotation::Union(elements) => {
-                for element in elements {
-                    alias_dependencies(element, aliases, dependencies)?;
+            // An imported generic alias, expanded here so that where its
+            // parameters appear decides whether a reference in an argument
+            // is inside a constructor.
+            Type::AliasApplication(name, arguments) => match environment.type_member(&name) {
+                Some(super::environment::TypeMember::GenericAlias { parameters, body })
+                    if *parameters == arguments.len() =>
+                {
+                    let substitutions = arguments.into_iter().enumerate().collect();
+                    expand_alias_body(
+                        super::semantic::substitute(body, &substitutions),
+                        aliases,
+                        environment,
+                        path,
+                        guarded,
+                        span,
+                    )?
                 }
-            }
-        }
-        Ok(())
+                _ => Type::AliasApplication(name, arguments),
+            },
+            Type::List(element) => Type::List(
+                element
+                    .map(|element| inside(*element, path).map(Box::new))
+                    .transpose()?,
+            ),
+            Type::Map(entries) => Type::Map(
+                entries
+                    .map(|(key, value)| {
+                        Ok::<_, SourceError>((
+                            Box::new(inside(*key, path)?),
+                            Box::new(inside(*value, path)?),
+                        ))
+                    })
+                    .transpose()?,
+            ),
+            Type::Function(signature) => Type::Function(
+                signature
+                    .map(|types| {
+                        types
+                            .into_iter()
+                            .map(|value| inside(value, path))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?,
+            ),
+            Type::Task(result) => Type::Task(
+                result
+                    .map(|result| inside(*result, path).map(Box::new))
+                    .transpose()?,
+            ),
+            Type::Channel(value) => Type::Channel(
+                value
+                    .map(|value| inside(*value, path).map(Box::new))
+                    .transpose()?,
+            ),
+            Type::Tuple(elements) => Type::Tuple(
+                elements
+                    .into_iter()
+                    .map(|element| inside(element, path))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Type::Union(members) => Type::union(
+                members
+                    .into_iter()
+                    .map(|member| {
+                        expand_alias_body(member, aliases, environment, path, guarded, span)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            other => other,
+        })
     })
+}
+
+/// A use of the module's alias `name` with `arguments` inside an alias body:
+/// a recursion variable when `name` is being expanded already, which must be
+/// contractive and regular, and otherwise its expansion.
+fn alias_reference(
+    name: &str,
+    arguments: &[Type],
+    aliases: &AliasDeclarations<'_>,
+    environment: &Environment,
+    path: &mut Vec<AliasExpansion>,
+    guarded: bool,
+    span: &SourceSpan,
+) -> Result<Type, SourceError> {
+    let Some(index) = path.iter().position(|expansion| expansion.name == name) else {
+        return expand_alias(name, arguments, aliases, environment, path);
+    };
+    if !guarded {
+        let mut chain = path[index..]
+            .iter()
+            .map(|expansion| expansion.name.clone())
+            .collect::<Vec<_>>();
+        chain.push(name.into());
+        return Err(SourceError::semantic(
+            SourceErrorCode::RecursiveTypeAlias,
+            format!(
+                "recursive type alias: {}; a reference back to an alias must be inside \
+                 `list`, `map`, `task`, `chan`, a tuple, or a function type",
+                chain.join(" -> ")
+            ),
+            span.clone(),
+        ));
+    }
+    if path[index].arguments != arguments {
+        return Err(SourceError::semantic(
+            SourceErrorCode::RecursiveTypeAlias,
+            format!(
+                "recursive type alias `{name}` must refer to itself with the same type \
+                 arguments it was given"
+            ),
+            span.clone(),
+        ));
+    }
+    path[index].recursive = true;
+    Ok(Type::RecursionVar(name.into()))
 }
 
 fn function_type(
@@ -2546,8 +2698,11 @@ fn check_expression(
     type_parameters: &[String],
 ) -> Result<Type, SourceError> {
     super::stack::grow(|| {
+        // A recursive type shows its structure, so that what inspects an
+        // expression's type sees a list or a union rather than the alias.
         let value_type = check_expression_inner(expression, environment, type_parameters)
-            .map_err(|error| error.claimed_by(expression))?;
+            .map_err(|error| error.claimed_by(expression))?
+            .unfolded();
         environment.record_expression_type(expression.span.clone(), value_type.clone());
         Ok(value_type)
     })
@@ -4000,7 +4155,9 @@ fn is_closed_coverage_type(value_type: &Type) -> bool {
         | Type::Struct(None)
         | Type::Tuple(_)
         | Type::Generic(_)
-        | Type::AliasApplication(..) => false,
+        | Type::AliasApplication(..)
+        | Type::Recursive { .. }
+        | Type::RecursionVar(_) => false,
     }
 }
 
@@ -4915,6 +5072,7 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         | Type::Tuple(values)
         | Type::Union(values)
         | Type::AliasApplication(_, values) => values.iter().find_map(first_generic_parameter),
+        Type::Recursive { body, .. } => first_generic_parameter(body),
         Type::Never
         | Type::Unknown
         | Type::Any
@@ -4931,7 +5089,8 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         | Type::Task(None)
         | Type::Channel(None)
         | Type::Schema
-        | Type::Struct(_) => None,
+        | Type::Struct(_)
+        | Type::RecursionVar(_) => None,
     }
 }
 

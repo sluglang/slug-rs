@@ -104,8 +104,7 @@ export type MaybeFile = File|nil
 Aliases are transparent. `Path` and `str` are interchangeable for
 assignability, overload selection, callable-signature identity, and runtime
 matching. An alias does not create a value, a constructor, or a new nominal
-identity. Recursive alias definitions are source errors. Strong typedefs are
-outside this feature.
+identity. Strong typedefs are outside this feature.
 
 A generic alias takes type parameters, which each use fills in:
 
@@ -126,6 +125,35 @@ arguments as the alias has parameters: `Optional` alone, `Pair<num>`, and
 `Path<str>` for an alias `Path` without parameters are source errors, with
 code `invalid_type_arguments`. An imported generic alias is used the same way,
 as `shapes.Optional<num>`, and keeps the struct types of its module.
+
+An alias may refer to itself, directly or through other aliases, for trees
+and nested data:
+
+```slug
+type Json = nil|bool|num|str|list<Json>|map<str, Json>
+type Tree<T> = [T, list<Tree<T>>]
+type Even = list<Odd>|nil
+type Odd = map<str, Even>
+```
+
+A recursive alias must be contractive and regular; otherwise it is a source
+error with code `recursive_type_alias`:
+
+- **Contractive.** Every reference back to an alias being defined is inside
+  `list`, `map`, `task`, `chan`, a tuple, or a function type, so that the
+  alias describes values. `type Loop = Loop|nil` and `type A = B` with
+  `type B = A` are errors, and so is a reference through another alias's
+  parameter that is not inside one: with `type Opt<T> = T|nil`, `type L =
+  Opt<L>` is an error, while with `type Box<T> = list<T>`, `type L =
+  Box<L>|nil` is allowed.
+- **Regular.** A generic alias refers back to itself with the same type
+  arguments it was given: `type Tree<T> = [T, list<Tree<T>>]` is allowed,
+  `type Nest<T> = list<Nest<list<T>>>` is an error.
+
+Recursive types are compared by their structure, assuming that a comparison
+met again holds, and diagnostics name them by their alias, as `expected Json,
+got list<num|str>`. A recursive type is not yet runtime-checkable, so it cannot
+be a match type constraint.
 
 An alias of a struct type names the schema where the alias is declared, so a
 module can export a struct type while keeping its schema private:

@@ -1856,6 +1856,8 @@ fn imports_generic_type_aliases_through_module_type_paths() {
          export type Point = struct<PointSchema>\n\
          export type Opt<T> = T|nil\n\
          export type Located<T> = [Point, T]\n\
+         export type Json = nil|num|str|list<Json>|map<str, Json>\n\
+         export type Labelled<T> = [Point, list<Labelled<T>>, T]\n\
          export val origin = fn():Point { PointSchema {x: 0, y: 0} }\n",
     )
     .expect("write generic alias module");
@@ -1869,7 +1871,9 @@ fn imports_generic_type_aliases_through_module_type_paths() {
              val name:shapes.Opt<str> = nil\n\
              val here:shapes.Located<str> = [shapes.origin(), \"home\"]\n\
              val other:Opt<num> = 3\n\
-             export val value = [name, here[1], other, here[0].x]\n",
+             val doc:shapes.Json = [1, {a: \"b\"}]\n\
+             val tree:shapes.Labelled<num> = [shapes.origin(), [[shapes.origin(), [], 2]], 1]\n\
+             export val value = [name, here[1], other, here[0].x, doc, tree[2]]\n",
         )
         .expect("compile importer using generic aliases");
     let mut vm = Vm::with_module_loader(loader.clone());
@@ -1877,7 +1881,7 @@ fn imports_generic_type_aliases_through_module_type_paths() {
         .expect("run importer using generic aliases");
     assert_eq!(
         vm.exported_values(&program).to_string(),
-        "{\"value\": [nil, \"home\", 3, 0]}"
+        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1]}"
     );
     let error = loader
         .compile_source(

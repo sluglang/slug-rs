@@ -86,6 +86,7 @@ Generated from `docs/language-support.tsv`; do not edit directly.
 | Comma or newline separators between enum cases and struct schema fields | implemented | `crates/slug/tests/cli.rs` and `language/slug.ebnf` |
 | Transparent `type Name = Annotation` aliases | implemented | `language/nominal-types.md` |
 | Generic `type Name<T, ...> = Annotation` aliases | implemented | `crates/slug/tests/cli.rs`, `crates/slug/tests/module_loader.rs`, and `language/nominal-types.md` |
+| Contractive, regular recursive type aliases | partial | `crates/slug/tests/cli.rs`, `crates/slug/tests/module_loader.rs`, and `language/nominal-types.md` |
 | Nursery ownership and `select` receive/send/timer/task-await/default cases | partial | `crates/slug/tests/cli.rs` |
 | Foreign declaration syntax, metadata retention, and module-qualified host resolution | implemented | `crates/slug/tests/cli.rs` and `crates/slug/tests/module_loader.rs` |
 | Module declaration introspection with `describe` | implemented | `crates/slug/tests/cli.rs` and `crates/slug/tests/module_loader.rs` |

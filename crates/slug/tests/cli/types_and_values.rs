@@ -115,6 +115,77 @@ fn generic_type_aliases_fill_in_their_parameters_at_each_use() {
 }
 
 #[test]
+fn recursive_type_aliases_are_contractive_and_regular() {
+    let path = fixture_path("recursive-type-aliases");
+    fs::write(
+        &path,
+        "type Json = nil|bool|num|str|list<Json>|map<str, Json>\n\
+         type Tree<T> = [T, list<Tree<T>>]\n\
+         type Even = list<Odd>|nil\n\
+         type Odd = map<str, Even>\n\
+         type Box<T> = list<T>\n\
+         type Boxes = Box<Boxes>|nil\n\
+         val doc:Json = {name: \"slug\", tags: [\"a\"], nested: {deep: [1, {x: nil}]}}\n\
+         val tree:Tree<num> = [1, [[2, []], [3, [[4, []]]]]]\n\
+         val even:Even = [{a: [{b: nil}]}]\n\
+         val boxes:Boxes = [[nil]]\n\
+         val count = fn(node:Tree<num>):num {\n\
+           val go = fn(children:list<Tree<num>>, i:num, total:num):num {\n\
+             if (i == len(children)) { total } else { recur(children, i + 1, total + count(children[i])) }\n\
+           }\n\
+           go(node[1], 0, 1)\n\
+         }\n\
+         val name = match doc { fields: map => fields[\"name\"]; _ => nil }\n\
+         val main = fn() { println(count(tree), name, even, boxes) }\n",
+    )
+    .expect("write recursive aliases");
+    let output = slug().arg(&path).output().expect("run recursive aliases");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "4 slug [{\"a\": [{\"b\": nil}]}] [[nil]]\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for (source, message) in [
+        (
+            "type Loop = Loop|nil",
+            "recursive type alias: Loop -> Loop; a reference back",
+        ),
+        (
+            "type A = B\ntype B = A",
+            "recursive type alias: A -> B -> A",
+        ),
+        (
+            "type Opt<T> = T|nil\ntype L = Opt<L>",
+            "recursive type alias: L -> Opt -> L",
+        ),
+        (
+            "type Nest<T> = list<Nest<list<T>>>",
+            "recursive type alias `Nest` must refer to itself with the same type arguments",
+        ),
+        (
+            "type Json = nil|num|list<Json>\nval bad:Json = [1, \"x\"]",
+            "expected Json, got list<num|str>",
+        ),
+        (
+            "type Json = nil|num|list<Json>\nval f = fn(v) match { j: Json => 1; _ => 2 }",
+            "match type constraint is not runtime-checkable",
+        ),
+    ] {
+        fs::write(&path, format!("{source}\n")).expect("write recursive alias error");
+        let output = slug()
+            .arg(&path)
+            .output()
+            .expect("run recursive alias error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove recursive alias source");
+}
+
+#[test]
 fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
     // A generic alias's closing `>` ends a line as `list<num>`'s does, while
     // a trailing comparison still continues onto the next line.

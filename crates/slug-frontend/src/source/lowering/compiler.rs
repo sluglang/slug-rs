@@ -2348,7 +2348,9 @@ fn lower_match_type(
         | Type::Channel(Some(_))
         | Type::Tuple(_)
         | Type::Generic(_)
-        | Type::AliasApplication(..) => Err(SourceError::semantic(
+        | Type::AliasApplication(..)
+        | Type::Recursive { .. }
+        | Type::RecursionVar(_) => Err(SourceError::semantic(
             SourceErrorCode::InvalidMatch,
             "match type constraint is not runtime-checkable",
             SourceSpan::new("<internal>", 1, 1),

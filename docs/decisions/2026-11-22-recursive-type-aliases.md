@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted; implementation planned in
-[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 1.
+Accepted; implemented on 2026-11-22, except the runtime check of a
+recursive type, which match constraints do not support yet; see
+[Toward a Statically Typed Slug](../planning/typed-slug.md), stage 6.
 
 ## Context
 

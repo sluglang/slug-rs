@@ -272,11 +272,13 @@ require.
 
 - [x] Specify parameters, expansion, arity errors, export, and import
   ([aliases](../language/nominal-types.md#aliases)).
-- [ ] Specify recursive aliases: contractive and regular, compared
-  coinductively.
+- [x] Specify recursive aliases: contractive and regular, compared
+  coinductively ([aliases](../language/nominal-types.md#aliases)).
 - [x] Implement generic aliases in the checker; they stay transparent and
   erased.
-- [ ] Implement recursive aliases.
+- [x] Implement recursive aliases. A recursive type is not yet
+  runtime-checkable, so it cannot be a match type constraint; stage 6's
+  boundary checks need the same recursive check.
 
 ### 2. Structural record types
 
