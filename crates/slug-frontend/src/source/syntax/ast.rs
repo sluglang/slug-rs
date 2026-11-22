@@ -218,7 +218,7 @@ impl Expr {
                     visit(value);
                 }
             }
-            ExprKind::StructSchema(fields) => {
+            ExprKind::StructSchema(fields, _) => {
                 for field in fields {
                     if let Some(default) = &field.default {
                         visit(default);
@@ -370,7 +370,9 @@ pub(super) enum ExprKind {
     },
     List(Vec<ListElement>),
     Map(Vec<(Expr, Expr)>),
-    StructSchema(Vec<StructSchemaField>),
+    /// A schema's fields and, for a generic schema, `struct<T, U> {...}`, its
+    /// type parameters.
+    StructSchema(Vec<StructSchemaField>, Vec<String>),
     StructInit {
         schema: Box<Expr>,
         fields: Vec<(String, Expr)>,

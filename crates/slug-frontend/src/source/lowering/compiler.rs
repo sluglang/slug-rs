@@ -1310,7 +1310,7 @@ impl Compiler {
                     }
                     state.emit(Op::Map(entries.len()), &expression.span);
                 }
-                ExprKind::StructSchema(fields) => {
+                ExprKind::StructSchema(fields, _) => {
                     let mut seen = HashSet::new();
                     for field in fields {
                         if !seen.insert(field.name.as_str()) {
@@ -2330,8 +2330,8 @@ fn lower_match_type(
         Type::Task(None) => Ok(MatchType::Task),
         Type::Channel(None) => Ok(MatchType::Channel),
         Type::Schema => Ok(MatchType::Schema),
-        Type::Struct(None) => Ok(MatchType::Struct(None)),
-        Type::Struct(Some(identity)) => {
+        Type::Struct(None, _) => Ok(MatchType::Struct(None)),
+        Type::Struct(Some(identity), _) => {
             let index = operands.len();
             operands.push(PatternOperand::StructSchema(identity.name.clone()));
             Ok(MatchType::Struct(Some(index)))
@@ -2605,7 +2605,7 @@ fn contains_scoped_defer(expression: &Expr) -> bool {
             ExprKind::Map(entries) => entries
                 .iter()
                 .any(|(key, value)| contains_scoped_defer(key) || contains_scoped_defer(value)),
-            ExprKind::StructSchema(fields) => fields
+            ExprKind::StructSchema(fields, _) => fields
                 .iter()
                 .filter_map(|field| field.default.as_ref())
                 .any(contains_scoped_defer),

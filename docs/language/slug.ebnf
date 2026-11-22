@@ -178,7 +178,7 @@ map_entry = map_key , ":" , expression ;
    own type. *)
 map_key = identifier | string | [ "-" ] , number | bytes | boolean | "[" , expression , "]" ;
 
-struct_schema = "struct" , "{" , { NEWLINE } , [ struct_schema_fields ] , "}" ;
+struct_schema = "struct" , [ type_parameters ] , "{" , { NEWLINE } , [ struct_schema_fields ] , "}" ;
 struct_schema_fields = struct_schema_field , { member_sep , struct_schema_field } , [ member_sep ] ;
 (* Struct-field tags are not supported. *)
 struct_schema_field = identifier , [ ":" , type_annotation ] , [ "=" , expression ] ;

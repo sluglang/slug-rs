@@ -399,7 +399,7 @@ impl<'a> Analysis<'a> {
                     self.walk(value);
                 }
             }
-            ExprKind::StructSchema(fields) => {
+            ExprKind::StructSchema(fields, _) => {
                 for field in fields {
                     if let Some(default) = &field.default {
                         self.walk(default);

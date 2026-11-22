@@ -89,7 +89,7 @@ pub(super) type SchemaIdentity = NominalIdentity;
 pub(super) type ResourceIdentity = NominalIdentity;
 pub(super) type EnumIdentity = NominalIdentity;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(super) enum Type {
     /// Internal bottom type for expressions that cannot produce a value.
     Never,
@@ -108,7 +108,9 @@ pub(super) enum Type {
     Task(Option<Box<Type>>),
     Channel(Option<Box<Type>>),
     Schema,
-    Struct(Option<SchemaIdentity>),
+    /// A struct of the schema the identity names, or of any schema; for a
+    /// generic schema, with its type arguments, empty when they are unknown.
+    Struct(Option<SchemaIdentity>, Vec<Type>),
     Tuple(Vec<Type>),
     /// A record type, as `{name: str}`: a map whose value at each field's
     /// string key, or a struct whose field of that name, conforms to the
@@ -135,26 +137,100 @@ pub(super) enum Type {
     RecursionVar(String),
 }
 
+/// A schema's type parameter count and field types.
+type SchemaFields = (usize, HashMap<String, Type>);
+
 std::thread_local! {
     /// The field types of each schema the checker has seen, so a struct type,
     /// which carries only its schema's identity, can be compared with a
     /// record type.
-    static SCHEMA_FIELDS: std::cell::RefCell<HashMap<SchemaIdentity, HashMap<String, Type>>> =
+    /// A generic schema's fields refer to its type parameters as
+    /// `Type::Generic(i)`; the count is kept with them.
+    static SCHEMA_FIELDS: std::cell::RefCell<HashMap<SchemaIdentity, SchemaFields>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
 /// Records the field types of the schema `identity` names, for comparing its
 /// structs with record types.
-pub(super) fn register_schema_fields(identity: &SchemaIdentity, fields: HashMap<String, Type>) {
+pub(super) fn register_schema_fields(
+    identity: &SchemaIdentity,
+    arity: usize,
+    fields: HashMap<String, Type>,
+) {
     SCHEMA_FIELDS.with(|schemas| {
-        schemas.borrow_mut().insert(identity.clone(), fields);
+        schemas
+            .borrow_mut()
+            .insert(identity.clone(), (arity, fields));
     });
 }
 
-/// The field types of the schema `identity` names, when the checker has
+/// The field types of a struct of the schema `identity` names, with
+/// `arguments` for a generic schema's type parameters, when the checker has
 /// seen it.
-pub(super) fn schema_fields(identity: &SchemaIdentity) -> Option<HashMap<String, Type>> {
-    SCHEMA_FIELDS.with(|schemas| schemas.borrow().get(identity).cloned())
+pub(super) fn schema_fields(
+    identity: &SchemaIdentity,
+    arguments: &[Type],
+) -> Option<HashMap<String, Type>> {
+    let (arity, fields) = SCHEMA_FIELDS.with(|schemas| schemas.borrow().get(identity).cloned())?;
+    Some(instantiate_fields(arity, fields, arguments))
+}
+
+/// A generic schema's `fields` with `arguments` for its `arity` type
+/// parameters, each unknown when it is not given.
+pub(super) fn instantiate_fields<K: Eq + Hash>(
+    arity: usize,
+    fields: HashMap<K, Type>,
+    arguments: &[Type],
+) -> HashMap<K, Type> {
+    if arity == 0 {
+        return fields;
+    }
+    let substitutions = arguments.iter().cloned().enumerate().collect();
+    fields
+        .into_iter()
+        .map(|(name, field)| (name, substitute(&field, &substitutions)))
+        .collect()
+}
+
+/// Types nest as deeply as source annotations may, so a clone, which goes
+/// one level down per call, runs through [`super::stack::grow`].
+impl Clone for Type {
+    fn clone(&self) -> Self {
+        super::stack::grow(|| match self {
+            Self::Never => Self::Never,
+            Self::Unknown => Self::Unknown,
+            Self::Any => Self::Any,
+            Self::Nil => Self::Nil,
+            Self::Bool => Self::Bool,
+            Self::Num => Self::Num,
+            Self::Str => Self::Str,
+            Self::Bytes => Self::Bytes,
+            Self::Resource(identity) => Self::Resource(identity.clone()),
+            Self::Enum(identity) => Self::Enum(identity.clone()),
+            Self::List(element) => Self::List(element.clone()),
+            Self::Map(entries) => Self::Map(entries.clone()),
+            Self::Function(signature) => Self::Function(signature.clone()),
+            Self::Task(result) => Self::Task(result.clone()),
+            Self::Channel(value) => Self::Channel(value.clone()),
+            Self::Schema => Self::Schema,
+            Self::Struct(identity, arguments) => Self::Struct(identity.clone(), arguments.clone()),
+            Self::Tuple(elements) => Self::Tuple(elements.clone()),
+            Self::Record { fields, map } => Self::Record {
+                fields: fields.clone(),
+                map: *map,
+            },
+            Self::Generic(index) => Self::Generic(*index),
+            Self::Union(members) => Self::Union(members.clone()),
+            Self::AliasApplication(name, arguments) => {
+                Self::AliasApplication(name.clone(), arguments.clone())
+            }
+            Self::Recursive { name, body } => Self::Recursive {
+                name: name.clone(),
+                body: body.clone(),
+            },
+            Self::RecursionVar(name) => Self::RecursionVar(name.clone()),
+        })
+    }
 }
 
 std::thread_local! {
@@ -199,6 +275,9 @@ fn replace_recursion(body: &Type, name: &str, replacement: &Type) -> Type {
                 .collect(),
             map: *map,
         },
+        Type::Struct(identity, arguments) => {
+            Type::Struct(identity.clone(), arguments.iter().map(recur).collect())
+        }
         Type::Union(members) => Type::Union(members.iter().map(recur).collect()),
         Type::AliasApplication(alias, arguments) => {
             Type::AliasApplication(alias.clone(), arguments.iter().map(recur).collect())
@@ -521,7 +600,18 @@ impl Type {
     pub(super) fn diagnostic_display(&self) -> String {
         match self {
             Self::Resource(identity) | Self::Enum(identity) => identity.diagnostic_name(),
-            Self::Struct(Some(identity)) => format!("struct<{}>", identity.diagnostic_name()),
+            Self::Struct(Some(identity), arguments) if arguments.is_empty() => {
+                format!("struct<{}>", identity.diagnostic_name())
+            }
+            Self::Struct(Some(identity), arguments) => format!(
+                "struct<{}<{}>>",
+                identity.diagnostic_name(),
+                arguments
+                    .iter()
+                    .map(Self::diagnostic_display)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::List(Some(value)) => format!("list<{}>", value.diagnostic_display()),
             Self::Task(Some(value)) => format!("task<{}>", value.diagnostic_display()),
             Self::Channel(Some(value)) => format!("chan<{}>", value.diagnostic_display()),
@@ -548,7 +638,6 @@ impl Type {
             | Self::Task(None)
             | Self::Channel(None)
             | Self::Schema
-            | Self::Struct(_)
             // An alias application is resolved by the environment, and checked
             // again once it is, as an unresolved alias name is.
             | Self::AliasApplication(..) => true,
@@ -559,6 +648,9 @@ impl Type {
                 key.is_reifiable_match_constraint() && value.is_reifiable_match_constraint()
             }),
             Self::Union(members) => members.iter().all(Self::is_reifiable_match_constraint),
+            // A struct's type arguments are erased, so only its schema is
+            // checked.
+            Self::Struct(_, arguments) => arguments.iter().all(|argument| *argument == Self::Unknown),
             Self::Record { fields, .. } => fields
                 .iter()
                 .all(|(_, field)| field.is_reifiable_match_constraint()),
@@ -832,8 +924,17 @@ impl Type {
                 matches!(self, Self::Resource(actual) if actual == expected)
             }
             Self::Schema => matches!(self, Self::Schema),
-            Self::Struct(expected) => match self {
-                Self::Struct(actual) => expected.is_none() || actual == expected,
+            Self::Struct(expected, expected_arguments) => match self {
+                Self::Struct(actual, actual_arguments) => {
+                    expected.is_none()
+                        || (actual == expected
+                            && (expected_arguments.is_empty()
+                                || actual_arguments.is_empty()
+                                || actual_arguments
+                                    .iter()
+                                    .zip(expected_arguments)
+                                    .all(|(actual, expected)| actual.is_assignable_to(expected))))
+                }
                 _ => false,
             },
             Self::Tuple(expected) => match self {
@@ -864,7 +965,7 @@ impl Type {
             return None;
         };
         let schema = match self {
-            Self::Struct(Some(identity)) => schema_fields(identity),
+            Self::Struct(Some(identity), arguments) => schema_fields(identity, arguments),
             _ => None,
         };
         expected.iter().find_map(|(name, expected)| {
@@ -888,7 +989,7 @@ impl Type {
                         format!("field `{shown}` would be {value}, but must be {expected}")
                     });
                 }
-                Self::Struct(Some(_)) => match schema.as_ref()?.get(name) {
+                Self::Struct(Some(_), _) => match schema.as_ref()?.get(name) {
                     Some(actual) => actual.clone(),
                     None => return Some(format!("the struct has no field `{shown}`")),
                 },
@@ -925,7 +1026,7 @@ impl Type {
             }
             // A map or struct whose contents the checker does not know.
             Self::Map(None) => true,
-            Self::Struct(None) => !exact,
+            Self::Struct(None, _) => !exact,
             // A map may lack any key, which then reads `nil`.
             Self::Map(Some((_, value))) => {
                 let value = Self::union([value.as_ref().clone(), Self::Nil]);
@@ -934,15 +1035,13 @@ impl Type {
                         .iter()
                         .all(|(_, expected)| value.is_assignable_to(expected))
             }
-            Self::Struct(Some(identity)) => {
+            Self::Struct(Some(identity), arguments) => {
                 !exact
-                    && SCHEMA_FIELDS.with(|schemas| {
-                        schemas.borrow().get(identity).is_none_or(|fields| {
-                            expected.iter().all(|(name, expected)| {
-                                fields
-                                    .get(name)
-                                    .is_some_and(|actual| actual.is_assignable_to(expected))
-                            })
+                    && schema_fields(identity, arguments).is_none_or(|fields| {
+                        expected.iter().all(|(name, expected)| {
+                            fields
+                                .get(name)
+                                .is_some_and(|actual| actual.is_assignable_to(expected))
                         })
                     })
             }
@@ -1035,13 +1134,20 @@ impl fmt::Display for Type {
             Self::Task(argument) => display_application(formatter, "task", argument.as_deref()),
             Self::Channel(argument) => display_application(formatter, "chan", argument.as_deref()),
             Self::Schema => formatter.write_str("schema"),
-            Self::Struct(name) => {
-                if let Some(name) = name {
-                    write!(formatter, "struct<{}>", name.name)
-                } else {
-                    formatter.write_str("struct")
-                }
-            }
+            Self::Struct(name, arguments) => match name {
+                Some(name) if arguments.is_empty() => write!(formatter, "struct<{}>", name.name),
+                Some(name) => write!(
+                    formatter,
+                    "struct<{}<{}>>",
+                    name.name,
+                    arguments
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None => formatter.write_str("struct"),
+            },
             Self::Tuple(elements) => write!(
                 formatter,
                 "[{}]",
@@ -1267,6 +1373,11 @@ pub(super) fn resolve_resource_references(
         Type::Record { fields, map } => map_record_fields(fields, map, |value| {
             resolve_resource_references(value, span, environment)
         }),
+        Type::Struct(identity, arguments) => arguments
+            .into_iter()
+            .map(|argument| resolve_resource_references(argument, span, environment))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|arguments| Type::Struct(identity, arguments)),
         Type::List(element) => element
             .map(|element| resolve_resource_references(*element, span, environment).map(Box::new))
             .transpose()
@@ -1287,6 +1398,53 @@ pub(super) fn resolve_resource_references(
             .map(Type::union),
         other => Ok(other),
     }
+}
+
+/// `struct<name<arguments>>` with `name` looked up as a schema binding.
+fn resolve_struct_reference(
+    name: &str,
+    arguments: Vec<Type>,
+    span: &SourceSpan,
+    environment: &Environment,
+) -> Result<Type, SourceError> {
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| resolve_schema_references(argument, span, environment))
+        .collect::<Result<Vec<_>, _>>()?;
+    let binding = environment.lookup(name).ok_or_else(|| {
+        SourceError::semantic(
+            SourceErrorCode::InvalidTypeArguments,
+            format!("struct type argument `{name}` must resolve to a schema binding"),
+            span.clone(),
+        )
+    })?;
+    binding.schema_identity.clone().map_or_else(
+        || {
+            Err(SourceError::semantic(
+                SourceErrorCode::InvalidTypeArguments,
+                format!("struct type argument `{name}` must resolve to a schema binding"),
+                span.clone(),
+            ))
+        },
+        |mut resolved| {
+            if !arguments.is_empty() && arguments.len() != binding.schema_arity {
+                return Err(SourceError::semantic(
+                    SourceErrorCode::InvalidTypeArguments,
+                    if binding.schema_arity == 0 {
+                        format!("schema `{name}` takes no type arguments")
+                    } else {
+                        format!(
+                            "schema `{name}` takes {} type argument(s)",
+                            binding.schema_arity
+                        )
+                    },
+                    span.clone(),
+                ));
+            }
+            name.clone_into(&mut resolved.name);
+            Ok(Type::Struct(Some(resolved), arguments))
+        },
+    )
 }
 
 pub(super) fn resolve_schema_references(
@@ -1326,28 +1484,8 @@ pub(super) fn resolve_schema_references(
                 environment,
             )
         }
-        Type::Struct(Some(identity)) if identity.is_unresolved() => {
-            let name = identity.name;
-            let binding = environment.lookup(&name).ok_or_else(|| {
-                SourceError::semantic(
-                    SourceErrorCode::InvalidTypeArguments,
-                    format!("struct type argument `{name}` must resolve to a schema binding"),
-                    span.clone(),
-                )
-            })?;
-            binding.schema_identity.clone().map_or_else(
-                || {
-                    Err(SourceError::semantic(
-                        SourceErrorCode::InvalidTypeArguments,
-                        format!("struct type argument `{name}` must resolve to a schema binding"),
-                        span.clone(),
-                    ))
-                },
-                |mut resolved| {
-                    resolved.name.clone_from(&name);
-                    Ok(Type::Struct(Some(resolved)))
-                },
-            )
+        Type::Struct(Some(identity), arguments) if identity.is_unresolved() => {
+            resolve_struct_reference(&identity.name, arguments, span, environment)
         }
         Type::List(element) => element
             .map(|element| resolve_schema_references(*element, span, environment).map(Box::new))
@@ -1429,7 +1567,7 @@ fn resolve_name(name: &str, type_parameters: &[String]) -> Type {
         "task" => Type::Task(None),
         "chan" => Type::Channel(None),
         "schema" => Type::Schema,
-        "struct" => Type::Struct(None),
+        "struct" => Type::Struct(None, Vec::new()),
         _ => Type::Resource(ResourceIdentity::unresolved(name)),
     }
 }
@@ -1445,14 +1583,28 @@ fn resolve_application(
             if arguments.len() != 1 {
                 return Err(wrong_type_arity(name, "1", span));
             }
-            let TypeAnnotation::Name(name) = &arguments[0] else {
-                return Err(SourceError::semantic(
-                    SourceErrorCode::InvalidTypeArguments,
-                    "struct type argument must be a schema name",
-                    span.clone(),
-                ));
+            // `struct<S>`, or `struct<S<T, ...>>` for a generic schema.
+            let (name, schema_arguments) = match &arguments[0] {
+                TypeAnnotation::Name(name) => (name, Vec::new()),
+                TypeAnnotation::Apply { name, arguments } => (
+                    name,
+                    arguments
+                        .iter()
+                        .map(|argument| resolve_annotation(argument, type_parameters, span))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                _ => {
+                    return Err(SourceError::semantic(
+                        SourceErrorCode::InvalidTypeArguments,
+                        "struct type argument must be a schema name",
+                        span.clone(),
+                    ));
+                }
             };
-            return Ok(Type::Struct(Some(SchemaIdentity::unresolved(name))));
+            return Ok(Type::Struct(
+                Some(SchemaIdentity::unresolved(name)),
+                schema_arguments,
+            ));
         }
         let resolved = arguments
             .iter()
@@ -1583,6 +1735,13 @@ pub(super) fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>
                 .collect(),
             map: *map,
         },
+        Type::Struct(identity, arguments) => Type::Struct(
+            identity.clone(),
+            arguments
+                .iter()
+                .map(|argument| substitute(argument, substitutions))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }

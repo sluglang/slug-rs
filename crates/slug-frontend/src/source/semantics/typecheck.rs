@@ -620,7 +620,7 @@ impl ParameterConstraints {
                     }
                     Ok(())
                 }
-                ExprKind::StructSchema(fields) => {
+                ExprKind::StructSchema(fields, _) => {
                     for field in fields {
                         if let Some(default) = &field.default {
                             self.collect(default)?;
@@ -1034,7 +1034,7 @@ impl ParameterConstraints {
             }
             ExprKind::Function { .. }
             | ExprKind::Foreign { .. }
-            | ExprKind::StructSchema(_)
+            | ExprKind::StructSchema(..)
             | ExprKind::Resource { .. }
             | ExprKind::Enum { .. }
             | ExprKind::TypeAlias { .. }
@@ -1145,7 +1145,7 @@ impl ParameterConstraints {
             | ExprKind::Nursery { .. }
             | ExprKind::Select(_)
             | ExprKind::Match { .. }
-            | ExprKind::StructSchema(_)
+            | ExprKind::StructSchema(..)
             | ExprKind::StructInit { .. }
             | ExprKind::StructCopy { .. }
             | ExprKind::Index { .. }
@@ -2025,9 +2025,12 @@ fn exported_schemas(
 ) -> Vec<SemanticBinding> {
     fn collect(value_type: &Type, identities: &mut Vec<super::semantic::SchemaIdentity>) {
         match value_type {
-            Type::Struct(Some(identity)) => {
+            Type::Struct(Some(identity), arguments) => {
                 if !identities.contains(identity) {
                     identities.push(identity.clone());
+                }
+                for argument in arguments {
+                    collect(argument, identities);
                 }
             }
             Type::List(Some(element))
@@ -2237,6 +2240,12 @@ fn expand_alias_body(
         let inside = |value: Type, path: &mut Vec<AliasExpansion>| {
             expand_alias_body(value, aliases, environment, path, true, span)
         };
+        let inside_all = |values: Vec<Type>, path: &mut Vec<AliasExpansion>| {
+            values
+                .into_iter()
+                .map(|value| inside(value, path))
+                .collect::<Result<Vec<_>, _>>()
+        };
         Ok(match value {
             Type::Resource(identity)
                 if identity.is_unresolved() && aliases.contains_key(&identity.name) =>
@@ -2308,12 +2317,7 @@ fn expand_alias_body(
                     .map(|value| inside(*value, path).map(Box::new))
                     .transpose()?,
             ),
-            Type::Tuple(elements) => Type::Tuple(
-                elements
-                    .into_iter()
-                    .map(|element| inside(element, path))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+            Type::Tuple(elements) => Type::Tuple(inside_all(elements, path)?),
             Type::Record { fields, map } => Type::Record {
                 fields: fields
                     .into_iter()
@@ -2321,6 +2325,9 @@ fn expand_alias_body(
                     .collect::<Result<Vec<_>, _>>()?,
                 map,
             },
+            Type::Struct(identity, arguments) => {
+                Type::Struct(identity, inside_all(arguments, path)?)
+            }
             Type::Union(members) => Type::union(
                 members
                     .into_iter()
@@ -2773,7 +2780,7 @@ fn check_expression_inner(
                 }
                 if callable.is_none() {
                     let mut binding = value_binding(value, &actual, environment, type_parameters)?;
-                    if matches!(value.kind, ExprKind::StructSchema(_))
+                    if matches!(value.kind, ExprKind::StructSchema(..))
                         && let Pattern::Binding(name) = pattern
                         && let Some(identity) = &mut binding.schema_identity
                     {
@@ -2881,14 +2888,15 @@ fn check_expression_inner(
             ExprKind::TypeApply { callee, .. } => {
                 check_expression(callee, environment, type_parameters)
             }
-            ExprKind::StructSchema(fields) => {
+            ExprKind::StructSchema(fields, own) => {
+                let field_parameters = schema_type_parameters(own, type_parameters);
                 for field in fields {
                     if let Some(default) = &field.default {
                         let actual = check_expression(default, environment, type_parameters)?;
                         if let Some(annotation) = &field.annotation {
                             let expected = resolve_static_annotation(
                                 annotation,
-                                type_parameters,
+                                field_parameters,
                                 &default.span,
                                 environment,
                             )?;
@@ -3437,6 +3445,12 @@ fn check_expression_inner(
                 let schema_binding = expression_binding(schema, environment)
                     .filter(|binding| binding.value_type == Type::Schema);
                 let mut provided = std::collections::HashSet::new();
+                // A generic schema's type arguments are inferred from the
+                // fields given.
+                let generic = schema_binding
+                    .as_ref()
+                    .is_some_and(|schema| schema.schema_arity > 0);
+                let mut substitutions = HashMap::new();
                 for (name, value) in fields {
                     if !provided.insert(name) {
                         return Err(SourceError::semantic(
@@ -3456,8 +3470,17 @@ fn check_expression_inner(
                             )
                             .with_extent(value)
                         })?;
-                        require(&expected.value_type, &actual, &value.span)
-                            .map_err(|error| explain_nil_start(error, value, environment))?;
+                        if generic {
+                            infer(
+                                &expected.value_type,
+                                &actual,
+                                &mut substitutions,
+                                &value.span,
+                            )
+                        } else {
+                            require(&expected.value_type, &actual, &value.span)
+                        }
+                        .map_err(|error| explain_nil_start(error, value, environment))?;
                     }
                 }
                 if let Some(schema) = &schema_binding
@@ -3475,10 +3498,17 @@ fn check_expression_inner(
                 }
                 // A schema reached through a module, as in `shapes.Point {...}`,
                 // has its identity on the member's binding.
+                let arguments = schema_binding.as_ref().map_or_else(Vec::new, |schema| {
+                    (0..schema.schema_arity)
+                        .map(|index| substitutions.get(&index).cloned().unwrap_or(Type::Unknown))
+                        .collect()
+                });
                 Ok(schema_binding
                     .and_then(|binding| binding.schema_identity)
                     .or_else(|| known_schema_identity(schema, environment))
-                    .map_or(Type::Struct(None), |identity| Type::Struct(Some(identity))))
+                    .map_or(Type::Struct(None, Vec::new()), |identity| {
+                        Type::Struct(Some(identity), arguments)
+                    }))
             }
             ExprKind::StructCopy { value, fields } => {
                 let result = check_expression(value, environment, type_parameters)?;
@@ -4130,7 +4160,7 @@ fn index_result(collection: &Type, index: &Type, span: &SourceSpan) -> Result<Ty
             }
             None => Ok(Type::Unknown),
         },
-        Type::Struct(_) => {
+        Type::Struct(..) => {
             require_operation_operand(&Type::Str, index, span)?;
             Ok(Type::Unknown)
         }
@@ -4216,7 +4246,7 @@ fn is_closed_coverage_type(value_type: &Type) -> bool {
         | Type::Resource(_)
         | Type::Enum(_)
         | Type::Schema
-        | Type::Struct(Some(_))
+        | Type::Struct(Some(_), _)
         | Type::Function(None)
         | Type::Task(None)
         | Type::Channel(None) => true,
@@ -4229,7 +4259,7 @@ fn is_closed_coverage_type(value_type: &Type) -> bool {
         | Type::Function(Some(_))
         | Type::Task(Some(_))
         | Type::Channel(Some(_))
-        | Type::Struct(None)
+        | Type::Struct(None, _)
         | Type::Tuple(_)
         | Type::Generic(_)
         | Type::AliasApplication(..)
@@ -4474,8 +4504,8 @@ fn value_binding(
     type_parameters: &[String],
 ) -> Result<SemanticBinding, SourceError> {
     super::stack::grow(|| {
-        if let ExprKind::StructSchema(fields) = &expression.kind {
-            return schema_binding(fields, environment, type_parameters, &expression.span);
+        if let ExprKind::StructSchema(fields, own) = &expression.kind {
+            return schema_binding(fields, own, environment, type_parameters, &expression.span);
         }
         if let Some(binding) = expression_binding(expression, environment) {
             return Ok(binding);
@@ -4520,13 +4550,22 @@ fn static_map_member_binding(
     })
 }
 
+/// The type parameters a schema's field annotations may name: a generic
+/// schema's own, or else those of the code around it.
+fn schema_type_parameters<'a>(own: &'a [String], outer: &'a [String]) -> &'a [String] {
+    if own.is_empty() { outer } else { own }
+}
+
 fn schema_binding(
     fields: &[super::ast::StructSchemaField],
+    own_parameters: &[String],
     environment: &mut Environment,
     type_parameters: &[String],
     span: &SourceSpan,
 ) -> Result<SemanticBinding, SourceError> {
+    let field_parameters = schema_type_parameters(own_parameters, type_parameters);
     let mut binding = SemanticBinding::value(Type::Schema);
+    binding.schema_arity = own_parameters.len();
     binding.schema_identity = Some(SchemaIdentity::declared(
         format!("{}:{}:{}", span.path, span.line, span.column),
         "<schema>",
@@ -4535,7 +4574,7 @@ fn schema_binding(
         let value_type = if let Some(annotation) = &field.annotation {
             resolve_static_annotation(
                 annotation,
-                type_parameters,
+                field_parameters,
                 &field.default.as_ref().map_or_else(
                     || SourceSpan::new("<schema>", 1, 1),
                     |default| default.span.clone(),
@@ -4569,6 +4608,7 @@ pub(super) fn register_schema(binding: &SemanticBinding) {
     if let Some(identity) = &binding.schema_identity {
         super::semantic::register_schema_fields(
             identity,
+            binding.schema_arity,
             binding
                 .members
                 .iter()
@@ -4583,11 +4623,20 @@ pub(super) fn register_schema(binding: &SemanticBinding) {
     }
 }
 
+/// The schema of a struct of `value_type`, with a generic schema's field
+/// types given its type arguments, unknown where it has none.
 fn known_struct_schema(value_type: &Type, environment: &Environment) -> Option<SemanticBinding> {
-    let Type::Struct(Some(identity)) = value_type else {
+    let Type::Struct(Some(identity), arguments) = value_type else {
         return None;
     };
-    environment.schema_by_identity(identity)
+    let mut schema = environment.schema_by_identity(identity)?;
+    if schema.schema_arity > 0 {
+        let substitutions = arguments.iter().cloned().enumerate().collect();
+        for field in schema.members.values_mut() {
+            field.value_type = super::semantic::substitute(&field.value_type, &substitutions);
+        }
+    }
+    Some(schema)
 }
 
 fn known_struct_field_type(
@@ -4759,11 +4808,7 @@ fn check_case_pattern(
             let constraint =
                 resolve_static_annotation(constraint, type_parameters, span, environment)?;
             if !constraint.is_reifiable_match_constraint() {
-                return Err(SourceError::semantic(
-                    SourceErrorCode::InvalidMatch,
-                    "match type constraint is not runtime-checkable",
-                    span.clone(),
-                ));
+                return Err(unreifiable_constraint(&constraint, span));
             }
             Some(constraint)
         } else {
@@ -5193,6 +5238,7 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         Type::Record { fields, .. } => fields
             .iter()
             .find_map(|(_, value)| first_generic_parameter(value)),
+        Type::Struct(_, arguments) => arguments.iter().find_map(first_generic_parameter),
         Type::Never
         | Type::Unknown
         | Type::Any
@@ -5209,7 +5255,6 @@ fn first_generic_parameter(value_type: &Type) -> Option<usize> {
         | Type::Task(None)
         | Type::Channel(None)
         | Type::Schema
-        | Type::Struct(_)
         | Type::RecursionVar(_) => None,
     }
 }
@@ -5376,6 +5421,15 @@ fn infer(
             infer(expected_key, actual_key, substitutions, span)?;
             infer(expected_value, actual_value, substitutions, span)
         }
+        (
+            Type::Struct(Some(expected_schema), expected),
+            Type::Struct(Some(actual_schema), actual),
+        ) if expected_schema == actual_schema && expected.len() == actual.len() => {
+            for (expected, actual) in expected.iter().zip(actual) {
+                infer(expected, actual, substitutions, span)?;
+            }
+            Ok(())
+        }
         (Type::Tuple(expected), Type::Tuple(actual))
         | (Type::Function(Some(expected)), Type::Function(Some(actual)))
             if expected.len() == actual.len() =>
@@ -5493,7 +5547,7 @@ fn value_type(value: &Value) -> Type {
         ValueKind::List => Type::List(None),
         ValueKind::Map => Type::Map(None),
         ValueKind::StructSchema => Type::Schema,
-        ValueKind::Struct => Type::Struct(None),
+        ValueKind::Struct => Type::Struct(None, Vec::new()),
         ValueKind::Enum => unreachable!("enum values are handled before kind conversion"),
         ValueKind::Channel => Type::Channel(None),
         ValueKind::Function => Type::Function(None),
@@ -5827,10 +5881,14 @@ fn validate_expression_inner(
             }
             Ok(())
         }
-        ExprKind::StructSchema(fields) => {
+        ExprKind::StructSchema(fields, own) => {
             for field in fields {
                 if let Some(annotation) = &field.annotation {
-                    resolve_annotation(annotation, type_parameters, &expression.span)?;
+                    resolve_annotation(
+                        annotation,
+                        schema_type_parameters(own, type_parameters),
+                        &expression.span,
+                    )?;
                 }
                 if let Some(default) = &field.default {
                     validate_expression(default, type_parameters)?;
@@ -5924,6 +5982,38 @@ fn validate_arguments(
     })
 }
 
+/// The error for a match type constraint the runtime cannot check, saying
+/// so when it is a generic struct's type arguments, which are erased.
+fn unreifiable_constraint(constraint: &Type, span: &SourceSpan) -> SourceError {
+    fn struct_with_arguments(value_type: &Type) -> Option<String> {
+        match value_type {
+            Type::Struct(Some(identity), arguments)
+                if arguments.iter().any(|argument| *argument != Type::Unknown) =>
+            {
+                Some(identity.name.clone())
+            }
+            Type::List(Some(value)) => struct_with_arguments(value),
+            Type::Map(Some((key, value))) => {
+                struct_with_arguments(key).or_else(|| struct_with_arguments(value))
+            }
+            Type::Union(members) => members.iter().find_map(struct_with_arguments),
+            Type::Record { fields, .. } => fields
+                .iter()
+                .find_map(|(_, value)| struct_with_arguments(value)),
+            _ => None,
+        }
+    }
+    let message = struct_with_arguments(constraint).map_or_else(
+        || "match type constraint is not runtime-checkable".to_owned(),
+        |schema| {
+            format!(
+                "match type constraint is not runtime-checkable: a struct's type arguments are not checked at run time, so match `struct<{schema}>`"
+            )
+        },
+    );
+    SourceError::semantic(SourceErrorCode::InvalidMatch, message, span.clone())
+}
+
 fn validate_case_pattern(
     pattern: &CasePattern,
     type_parameters: &[String],
@@ -5933,11 +6023,7 @@ fn validate_case_pattern(
         if let Some(constraint) = &pattern.constraint {
             let constraint = resolve_annotation(constraint, type_parameters, span)?;
             if !constraint.is_reifiable_match_constraint() {
-                return Err(SourceError::semantic(
-                    SourceErrorCode::InvalidMatch,
-                    "match type constraint is not runtime-checkable",
-                    span.clone(),
-                ));
+                return Err(unreifiable_constraint(&constraint, span));
             }
         }
         validate_pattern(&pattern.pattern, type_parameters)
@@ -6790,10 +6876,13 @@ mod tests {
             "status.slug",
             "Status",
         ));
-        let user = Type::Struct(Some(super::super::semantic::SchemaIdentity::declared(
-            "user.slug",
-            "User",
-        )));
+        let user = Type::Struct(
+            Some(super::super::semantic::SchemaIdentity::declared(
+                "user.slug",
+                "User",
+            )),
+            Vec::new(),
+        );
 
         for element in [Type::Str, database, status, user] {
             let actual = Type::List(Some(Box::new(element.clone())));

@@ -161,9 +161,9 @@ soundness lands.
   absent, since a map without the key reads `nil` there, as it does now.
   This is the feature real Slug code needs most, since Crawl and most
   programs pass maps as records.
-- **Generic nominal types.** `struct Pair<T, U> { first: T, second: U }`,
-  and generic schemas behind `struct<S>`. Shares type-parameter machinery
-  with enums.
+- **Generic nominal types.** `val Pair = struct<T, U> { first: T, second:
+  U }`, and generic schemas behind `struct<S>`, as `struct<Pair<num,
+  str>>`. Shares type-parameter machinery with enums.
 - **Payload-bearing and generic enums.** `enum Result<T, E> { Ok { value: T }
   Error { error: E } }`, constructed as `Result.Ok { value: 3 }`. This
   revives [the variants ADR](../decisions/2026-08-29-named-closed-variants-superseded.md),
@@ -293,9 +293,11 @@ require.
 
 ### 3. Generic nominal types
 
-- [ ] Specify generic schemas and `struct<S<T>>`, construction with
-  inferred type arguments, and field types under substitution.
-- [ ] Implement; type arguments are erased at run time.
+- [x] Specify generic schemas and `struct<S<T>>`, construction with
+  inferred type arguments, and field types under substitution
+  ([generic schemas](../language/structs.md#generic-schemas)).
+- [x] Implement; type arguments are erased at run time, so a match
+  constraint names a generic schema only as `struct<S>`.
 
 ### 4. Payload-bearing and generic enums
 

@@ -300,7 +300,7 @@ impl Analysis {
                 self.walk(key)?;
                 self.walk(value)
             }),
-            ExprKind::StructSchema(fields) => fields
+            ExprKind::StructSchema(fields, _) => fields
                 .iter()
                 .filter_map(|field| field.default.as_ref())
                 .try_for_each(|default| self.walk(default)),

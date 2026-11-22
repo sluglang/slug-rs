@@ -91,6 +91,9 @@ pub(super) struct SemanticBinding {
     /// nil test established on this path, such as `r.error` after
     /// `r.error != nil`. The binding never changes, so neither do they.
     pub(super) member_facts: HashMap<String, Type>,
+    /// For a generic schema, how many type parameters it takes. Its fields'
+    /// types refer to them as `Type::Generic(i)`.
+    pub(super) schema_arity: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -146,6 +149,7 @@ impl SemanticBinding {
             nil_start: None,
             implicit: false,
             member_facts: HashMap::new(),
+            schema_arity: 0,
         }
     }
 
@@ -164,6 +168,7 @@ impl SemanticBinding {
             nil_start: None,
             implicit: false,
             member_facts: HashMap::new(),
+            schema_arity: 0,
         }
     }
 
@@ -186,6 +191,7 @@ impl SemanticBinding {
             nil_start: None,
             implicit: false,
             member_facts: HashMap::new(),
+            schema_arity: 0,
         }
     }
 

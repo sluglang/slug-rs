@@ -604,7 +604,7 @@ pub fn builtin_contract_mismatches(
                 value,
                 ..
             } if name == "Error" => {
-                if let ast::ExprKind::StructSchema(fields) = &value.kind {
+                if let ast::ExprKind::StructSchema(fields, _) = &value.kind {
                     error_fields = Some(
                         fields
                             .iter()

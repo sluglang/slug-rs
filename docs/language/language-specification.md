@@ -527,6 +527,12 @@ Its nominal identity is the schema value's identity, not the spelling of `S`:
 an alias denotes the original schema, and a later shadowing binding does not
 change the meaning of an already established `struct<S>` type.
 
+A schema may take type parameters, `struct<T, U> { first: T, second: U }`,
+which its field annotations name. A struct of it has type `struct<S<A, B>>`,
+whose type arguments construction infers from the fields given. Type
+arguments are erased at run time; [Structs](structs.md#generic-schemas)
+defines the rule.
+
 ```slug
 val User = struct {
   name:str,

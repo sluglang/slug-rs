@@ -40,6 +40,40 @@ annotation records that schema's stable identity, so an alias has the original
 schema's nominal type and later shadowing cannot change field checking for an
 existing struct value.
 
+## Generic schemas
+
+A schema may take type parameters, written after `struct` as a generic
+function's are after `fn`. Its field annotations name them:
+
+    val Pair = struct<T, U> { first: T, second: U }
+    val Box = struct<T> {
+      value: T
+      tags: list<str> = []
+    }
+
+A struct of a generic schema `S` has type `struct<S<A, ...>>`, with one type
+argument per parameter; `struct<S>` leaves them unknown, as `list` leaves its
+element type. Construction infers each type argument from the fields given,
+as a generic call infers its type arguments from its arguments, so
+`Pair { first: 1, second: "a" }` has type `struct<Pair<num, str>>`. A type
+argument no given field determines is unknown, and one cannot include `nil`.
+Field reads, destructuring, and patterns see the field types with the type
+arguments filled in: `p.first` is a `num`. A copy keeps its value's type, so
+each replacement must conform to its field's type with the value's type
+arguments. A default cannot have a type parameter's type, since it is one
+value for every struct; `tags: list<str> = []` is a default, `value: T = 1`
+is a source error.
+
+Type arguments are covariant, as fields are immutable:
+`struct<Pair<num, str>>` conforms to `struct<Pair<num, str|nil>>`. A wrong
+number of type arguments, or any for a schema that takes none, is a source
+error. A generic schema's fields may name only its own type parameters, not
+those of a generic function around it.
+
+Type arguments are erased: a struct's value records its schema, not them.
+So a match type constraint may name a generic schema only as `struct<S>`;
+`struct<Box<num>>` is not runtime-checkable and is a source error.
+
 ## Construction
 
 Applying a schema to a brace-delimited field list constructs a value:

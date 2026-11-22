@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Struct schemas can take type parameters: `val Pair = struct<T, U> {
+  first: T, second: U }`. Construction infers the type arguments from the
+  fields, so `Pair { first: 1, second: "a" }` is a `struct<Pair<num, str>>`,
+  and field reads, destructuring, and generic functions such as
+  `fn<T, U>(pair:struct<Pair<T, U>>):T` see the field types filled in. Type
+  arguments are not kept at run time, so a match constraint names the schema
+  alone, as `struct<Pair>`.
+
 - Record types describe maps and structs by their fields: `type Player =
   {name: str, hp: num, guild: str|nil}` accepts any map with those keys, or
   any struct with those fields, whatever else it holds; a map without a key

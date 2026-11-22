@@ -14,7 +14,7 @@ pub(super) fn is_map_key_type(value: &Type) -> bool {
         | Type::Resource(_)
         | Type::Channel(_)
         | Type::List(None)
-        | Type::Struct(_) => true,
+        | Type::Struct(..) => true,
         Type::List(Some(element)) => is_map_key_type(element) || is_dynamic_operation_type(element),
         Type::Tuple(elements) => elements
             .iter()
@@ -43,22 +43,27 @@ pub(super) fn type_intersection(left: &Type, right: &Type) -> Option<Type> {
         return Some(left.clone());
     }
     match (left, right) {
-        (Type::Struct(None), Type::Struct(Some(identity)))
-        | (Type::Struct(Some(identity)), Type::Struct(None)) => {
-            Some(Type::Struct(Some(identity.clone())))
+        (Type::Struct(None, _), Type::Struct(Some(identity), arguments))
+        | (Type::Struct(Some(identity), arguments), Type::Struct(None, _)) => {
+            Some(Type::Struct(Some(identity.clone()), arguments.clone()))
         }
-        // A map or struct may have a record type's fields; what matches is
-        // the record type's values among it.
-        (Type::Map(_) | Type::Struct(_) | Type::Record { .. }, Type::Record { map: false, .. })
-            if may_conform_to_record(left, right) =>
-        {
-            Some(right.clone())
-        }
-        (Type::Record { map: false, .. }, Type::Map(_) | Type::Struct(_) | Type::Record { .. })
-            if may_conform_to_record(right, left) =>
+        // Two structs of one generic schema meet at it, whatever their type
+        // arguments, which are erased.
+        (Type::Struct(Some(left_identity), _), Type::Struct(Some(right_identity), _))
+            if left_identity == right_identity =>
         {
             Some(left.clone())
         }
+        // A map or struct may have a record type's fields; what matches is
+        // the record type's values among it.
+        (
+            Type::Map(_) | Type::Struct(..) | Type::Record { .. },
+            Type::Record { map: false, .. },
+        ) if may_conform_to_record(left, right) => Some(right.clone()),
+        (
+            Type::Record { map: false, .. },
+            Type::Map(_) | Type::Struct(..) | Type::Record { .. },
+        ) if may_conform_to_record(right, left) => Some(left.clone()),
         // A tuple is a list of its elements.
         (Type::Tuple(_), Type::List(_)) if left.is_assignable_to(right) => Some(left.clone()),
         (Type::List(_), Type::Tuple(_)) if right.is_assignable_to(left) => Some(right.clone()),
@@ -89,8 +94,9 @@ fn may_conform_to_record(value_type: &Type, record: &Type) -> bool {
                 None => return true,
             },
             Type::Map(Some((_, value))) => Type::union([value.as_ref().clone(), Type::Nil]),
-            Type::Struct(Some(identity)) => {
-                let Some(schema) = super::super::semantic::schema_fields(identity) else {
+            Type::Struct(Some(identity), arguments) => {
+                let Some(schema) = super::super::semantic::schema_fields(identity, arguments)
+                else {
                     return true;
                 };
                 let Some(actual) = schema.get(name) else {

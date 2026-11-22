@@ -315,6 +315,95 @@ fn record_type_mismatches_name_the_field() {
 }
 
 #[test]
+fn generic_schemas_infer_and_check_their_type_arguments() {
+    let path = fixture_path("generic-schemas");
+    fs::write(
+        &path,
+        "val Pair = struct<T, U> { first: T, second: U }\n\
+         val Box = struct<T> {\n\
+           value: T\n\
+           tags: list<str> = []\n\
+         }\n\
+         type Opt<T> = struct<Box<T>>|nil\n\
+         val p = Pair { first: 1, second: \"a\" }\n\
+         val wide:struct<Pair<num, str|nil>> = p\n\
+         val firstOf = fn<T, U>(pair:struct<Pair<T, U>>):T { pair.first }\n\
+         val swap = fn<T, U>(pair:struct<Pair<T, U>>):struct<Pair<U, T>> {\n\
+           Pair { first: pair.second, second: pair.first }\n\
+         }\n\
+         val b = Box { value: [1, 2] }\n\
+         val raw:struct<Box> = Box { value: \"s\" }\n\
+         val o:Opt<num> = Box { value: 3 }\n\
+         val kind = fn(v) match { x: struct<Box> => \"box\"; _ => \"?\" }\n\
+         val named = fn(r:{first: num}):num { r.first }\n\
+         val {first, second} = p\n\
+         val main = fn() {\n\
+           println(p.first + 1, p.second + \"!\", firstOf(p) + 10, swap(p).first + \"?\")\n\
+           println(b.value[0] + 1, (b copy { value: [3] }).value, kind(raw), kind(p), named(wide))\n\
+           println(first + 1, second, (o ?? Box { value: 0 }).value)\n\
+         }\n",
+    )
+    .expect("write generic schemas");
+    let output = slug().arg(&path).output().expect("run generic schemas");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "2 a! 11 a?\n\
+         2 [3] box ? 1\n\
+         2 a 3\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let prelude = "val Pair = struct<T, U> { first: T, second: U }\n\
+                   val Box = struct<T> { value: T }\n\
+                   val Plain = struct { x: num }\n";
+    for (source, message) in [
+        (
+            "val p = Pair { first: 1, second: \"a\" }\np.first + \"x\"",
+            "operator `+` does not accept num and str",
+        ),
+        (
+            "val q:struct<Pair<str, str>> = Pair { first: 1, second: \"a\" }",
+            "expected struct<Pair<str, str>>, got struct<Pair<num, str>>",
+        ),
+        (
+            "val q:struct<Pair<num>> = Pair { first: 1, second: \"a\" }",
+            "schema `Pair` takes 2 type argument(s)",
+        ),
+        (
+            "val q:struct<Plain<num>> = Plain { x: 1 }",
+            "schema `Plain` takes no type arguments",
+        ),
+        (
+            "val f = fn(v) match { x: struct<Box<num>> => 1; _ => 2 }",
+            "a struct's type arguments are not checked at run time, so match `struct<Box>`",
+        ),
+        (
+            "val b = Box { value: 1 }\nb copy { value: \"s\" }",
+            "expected num, got str",
+        ),
+        (
+            "val Bad = struct<T, T> { a: T }",
+            "duplicate type parameter `T`",
+        ),
+        (
+            "val f = fn<T>(x:T) { val S = struct<U> { a: U, b: T } }",
+            "unknown type `T`",
+        ),
+    ] {
+        fs::write(&path, format!("{prelude}{source}\n")).expect("write generic schema error");
+        let output = slug()
+            .arg(&path)
+            .output()
+            .expect("run generic schema error");
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(message), "{source}: {stderr}");
+    }
+    fs::remove_file(&path).expect("remove generic schema source");
+}
+
+#[test]
 fn a_type_argument_list_at_the_end_of_a_line_ends_its_statement() {
     // A generic alias's closing `>` ends a line as `list<num>`'s does, while
     // a trailing comparison still continues onto the next line.

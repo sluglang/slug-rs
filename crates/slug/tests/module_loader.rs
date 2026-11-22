@@ -1860,7 +1860,9 @@ fn imports_generic_type_aliases_through_module_type_paths() {
          export type Labelled<T> = [Point, list<Labelled<T>>, T]\n\
          export type Named<T> = {name: str, tag: T}\n\
          export val origin = fn():Point { PointSchema {x: 0, y: 0} }\n\
-         export val xOf = fn(p:{x: num}):num { p.x }\n",
+         export val xOf = fn(p:{x: num}):num { p.x }\n\
+         export val Box = struct<T> { value: T }\n\
+         export val wrap = fn<T>(v:T):struct<Box<T>> { Box { value: v } }\n",
     )
     .expect("write generic alias module");
     let main_path = root.join("main.slug");
@@ -1876,7 +1878,8 @@ fn imports_generic_type_aliases_through_module_type_paths() {
              val doc:shapes.Json = [1, {a: \"b\"}]\n\
              val tree:shapes.Labelled<num> = [shapes.origin(), [[shapes.origin(), [], 2]], 1]\n\
              val named:shapes.Named<num> = {name: \"n\", tag: 7}\n\
-             export val value = [name, here[1], other, here[0].x, doc, tree[2], named.tag, xOf(origin()), shapes.xOf({x: 5})]\n",
+             val boxed:struct<Box<num>> = shapes.Box { value: 8 }\n\
+             export val value = [name, here[1], other, here[0].x, doc, tree[2], named.tag, xOf(origin()), shapes.xOf({x: 5}), boxed.value, shapes.wrap(\"w\").value]\n",
         )
         .expect("compile importer using generic aliases");
     let mut vm = Vm::with_module_loader(loader.clone());
@@ -1884,7 +1887,7 @@ fn imports_generic_type_aliases_through_module_type_paths() {
         .expect("run importer using generic aliases");
     assert_eq!(
         vm.exported_values(&program).to_string(),
-        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1, 7, 0, 5]}"
+        "{\"value\": [nil, \"home\", 3, 0, [1, {\"a\": \"b\"}], 1, 7, 0, 5, 8, \"w\"]}"
     );
     let error = loader
         .compile_source(
@@ -1896,6 +1899,18 @@ fn imports_generic_type_aliases_through_module_type_paths() {
         error
             .to_string()
             .contains("field `x` is str, but must be num"),
+        "{error}"
+    );
+    let error = loader
+        .compile_source(
+            &main_path.to_string_lossy(),
+            "val {*} = import(\"shapes\")\nval b:struct<Box<str>> = wrap(1)\n",
+        )
+        .expect_err("an imported generic schema checks its type arguments");
+    assert!(
+        error
+            .to_string()
+            .contains("expected struct<Box<str>>, got struct<Box<num>>"),
         "{error}"
     );
     let error = loader

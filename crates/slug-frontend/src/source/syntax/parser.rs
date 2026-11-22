@@ -1490,6 +1490,11 @@ impl Parser {
     }
     fn struct_schema(&mut self, span: SourceSpan) -> Result<Expr, SourceError> {
         super::stack::grow(|| {
+            let type_parameters = if self.matches(&TokenKind::Less) {
+                self.alias_type_parameters()?
+            } else {
+                Vec::new()
+            };
             let delimiter = self.consume(&TokenKind::LBrace, "expected { after struct")?;
             self.enter_nesting(delimiter.span)?;
             let mut fields = Vec::new();
@@ -1529,7 +1534,7 @@ impl Parser {
             self.next();
             self.leave_nesting();
             Ok(Expr::new(
-                ExprKind::StructSchema(fields),
+                ExprKind::StructSchema(fields, type_parameters),
                 span,
                 self.previous_end(),
             ))
