@@ -177,3 +177,19 @@ val waitingOnTheDiskLetsOtherTasksRun = fn() {
         assertEqual((fs.stat(path) ?? {}).size, 64 * 65536)
     })
 }
+
+@test
+val joinBuildsPathsWithTheSeparator = fn() {
+    val s = fs.separator
+    assertTrue(s == "/" || s == "\\")
+    assertEqual(fs.join(["logs", "2026", "today.txt"]), "logs" + s + "2026" + s + "today.txt")
+    assertEqual(fs.join(["logs/", "today.txt"]), "logs/today.txt")
+    assertEqual(fs.join(["", "a", "", "b"]), "a" + s + "b")
+    assertEqual(fs.join([]), "")
+    inDirectory(fn(root) {
+        val path = fs.join([root, "joined.txt"])
+        fs.close(fs.openWrite(path))
+        assertEqual(fs.list(root), ["joined.txt"])
+    })
+}
+

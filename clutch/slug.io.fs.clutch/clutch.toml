@@ -15,6 +15,7 @@ sources = ["native/source/fs.c"]
 "macos-aarch64" = "native/macos-aarch64/libslug_io_fs.dylib"
 "macos-x86_64" = "native/macos-x86_64/libslug_io_fs.dylib"
 "linux-x86_64" = "native/linux-x86_64/libslug_io_fs.so"
+"windows-x86_64" = "native/windows-x86_64/slug_io_fs.dll"
 
 [native.resources."slug.io.fs".File]
 type = "slug_fs_file"
@@ -35,3 +36,4 @@ renameRaw = { symbol = "slug_fs_rename", signature = "(cstr from, cstr to, produ
 removeRaw = { symbol = "slug_fs_remove", signature = "(cstr path, producer reply) -> i32" }
 removeAllRaw = { symbol = "slug_fs_remove_all", signature = "(cstr path, producer reply) -> i32" }
 temporaryDirectoryRaw = { symbol = "slug_fs_temporary_directory", signature = "(cstr prefix, producer reply) -> i32" }
+separatorRaw = { symbol = "slug_fs_separator", signature = "() -> cstr", thread_safe = true }

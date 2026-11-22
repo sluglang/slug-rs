@@ -1736,7 +1736,6 @@ fn rejects_duplicate_resource_declarations() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn resolves_resource_types_only_through_imported_module_type_namespaces() {
     let path = fixture_path("qualified-resource-type-paths");
     for (source, expected) in [
@@ -1770,7 +1769,6 @@ fn resolves_resource_types_only_through_imported_module_type_namespaces() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn map_all_imports_exported_resource_types_into_the_local_type_namespace() {
     let path = fixture_path("map-all-resource-types");
     fs::write(

@@ -2528,7 +2528,6 @@ fn std_list_helpers_accept_lists_containing_nil() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn a_declaration_replaces_an_implicit_builtin_of_the_same_name() {
     let path = fixture_path("builtin-shadowing");
     let run = |source: &str| {

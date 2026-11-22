@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `slug.io.fs` is ported to Windows. It also gains `separator`, the system's
+  path separator (`\` on Windows, `/` elsewhere), and `join`, which builds
+  a path from a list of parts with it. On Windows a failure's `errno` is
+  the Windows error code, and its `code` is the same portable name as
+  elsewhere.
+
 - A send on a channel no longer hands its value to a task in a fork that
   was just cancelled, or in one of that fork's own forks, before the fork
   has stopped waiting: the value was lost, and a live receiver waited

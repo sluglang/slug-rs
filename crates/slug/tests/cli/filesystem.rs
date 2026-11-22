@@ -30,7 +30,6 @@ fn requires_an_installed_filesystem_clutch() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn reads_writes_appends_and_explicitly_closes_opaque_file_resources() {
     let root = std::env::temp_dir().join(format!("slug-cli-filesystem-{}", std::process::id()));
     fs::create_dir_all(&root).expect("create filesystem fixture root");
@@ -83,7 +82,6 @@ fn reads_writes_appends_and_explicitly_closes_opaque_file_resources() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn resource_annotations_check_foreign_results_and_arguments() {
     let root = std::env::temp_dir().join(format!("slug-cli-resource-type-{}", std::process::id()));
     fs::create_dir_all(&root).expect("create resource-type fixture root");
@@ -114,7 +112,6 @@ fn resource_annotations_check_foreign_results_and_arguments() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn preserves_nominal_file_types_from_foreign_results() {
     let root = std::env::temp_dir().join(format!("slug-cli-file-inference-{}", std::process::id()));
     fs::create_dir_all(&root).expect("create file-inference fixture root");
@@ -148,7 +145,6 @@ fn preserves_nominal_file_types_from_foreign_results() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn infers_conditional_file_results_inside_lists() {
     let root = std::env::temp_dir().join(format!(
         "slug-cli-conditional-file-inference-{}",
@@ -185,7 +181,6 @@ fn infers_conditional_file_results_inside_lists() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn match_constraints_check_exact_nominal_file_handles() {
     let root = std::env::temp_dir().join(format!("slug-cli-resource-match-{}", std::process::id()));
     fs::create_dir_all(&root).expect("create resource-match fixture root");
@@ -219,7 +214,6 @@ fn match_constraints_check_exact_nominal_file_handles() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn rejects_unknown_imported_resource_match_constraints() {
     let path = fixture_path("unknown-resource-match-type");
     fs::write(
@@ -243,7 +237,6 @@ fn rejects_unknown_imported_resource_match_constraints() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn rejects_file_operations_after_explicit_close() {
     let root = std::env::temp_dir().join(format!("slug-cli-closed-file-{}", std::process::id()));
     fs::create_dir_all(&root).expect("create closed-file fixture root");
@@ -308,7 +301,6 @@ fn slug_path(path: &std::path::Path) -> String {
 type Setup = fn(&std::path::Path);
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn filesystem_failures_throw_error_values_with_native_types() {
     let report = "val report = fn(action) {\n\
                   defer onerror(err) { println(err.type + \": \" + err.msg) }\n\
@@ -371,7 +363,6 @@ fn filesystem_failures_throw_error_values_with_native_types() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn uncaught_filesystem_failures_report_the_thrown_error() {
     let output = run_filesystem_program("uncaught", |_| {}, "fs.openRead(\"ROOT/missing.txt\")");
     assert_eq!(output.status.code(), Some(1));
@@ -383,7 +374,6 @@ fn uncaught_filesystem_failures_report_the_thrown_error() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "slug.io.fs has no Windows library yet")]
 fn closing_a_file_twice_is_idempotent() {
     let output = run_filesystem_program(
         "double-close",
