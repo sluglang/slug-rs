@@ -1117,6 +1117,12 @@ fn encode_match_type(value: &MatchType, depth: usize, output: &mut Vec<u8>) -> R
             output.push(19);
             uleb(*index, output);
         }
+        MatchType::DeclaredStruct { path, line, column } => {
+            output.push(21);
+            string(path, output);
+            uleb(*line as usize, output);
+            uleb(*column as usize, output);
+        }
         MatchType::Fields(base, fields) => {
             output.push(20);
             encode_match_type(base, depth + 1, output)?;
@@ -2090,6 +2096,16 @@ impl<'a> Reader<'a> {
                     ));
                 }
                 Ok(MatchType::Fields(base, fields))
+            }
+            21 => {
+                let path = self.string("match struct declaration path")?;
+                let mut position = |context| {
+                    u32::try_from(self.usize(context)?)
+                        .map_err(|_| Error::InvalidStructure(context.into()))
+                };
+                let line = position("match struct declaration line")?;
+                let column = position("match struct declaration column")?;
+                Ok(MatchType::DeclaredStruct { path, line, column })
             }
             _ => Err(Error::InvalidStructure("match type kind".into())),
         }

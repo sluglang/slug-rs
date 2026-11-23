@@ -560,6 +560,7 @@ pub fn runtime_code(kind: &RuntimeErrorKind) -> &'static str {
         RuntimeErrorKind::Thrown => "thrown",
         RuntimeErrorKind::Permission => "permission",
         RuntimeErrorKind::Fork => "fork",
+        RuntimeErrorKind::AnnotationMismatch => "annotation_mismatch",
     }
 }
 

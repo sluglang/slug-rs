@@ -3423,7 +3423,29 @@ impl Vm {
                 ));
             }
             PackedOpcode::CheckFailed => {
-                return Err(self.check_failed(chunk, instruction.a as usize));
+                let mut error = self.check_failed(chunk, instruction.a as usize);
+                // A check is its match, a jump past this, and this: the part
+                // that failed is found by the match's type.
+                if let Some(detail) = (*ip)
+                    .checked_sub(3)
+                    .and_then(|at| chunk.code.get(at))
+                    .filter(|matched| matched.opcode == PackedOpcode::MatchCase)
+                    .and_then(|matched| program.match_pattern(MatchPatternId::new(matched.a)))
+                    .and_then(|pattern| match pattern {
+                        crate::MatchPattern::Constrained { constraint, .. } => {
+                            self.stack.last().and_then(|value| {
+                                value.resolve().ok().and_then(|value| {
+                                    operations::first_mismatch(constraint, &value)
+                                })
+                            })
+                        }
+                        _ => None,
+                    })
+                {
+                    error.message.push_str(": ");
+                    error.message.push_str(&detail);
+                }
+                return Err(error);
             }
             PackedOpcode::CheckKinds => {
                 let passes = match self.stack.last() {
@@ -3821,7 +3843,7 @@ impl Vm {
             text.push_str(": ");
             text.push_str(place);
         }
-        self.error_at(RuntimeErrorKind::Type, text)
+        self.error_at(RuntimeErrorKind::AnnotationMismatch, text)
     }
 
     fn combine_overloads(&mut self) -> VmResult<()> {
@@ -3996,6 +4018,7 @@ impl Vm {
             .push(Value::StructSchema(Rc::new(crate::StructSchema {
                 fields: schema_fields,
                 builtin: None,
+                declared_at: self.active_span().cloned(),
             })));
         Ok(())
     }
@@ -4037,7 +4060,7 @@ impl Vm {
         self.record_collection_construction(values.len());
         self.stack.push(
             construct_struct(schema, fields, &values)
-                .map_err(|message| self.error_at(RuntimeErrorKind::Type, message))?,
+                .map_err(|(kind, message)| self.error_at(kind, message))?,
         );
         Ok(())
     }
@@ -4053,7 +4076,7 @@ impl Vm {
         self.record_copy(&value);
         self.stack.push(
             copy_value(value, fields, &replacements)
-                .map_err(|message| self.error_at(RuntimeErrorKind::Type, message))?,
+                .map_err(|(kind, message)| self.error_at(kind, message))?,
         );
         Ok(())
     }
@@ -6520,7 +6543,7 @@ impl Vm {
             && !value.has_kind_in(kinds)
         {
             return Err(self.error(
-                RuntimeErrorKind::Type,
+                RuntimeErrorKind::AnnotationMismatch,
                 format!(
                     "expected {expected}, got {}: the result of foreign `{}`",
                     value.type_name(),

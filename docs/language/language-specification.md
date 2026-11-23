@@ -705,7 +705,8 @@ a checked VM fault it receives a string-keyed map with `type`, `msg`, and
 or string), `invalid_call`, `capability_unavailable` (an operation this
 runtime build leaves out, such as `spawn` without Slug-managed concurrency),
 `native`, `native_contract`, `module`, `module_not_found`, `not_implemented`,
-`match`, or `permission`; `msg` is its
+`match`, `permission`, or `annotation_mismatch` (a value that failed an
+[annotation check](annotation-checks.md)); `msg` is its
 diagnostic message; and `data` is `nil` until a fault defines structured extra
 data.
 

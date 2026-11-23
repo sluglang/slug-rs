@@ -1534,6 +1534,10 @@ pub struct StructSchema {
     /// only as the same value; a builtin one is the same wherever it is made,
     /// so each VM of a program can build its own.
     pub(crate) builtin: Option<BuiltinSchema>,
+    /// Where a program declared the schema: the `struct` expression's
+    /// source position, which an annotation check of `struct<S>` compares,
+    /// as the checker identifies a schema by its declaration.
+    pub(crate) declared_at: Option<crate::SourceSpan>,
 }
 
 /// A struct schema the runtime defines rather than a program.
@@ -1578,6 +1582,7 @@ impl StructSchema {
                 field("cause", Some(Value::Nil)),
             ],
             builtin: Some(BuiltinSchema::Error),
+            declared_at: None,
         }
     }
 }
@@ -1726,10 +1731,11 @@ impl StructValue {
         self: Rc<Self>,
         names: &[String],
         replacements: &[Value],
-    ) -> Result<Rc<Self>, String> {
+    ) -> Result<Rc<Self>, (crate::RuntimeErrorKind, String)> {
+        let type_error = |message: String| (crate::RuntimeErrorKind::Type, message);
         for (index, name) in names.iter().enumerate() {
             if names[..index].contains(name) {
-                return Err(format!("duplicate struct field '{name}'"));
+                return Err(type_error(format!("duplicate struct field '{name}'")));
             }
             if !self
                 .schema
@@ -1737,7 +1743,7 @@ impl StructValue {
                 .iter()
                 .any(|field| field.name.as_ref() == name)
             {
-                return Err(format!("struct has no field '{name}'"));
+                return Err(type_error(format!("struct has no field '{name}'")));
             }
         }
         let mut copy = Rc::try_unwrap(self).unwrap_or_else(|value| (*value).clone());
@@ -1749,7 +1755,7 @@ impl StructValue {
                 .position(|field| field.name.as_ref() == name)
                 .expect("field names were validated");
             if let Some(rejected) = copy.schema.fields[index].rejects(replacement) {
-                return Err(rejected);
+                return Err((crate::RuntimeErrorKind::AnnotationMismatch, rejected));
             }
             copy.values[index] = replacement.clone();
         }
@@ -2648,6 +2654,7 @@ mod tests {
             Rc::new(StructSchema {
                 fields,
                 builtin: None,
+                declared_at: None,
             })
         };
         let lookalike = program(StructSchema::error().fields);

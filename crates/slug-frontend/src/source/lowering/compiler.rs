@@ -2611,7 +2611,16 @@ fn lower_check_type_in(
                 .collect(),
         )),
         Type::Struct(Some(identity), arguments) => {
-            let base = if reachable(&identity.name) {
+            // A schema is identified by where it was declared, which the
+            // runtime keeps with it; a payload case's, by its enum's member,
+            // when the check can name it.
+            let base = if let Some((path, line, column)) = identity.declaration_position() {
+                MatchType::DeclaredStruct {
+                    path: path.into(),
+                    line,
+                    column,
+                }
+            } else if reachable(&identity.name) {
                 lower_match_type(&Type::Struct(Some(identity.clone()), Vec::new()), operands)
                     .ok()?
             } else {

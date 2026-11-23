@@ -699,6 +699,12 @@ fn matches_type_in(
                     Ok(matches && matches_type(element, value, operands)?)
                 })
         }
+        MatchType::DeclaredStruct { path, line, column } => Ok(matches!(
+            value,
+            Value::Struct(actual) if actual.schema.declared_at.as_ref().is_some_and(|declared| {
+                declared.line == *line && declared.column == *column && declared.path.as_ref() == path
+            })
+        )),
         MatchType::Recursive(body) => {
             let inner = Recursion {
                 body,
@@ -739,6 +745,162 @@ fn matches_type_in(
                 matches_type(field, &actual.values[position], operands)
             })
         }
+    }
+}
+
+/// Where `value`, which fails `constraint`, first fails it within: the part,
+/// as a path from the value such as `.children[0].value`, that part's type,
+/// and the type it must have. `None` when the value fails as a whole.
+pub(super) fn first_mismatch(constraint: &MatchType, value: &Value) -> Option<String> {
+    let (path, actual, expected) = mismatch_in(constraint, value, None)?;
+    Some(format!(
+        "the part `{path}` is {actual}, but must be {expected}"
+    ))
+}
+
+type Mismatch = (String, &'static str, String);
+
+/// The innermost part of `value` that fails `constraint`, as
+/// [`first_mismatch`] reports it, within `recursion`.
+fn mismatch_in(
+    constraint: &MatchType,
+    value: &Value,
+    recursion: Option<&Recursion<'_>>,
+) -> Option<Mismatch> {
+    // The first of `parts` that fails its type: deeper when it can say
+    // where, and otherwise that part.
+    let first = |parts: &mut dyn Iterator<Item = (String, &MatchType, &Value)>| {
+        for (at, constraint, part) in parts {
+            if matches_type_in(constraint, part, &[], recursion).unwrap_or(true) {
+                continue;
+            }
+            return Some(match mismatch_in(constraint, part, recursion) {
+                Some((path, actual, expected)) => (format!("{at}{path}"), actual, expected),
+                None => (at, part.type_name(), match_type_text(constraint)),
+            });
+        }
+        None
+    };
+    let field = |name: &str| {
+        if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            format!(".{name}")
+        } else {
+            format!("[{name:?}]")
+        }
+    };
+    match (constraint, value) {
+        (MatchType::List(Some(element)), Value::List(values)) => first(
+            &mut values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (format!("[{index}]"), element.as_ref(), value)),
+        ),
+        (MatchType::Tuple(elements), Value::List(values)) if values.len() == elements.len() => {
+            first(
+                &mut elements
+                    .iter()
+                    .zip(values.iter())
+                    .enumerate()
+                    .map(|(index, (element, value))| (format!("[{index}]"), element, value)),
+            )
+        }
+        (MatchType::Map(Some((_, entry))), Value::Map(values)) => {
+            let entries = values.view();
+            first(
+                &mut entries
+                    .iter()
+                    .map(|(key, value)| (format!("[{key:?}]"), entry.as_ref(), value)),
+            )
+        }
+        (MatchType::Record(fields), Value::Map(values)) => {
+            first(&mut fields.iter().map(|(name, field_type)| {
+                (
+                    field(name),
+                    field_type,
+                    values
+                        .get(&Value::string(name.as_str()))
+                        .unwrap_or(&Value::Nil),
+                )
+            }))
+        }
+        (MatchType::Record(fields) | MatchType::Fields(_, fields), Value::Struct(actual)) => {
+            first(&mut fields.iter().filter_map(|(name, field_type)| {
+                let position = actual
+                    .schema
+                    .fields
+                    .iter()
+                    .position(|candidate| candidate.name.as_ref() == name)?;
+                Some((field(name), field_type, &actual.values[position]))
+            }))
+        }
+        // A union says where only through a member whose struct the value
+        // may be, as an enum's payload case: one whose schema the check
+        // takes from its operands, which are gone, may be, and one whose
+        // fields the struct lacks says nothing.
+        (MatchType::Union(members), Value::Struct(_)) => members.iter().find_map(|member| {
+            let MatchType::Fields(base, _) = member else {
+                return None;
+            };
+            if !matches_type_in(base, value, &[], recursion).unwrap_or(true) {
+                return None;
+            }
+            mismatch_in(member, value, recursion)
+        }),
+        (MatchType::Recursive(body), _) => {
+            let inner = Recursion {
+                body,
+                outer: recursion,
+            };
+            mismatch_in(body, value, Some(&inner))
+        }
+        (MatchType::Recur(index), _) => {
+            let frame = recursion?.get(*index)?;
+            mismatch_in(frame.body, value, Some(frame))
+        }
+        _ => None,
+    }
+}
+
+/// `constraint` as a failed check names the type a part must have.
+fn match_type_text(constraint: &MatchType) -> String {
+    let join = |types: &mut dyn Iterator<Item = &MatchType>, separator: &str| {
+        types
+            .map(match_type_text)
+            .collect::<Vec<_>>()
+            .join(separator)
+    };
+    match constraint {
+        MatchType::Any => "any".into(),
+        MatchType::Nil => "nil".into(),
+        MatchType::Bool => "bool".into(),
+        MatchType::Num => "num".into(),
+        MatchType::Str => "str".into(),
+        MatchType::Bytes => "bytes".into(),
+        MatchType::Resource { name, .. } | MatchType::Enum { name, .. } => name.clone(),
+        MatchType::List(None) => "list".into(),
+        MatchType::List(Some(element)) => format!("list<{}>", match_type_text(element)),
+        MatchType::Map(None) => "map".into(),
+        MatchType::Map(Some((key, value))) => {
+            format!("map<{}, {}>", match_type_text(key), match_type_text(value))
+        }
+        MatchType::Function => "fn".into(),
+        MatchType::Task => "task".into(),
+        MatchType::Channel => "chan".into(),
+        MatchType::Schema => "schema".into(),
+        MatchType::Struct(_) | MatchType::DeclaredStruct { .. } => "struct".into(),
+        MatchType::Fields(base, _) => match_type_text(base),
+        MatchType::Union(members) => join(&mut members.iter(), "|"),
+        MatchType::Tuple(elements) => format!("[{}]", join(&mut elements.iter(), ", ")),
+        MatchType::Record(fields) => format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|(name, field)| format!("{name}: {}", match_type_text(field)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        MatchType::Recursive(body) => match_type_text(body),
+        MatchType::Recur(_) => "the recursive type".into(),
     }
 }
 
@@ -1036,23 +1198,24 @@ pub(super) fn construct_struct(
     schema: Value,
     names: &[String],
     provided: &[Value],
-) -> Result<Value, String> {
+) -> Result<Value, (RuntimeErrorKind, String)> {
+    let type_error = |message: String| (RuntimeErrorKind::Type, message);
     let Value::StructSchema(schema) = schema else {
-        return Err(format!(
+        return Err(type_error(format!(
             "cannot construct struct from {}",
             schema.type_name()
-        ));
+        )));
     };
     for (index, name) in names.iter().enumerate() {
         if names[..index].contains(name) {
-            return Err(format!("duplicate struct field '{name}'"));
+            return Err(type_error(format!("duplicate struct field '{name}'")));
         }
         if !schema
             .fields
             .iter()
             .any(|field| field.name.as_ref() == name)
         {
-            return Err(format!("struct schema has no field '{name}'"));
+            return Err(type_error(format!("struct schema has no field '{name}'")));
         }
     }
     let values = schema
@@ -1064,11 +1227,11 @@ pub(super) fn construct_struct(
                 .position(|name| name == field.name.as_ref())
                 .and_then(|index| provided.get(index).cloned());
             if let Some(rejected) = given.as_ref().and_then(|value| field.rejects(value)) {
-                return Err(rejected);
+                return Err((RuntimeErrorKind::AnnotationMismatch, rejected));
             }
-            given
-                .or_else(|| field.default.clone())
-                .ok_or_else(|| format!("missing required struct field '{}'", field.name))
+            given.or_else(|| field.default.clone()).ok_or_else(|| {
+                type_error(format!("missing required struct field '{}'", field.name))
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Value::Struct(Rc::new(StructValue { schema, values })))
@@ -1078,11 +1241,18 @@ pub(super) fn copy_value(
     value: Value,
     names: &[String],
     replacements: &[Value],
-) -> Result<Value, String> {
+) -> Result<Value, (RuntimeErrorKind, String)> {
     match value {
         Value::Struct(value) => Ok(Value::Struct(value.copy_fields(names, replacements)?)),
-        Value::Map(value) => Ok(Value::Map(value.copy_string_fields(names, replacements)?)),
-        _ => Err("cannot copy non-struct or map value".into()),
+        Value::Map(value) => Ok(Value::Map(
+            value
+                .copy_string_fields(names, replacements)
+                .map_err(|message| (RuntimeErrorKind::Type, message))?,
+        )),
+        _ => Err((
+            RuntimeErrorKind::Type,
+            "cannot copy non-struct or map value".into(),
+        )),
     }
 }
 

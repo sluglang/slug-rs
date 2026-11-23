@@ -37,6 +37,8 @@ pub enum RuntimeErrorKind {
     /// an unsendable value, call a native function not declared
     /// thread-safe, or initialize a module.
     Fork,
+    /// A value that reached an annotated place is not of its type.
+    AnnotationMismatch,
 }
 
 /// A Slug-level runtime error, never a host panic.
@@ -336,5 +338,6 @@ fn fault_type(kind: &RuntimeErrorKind) -> &'static str {
         RuntimeErrorKind::Thrown => "thrown",
         RuntimeErrorKind::Permission => "permission",
         RuntimeErrorKind::Fork => "fork",
+        RuntimeErrorKind::AnnotationMismatch => "annotation_mismatch",
     }
 }

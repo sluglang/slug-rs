@@ -107,7 +107,7 @@ impl Vm {
         #[cfg(feature = "metrics")]
         self.record_copy(&base);
         let value = copy_value(base, fields, &replacements)
-            .map_err(|message| self.error_at(RuntimeErrorKind::Type, message))?;
+            .map_err(|(kind, message)| self.error_at(kind, message))?;
         self.assign_global(program, id, value)
     }
 
@@ -156,7 +156,7 @@ impl Vm {
         #[cfg(feature = "metrics")]
         self.record_copy(&value);
         let value = copy_value(value, fields, &replacements)
-            .map_err(|message| self.error_at(RuntimeErrorKind::Type, message))?;
+            .map_err(|(kind, message)| self.error_at(kind, message))?;
         self.assign_global(program, id, value)
     }
 

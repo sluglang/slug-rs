@@ -501,11 +501,14 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     tuple, a recursive type with its recursion by depth, and a struct test
     with field checks, which a generic struct's check makes of the fields
     whose declared types use a type parameter, with its type arguments.
-  - A schema the check cannot name, as one private to another module, is
-    checked only to be a struct: schemas need an identity the runtime can
-    compare.
-  - The diagnostic code `annotation_mismatch`, the annotation's location,
-    and the failing part of a deep check.
+  - [x] A schema the check cannot name, as one private to another module:
+    a schema now keeps where it was declared, by which the checker
+    identifies it, and a check of `struct<S>` compares that, needing no
+    reference to the schema.
+  - [x] The diagnostic code `annotation_mismatch`, and the failing part of a
+    deep check, as a path such as `[1].name`, found after the check fails.
+  - [ ] The annotation's location in the error, which needs the parser to
+    keep annotations' spans.
 - [ ] Keep a checked-element summary with immutable collections, and mark
   values built in typed code as checked.
 - [x] Measure the cost on every benchmark (interleaved PGO A/B, hold-outs

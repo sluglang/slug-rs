@@ -1636,3 +1636,57 @@ fn a_module_that_fails_to_initialize_is_the_cause_of_its_import() {
         assert_eq!(stderr.matches("runtime error:").count(), 2, "{stderr}");
     }
 }
+
+#[test]
+fn an_annotation_checks_a_schema_private_to_another_module_by_its_declaration() {
+    let root =
+        std::env::temp_dir().join(format!("slug-private-schema-check-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create fixture");
+    fs::write(
+        root.join("pets.slug"),
+        "val PetSchema = struct { name: str }\n\
+         export type Pet = struct<PetSchema>\n\
+         export val make = fn(name:str):Pet { PetSchema { name: name } }\n",
+    )
+    .expect("write pets");
+    let path = root.join("main.slug");
+    fs::write(
+        &path,
+        "val pets = import(\"pets\")\n\
+         val dynamic = fn(x) { x }\n\
+         val Other = struct { name: str }\n\
+         val named = fn(p:pets.Pet):str { p.name }\n\
+         println(named(dynamic(pets.make(\"Rex\"))))\n\
+         named(dynamic(Other { name: \"fake\" }))\n",
+    )
+    .expect("write program");
+    let artifact = path.with_extension("cslug");
+    let source = slug().arg(&path).output().expect("run source");
+    let compile = slug()
+        .arg("compile")
+        .arg(&path)
+        .arg(&artifact)
+        .output()
+        .expect("compile");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let compiled = slug()
+        .arg("run")
+        .arg(&artifact)
+        .output()
+        .expect("run artifact");
+    fs::remove_dir_all(&root).expect("remove fixture");
+    for output in [source, compiled] {
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "Rex\n");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("expected struct<PetSchema>, got struct: the argument `p`"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

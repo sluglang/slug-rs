@@ -57,7 +57,10 @@ val sortAndJoinRejectNonStrings = fn() {
     // A bare `list`, so the checker leaves the runtime check to be tested:
     // `strings:list<str>` checks it on entry.
     val mixed:list = keys({a: 1, [2]: 2})
-    val rejected = ["type", "expected list<str>, got list: the argument `strings`"]
+    val rejected = [
+        "annotation_mismatch",
+        "expected list<str>, got list: the argument `strings`: the part `[1]` is num, but must be str"
+    ]
     assertEqual(failure(fn() { sort(mixed) }), rejected)
     assertEqual(failure(fn() { join(mixed, "-") }), rejected)
 }

@@ -335,6 +335,14 @@ pub enum MatchType {
     /// fields of these names match these types: a generic struct's fields,
     /// with its type arguments.
     Fields(Box<MatchType>, Vec<(String, MatchType)>),
+    /// A struct of the schema a program declared at this source position,
+    /// whichever value of it: an annotation check's `struct<S>`, which needs
+    /// no reference to the schema.
+    DeclaredStruct {
+        path: String,
+        line: u32,
+        column: u32,
+    },
 }
 
 /// One source-order case consumed by the private select instruction.

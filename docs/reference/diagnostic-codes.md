@@ -59,8 +59,10 @@ Source codes classify parse and semantic errors. Rust hosts read them as
 Runtime and module diagnostics use these codes: `invalid_bytecode`, `type`,
 `name`, `arity`, `divide_by_zero`, `out_of_bounds`, `invalid_call`,
 `capability_unavailable`, `native`, `native_contract`, `module`,
-`module_not_found`, `not_implemented`, `match`, `thrown`, `permission`, or
-`fork`. `capability_unavailable` is an operation the runtime build leaves
+`module_not_found`, `not_implemented`, `match`, `thrown`, `permission`,
+`fork`, or `annotation_mismatch`. `annotation_mismatch` is a value that
+failed an [annotation check](../language/annotation-checks.md).
+`capability_unavailable` is an operation the runtime build leaves
 out: `spawn`, `nursery`, or a timer or task-await `select` case without
 Slug-managed concurrency. `out_of_bounds` is an index past either end
 of a list, `bytes`, or string. `fork` is something a `fork` cannot do: change

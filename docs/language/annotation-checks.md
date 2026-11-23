@@ -10,8 +10,7 @@ Status: implemented for declarations, assignments, parameters, results,
 `return`, and a recovering `defer onerror`, struct fields, calls, and
 `foreign` results, with dynamic overload dispatch by type; [stage 6 of the
 typed-Slug plan](../planning/typed-slug.md#6-sound-boundaries) lists what is
-not yet: schemas the check cannot name, and the error's code, annotation
-location, and failing part.
+not yet: the annotation's location in the error.
 
 ```slug
 val parse = fn(text) { text }        // unannotated: its result is not known
@@ -145,11 +144,12 @@ constraints cannot yet go.
 
 ## The error
 
-A failed check is a checked runtime error, of kind `type`, raised where the
-value reaches the place. It unwinds as any runtime fault does, so `defer
-onerror` sees it, with its `type` field `"type"`. It reads `expected T, got
-U: place`, where `U` is the shallow type of the value, as `str`, `list`, or
-an enum's name, and the place is one of:
+A failed check is a checked runtime error, with the code
+`annotation_mismatch`, raised where the value reaches the place. It unwinds
+as any runtime fault does, so `defer onerror` sees it, with its `type` field
+`"annotation_mismatch"`. It reads `expected T, got U: place`, where `U` is
+the shallow type of the value, as `str`, `list`, or an enum's name, and the
+place is one of:
 
 | Place | Named as |
 | --- | --- |
@@ -159,20 +159,20 @@ an enum's name, and the place is one of:
 | A result or `return` | the function's result |
 | A struct field | the field `name` |
 | A call's result | the call's result |
+| A `foreign` result | the result of foreign `module.name` |
 
-Its location is the declaration, assignment, `return`, struct, or call; for
-a parameter or a body's result, the function, with the call in the frames.
+A deep check adds the first part of the value that failed, as a path from
+it, with that part's type and the type it must have:
 
 ```text
-runtime error: expected list<num>, got list: the argument `xs`
+runtime error: expected list<{name: str}>, got list: the argument `people`: the part `[1].name` is num, but must be str
   --> lib.slug:4:13
   in <fn #1> at main.slug:9:12
 ```
 
-Still to come: a diagnostic code of its own, `annotation_mismatch`; the
-annotation's location where it differs from the place's; and, for a deep
-check, the first part that failed, as the static record mismatch names it:
-`element 3 is str, but must be num`.
+Its location is the declaration, assignment, `return`, struct, or call; for
+a parameter or a body's result, the function, with the call in the frames.
+The annotation's own location, where it differs, is not reported yet.
 
 ## Not checked
 

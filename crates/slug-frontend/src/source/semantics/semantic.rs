@@ -42,6 +42,20 @@ impl NominalIdentity {
         }
     }
 
+    /// Where a program declared the schema this identity names: its
+    /// `struct` expression's path, line, and column, which the runtime keeps
+    /// with the schema. `None` for a payload case's schema, which its enum
+    /// declares, and for a schema not resolved.
+    pub(super) fn declaration_position(&self) -> Option<(&str, u32, u32)> {
+        if self.declaration_name != "<schema>" {
+            return None;
+        }
+        let mut parts = self.declaration_path.rsplitn(3, ':');
+        let column = parts.next()?.parse().ok()?;
+        let line = parts.next()?.parse().ok()?;
+        Some((parts.next()?, line, column))
+    }
+
     pub(super) fn is_unresolved(&self) -> bool {
         self.declaration_path.is_empty()
     }

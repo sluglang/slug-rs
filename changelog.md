@@ -21,7 +21,11 @@
   took the first that accepted their number. Tuples are checked by position,
   recursive types by unfolding, and generic structs and enums by their
   fields with their type arguments: `struct<Box<num>>` and
-  `Result<num, str>` check the value they hold.
+  `Result<num, str>` check the value they hold. A struct type is checked by
+  its schema's declaration, so one private to another module is checked as
+  fully as a local one. A failed check has the code `annotation_mismatch`
+  and names the part of the value that failed: `the part [1].name is num,
+  but must be str`.
 
 - A generic function may pass a value of its type parameter to a function
   that takes any value: `fn<T>(x:T):T { log(x); x }` was rejected with
