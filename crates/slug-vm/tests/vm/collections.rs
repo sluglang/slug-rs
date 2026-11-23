@@ -216,10 +216,12 @@ fn constructs_structs_with_stored_defaults_and_field_access() {
             SchemaField {
                 name: "name".into(),
                 has_default: false,
+                check: None,
             },
             SchemaField {
                 name: "active".into(),
                 has_default: true,
+                check: None,
             },
         ]))
         .emit(Op::DefineGlobal("User".into()))
@@ -243,10 +245,12 @@ fn rejects_duplicate_fields_in_struct_schema_bytecode() {
         SchemaField {
             name: "name".into(),
             has_default: false,
+            check: None,
         },
         SchemaField {
             name: "name".into(),
             has_default: false,
+            check: None,
         },
     ]))
     .emit(Op::Return);

@@ -107,6 +107,9 @@ impl CallableIdentity {
 pub struct ForeignResourceSignature {
     parameters: Vec<Option<(Option<String>, String)>>,
     result: Option<(Option<String>, String)>,
+    /// The kinds the result's annotation accepts, as `check_kinds` bits,
+    /// and the annotated type, which a failed check names.
+    result_kinds: Option<(u32, String)>,
 }
 
 impl ForeignResourceSignature {
@@ -116,7 +119,26 @@ impl ForeignResourceSignature {
         parameters: Vec<Option<(Option<String>, String)>>,
         result: Option<(Option<String>, String)>,
     ) -> Self {
-        Self { parameters, result }
+        Self {
+            parameters,
+            result,
+            result_kinds: None,
+        }
+    }
+
+    /// This signature, with its result checked to be of one of `kinds`,
+    /// `check_kinds` bits, as the result's annotation `expected` says.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_result_kinds(mut self, kinds: u32, expected: String) -> Self {
+        self.result_kinds = Some((kinds, expected));
+        self
+    }
+
+    pub(crate) fn result_kinds(&self) -> Option<(u32, &str)> {
+        self.result_kinds
+            .as_ref()
+            .map(|(kinds, expected)| (*kinds, expected.as_str()))
     }
 
     pub(crate) fn parameter_identity(&self, index: usize) -> Option<(Option<&str>, &str)> {
@@ -184,6 +206,10 @@ pub enum MatchMapKey {
 pub struct SchemaField {
     pub name: String,
     pub has_default: bool,
+    /// The kinds the field's annotation accepts, as `check_kinds` bits, and
+    /// the annotated type, which a failed check names: every value given
+    /// the field, by a construction or a copy, is checked to be of one.
+    pub check: Option<(u32, String)>,
 }
 
 /// Private callable metadata used by source-call binding.
@@ -192,6 +218,10 @@ pub struct ParameterSignature {
     pub name: String,
     pub has_default: bool,
     pub variadic: bool,
+    /// The kinds the parameter's entry check accepts, as `check_kinds` bits,
+    /// when it has one: a call to an overload set the compiler could not
+    /// resolve takes a member whose parameters accept its arguments.
+    pub kinds: Option<u32>,
 }
 
 /// Retained evaluated tag metadata for a top-level source declaration.

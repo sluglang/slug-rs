@@ -93,7 +93,9 @@ impl Vm {
         let (left, right) = self.pop_pair()?;
         let mut replacements = self.pop_values(fields.len() - 1)?;
         let mut base = self.pop()?;
-        if update_cannot_fail(operator, &left, &right) && copy_cannot_fail(&base, fields) {
+        if update_cannot_fail(operator, &left, &right)
+            && copy_cannot_fail(&base, fields, &replacements)
+        {
             self.release_global(id);
             drop(match &mut base {
                 Value::Map(map) => map.take_string_field(last),
@@ -148,7 +150,7 @@ impl Vm {
             .expect("validated struct field metadata");
         let replacements = self.pop_values(fields.len())?;
         let value = self.pop()?;
-        if copy_cannot_fail(&value, fields) {
+        if copy_cannot_fail(&value, fields, &replacements) {
             self.release_global(id);
         }
         #[cfg(feature = "metrics")]
@@ -284,9 +286,10 @@ pub(super) fn update_cannot_fail(operator: GlobalUpdate, left: &Value, right: &V
     }
 }
 
-/// Whether copying `value` with `names` replaced always succeeds: the names
-/// are distinct and, for a struct, all its fields.
-pub(super) fn copy_cannot_fail(value: &Value, names: &[String]) -> bool {
+/// Whether copying `value` with `names` replaced by `replacements`, in order,
+/// always succeeds: the names are distinct and, for a struct, all its
+/// fields, each given a value its annotation accepts.
+pub(super) fn copy_cannot_fail(value: &Value, names: &[String], replacements: &[Value]) -> bool {
     let distinct = names
         .iter()
         .enumerate()
@@ -294,12 +297,19 @@ pub(super) fn copy_cannot_fail(value: &Value, names: &[String]) -> bool {
     distinct
         && match value {
             Value::Map(_) => true,
-            Value::Struct(value) => names.iter().all(|name| {
+            // A field whose annotation is checked fails on a value of
+            // another kind; one whose value is not given yet, as an
+            // update's last field, may.
+            Value::Struct(value) => names.iter().enumerate().all(|(index, name)| {
                 value
                     .schema
                     .fields
                     .iter()
-                    .any(|field| field.name.as_ref() == name)
+                    .find(|field| field.name.as_ref() == name)
+                    .is_some_and(|field| match replacements.get(index) {
+                        Some(replacement) => field.rejects(replacement).is_none(),
+                        None => field.check.is_none(),
+                    })
             }),
             _ => false,
         }

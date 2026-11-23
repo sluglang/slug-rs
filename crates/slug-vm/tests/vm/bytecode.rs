@@ -330,6 +330,7 @@ fn matches_structs_through_private_pattern_bytecode() {
     main.emit(Op::StructSchema(vec![SchemaField {
         name: "name".into(),
         has_default: false,
+        check: None,
     }]))
     .emit(Op::DefineGlobal("User".into()))
     .emit(Op::GetGlobal("User".into()))

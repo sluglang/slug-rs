@@ -392,6 +392,31 @@ impl VmMetrics {
     }
 }
 
+/// Whether `callee`'s parameters accept `arguments`, bound to them, by the
+/// kinds their entry checks accept: an argument not `provided` takes its
+/// default, which its entry check tests.
+fn parameters_accept(callee: &Value, arguments: &[Value], provided: &[bool]) -> bool {
+    let Value::Closure(closure) = callee else {
+        return true;
+    };
+    let Some(chunk) = closure.program.chunk(closure.chunk) else {
+        return true;
+    };
+    chunk
+        .parameters
+        .iter()
+        .zip(arguments.iter().zip(provided))
+        .all(|(parameter, (argument, provided))| {
+            !provided
+                || parameter.kinds.is_none_or(|kinds| match argument {
+                    Value::Binding { .. } => argument
+                        .resolve()
+                        .is_ok_and(|argument| argument.has_kind_in(kinds)),
+                    argument => argument.has_kind_in(kinds),
+                })
+        })
+}
+
 impl Vm {
     /// `==` as this task sees its operands: a module `var` inside either is
     /// read through the task's view, which in a fork is its snapshot, on
@@ -3955,6 +3980,10 @@ impl Vm {
             }
             names.push(field.name.clone());
             schema_fields.push(crate::StructField {
+                check: field
+                    .check
+                    .as_ref()
+                    .map(|(kinds, expected)| (*kinds, expected.as_str().into())),
                 name: field.name.clone().into(),
                 default: field.has_default.then(|| {
                     defaults
@@ -6487,6 +6516,19 @@ impl Vm {
         value: &Value,
         span: Option<&SourceSpan>,
     ) -> VmResult<()> {
+        if let Some((kinds, expected)) = signature.result_kinds()
+            && !value.has_kind_in(kinds)
+        {
+            return Err(self.error(
+                RuntimeErrorKind::Type,
+                format!(
+                    "expected {expected}, got {}: the result of foreign `{}`",
+                    value.type_name(),
+                    function.qualified_name()
+                ),
+                self.owned_span(span),
+            ));
+        }
         let Some(expected) = signature.result_identity() else {
             return Ok(());
         };
@@ -6688,14 +6730,25 @@ impl Vm {
         named: &[NamedArgument],
     ) -> VmResult<(Value, Vec<Value>, Vec<bool>)> {
         let mut error = None;
+        // The first member whose parameters accept the arguments by kind, or
+        // else the first that binds them, whose entry check then fails.
+        let mut first_bound = None;
         for callee in overloads {
             let callee = callee
                 .resolve_in(self)
                 .map_err(|message| self.error_at(RuntimeErrorKind::Name, message))?;
             match self.bind_call_arguments(program, &callee, positional.to_vec(), named.to_vec()) {
-                Ok((arguments, provided)) => return Ok((callee, arguments, provided)),
+                Ok((arguments, provided)) => {
+                    if parameters_accept(&callee, &arguments, &provided) {
+                        return Ok((callee, arguments, provided));
+                    }
+                    first_bound.get_or_insert((callee, arguments, provided));
+                }
                 Err(next) => error = Some(next),
             }
+        }
+        if let Some(bound) = first_bound {
+            return Ok(bound);
         }
         Err(error.unwrap_or_else(|| {
             self.error_at(

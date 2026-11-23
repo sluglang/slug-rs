@@ -3042,6 +3042,24 @@ fn check_expression_inner(
             ExprKind::StructSchema(fields, own) => {
                 let field_parameters = schema_type_parameters(own, type_parameters);
                 for field in fields {
+                    // The schema checks what each annotated field is given,
+                    // wherever it is constructed or copied: a construction
+                    // may not know the schema.
+                    if let Some(annotation) = &field.annotation
+                        && let Ok(expected) = resolve_static_annotation(
+                            annotation,
+                            field_parameters,
+                            &expression.span,
+                            environment,
+                        )
+                    {
+                        environment.record_boundary_check(
+                            &expression.span,
+                            &Type::Unknown,
+                            &expected,
+                            CheckPlace::Field(field.name.clone()),
+                        );
+                    }
                     if let Some(default) = &field.default {
                         let actual = check_expression(default, environment, type_parameters)?;
                         if let Some(annotation) = &field.annotation {
@@ -3674,12 +3692,6 @@ fn check_expression_inner(
                         .with_extent(value));
                     }
                     let actual = check_expression(value, environment, type_parameters)?;
-                    if schema_binding.is_none() {
-                        environment.record_runtime_check(
-                            &expression.span,
-                            CheckPlace::SchemaField(name.clone()),
-                        );
-                    }
                     if let Some(schema) = &schema_binding {
                         let expected = schema.members.get(name).ok_or_else(|| {
                             SourceError::semantic(
@@ -3751,12 +3763,6 @@ fn check_expression_inner(
                         .with_extent(replacement));
                     }
                     let actual = check_expression(replacement, environment, type_parameters)?;
-                    if schema.is_none() && may_be_struct_of_unknown_schema(&result) {
-                        environment.record_runtime_check(
-                            &expression.span,
-                            CheckPlace::SchemaField(name.clone()),
-                        );
-                    }
                     map_replacements.push(actual.clone());
                     record_fields.push((name.clone(), actual.clone()));
                     if let Some(schema) = &schema {
@@ -5631,17 +5637,6 @@ fn holds_function_signature(value_type: &Type) -> bool {
     }
 }
 
-/// Whether a copy of a value of `value_type` may copy a struct whose schema
-/// the checker does not know, whose fields' annotations are then known only
-/// when it runs.
-fn may_be_struct_of_unknown_schema(value_type: &Type) -> bool {
-    match value_type {
-        Type::Unknown | Type::Any | Type::Struct(None, _) => true,
-        Type::Union(members) => members.iter().any(may_be_struct_of_unknown_schema),
-        _ => false,
-    }
-}
-
 /// Notes, for a function whose declared result `expected` has a type
 /// parameter, whether `actual` proves it there.
 fn note_generic_result(environment: &Environment, actual: &Type, expected: &Type) {
@@ -7034,6 +7029,7 @@ mod tests {
         assert_eq!(
             checks,
             vec![
+                (2, CheckPlace::Field("name".into()), "str".into()),
                 (3, CheckPlace::Field("name".into()), "str".into()),
                 (5, CheckPlace::Field("name".into()), "str".into()),
             ]
@@ -7100,20 +7096,19 @@ mod tests {
     }
 
     #[test]
-    fn a_foreign_result_and_a_struct_of_unknown_schema_are_checked() {
+    fn a_foreign_result_and_a_schema_s_annotated_fields_are_checked() {
         let checks = recorded_checks(
             "foreign raw = fn(x:num):num\n\
              foreign loose = fn(x)\n\
-             val make = fn(s) { s { name: \"x\" } }\n\
-             val change = fn(p) { p copy { name: \"x\" } }\n\
-             val record = {name: \"a\"} copy { name: \"b\" }\n",
+             val Pet = struct { name: str, age }\n",
         );
+        // A schema checks what its annotated fields are given, wherever the
+        // struct is made: a construction may not know the schema.
         assert_eq!(
             checks,
             vec![
                 (1, CheckPlace::ForeignResult, "num".into()),
-                (3, CheckPlace::SchemaField("name".into()), "unknown".into()),
-                (4, CheckPlace::SchemaField("name".into()), "unknown".into()),
+                (3, CheckPlace::Field("name".into()), "str".into()),
             ]
         );
     }

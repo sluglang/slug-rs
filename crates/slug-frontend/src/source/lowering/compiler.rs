@@ -281,7 +281,8 @@ impl Compiler {
                 let foreign_resource_signature = self
                     .foreign_resource_signatures
                     .get(&expression.span)
-                    .cloned();
+                    .cloned()
+                    .map(|signature| self.check_foreign_result(signature, &expression.span));
                 self.declarations.push(ModuleDeclaration {
                     bindings: vec![name.clone()],
                     mutable: false,
@@ -616,6 +617,60 @@ impl Compiler {
             self.emit_check(state, &check, site)?;
         }
         Ok(())
+    }
+
+    /// The kinds the entry check of parameter `index` of the function at
+    /// `site` accepts, when it has one, by which a dynamic call to an
+    /// overload set chooses a member.
+    fn parameter_kinds(&self, site: &SourceSpan, index: usize) -> Option<u32> {
+        let check = self.boundary_checks.get(site)?.iter().find(|check| {
+            matches!(check.place, CheckPlace::Parameter { index: checked, .. } if checked == index)
+        })?;
+        let mut operands = Vec::new();
+        lower_check_type(&check.runtime, &mut operands, &mut |_| false)
+            .and_then(|constraint| shallow_check_kinds(&constraint))
+    }
+
+    /// The kinds the field `name` of the schema at `site` accepts, and its
+    /// annotated type, when the checker recorded a check of it: the schema
+    /// checks each value given the field by kind, as a construction may not
+    /// know the schema.
+    fn schema_field_check(&self, site: &SourceSpan, name: &str) -> Option<(u32, String)> {
+        let check = self
+            .boundary_checks
+            .get(site)?
+            .iter()
+            .find(|check| matches!(&check.place, CheckPlace::Field(field) if field == name))?;
+        let mut operands = Vec::new();
+        let kinds = lower_check_type(&check.runtime, &mut operands, &mut |_| false)
+            .and_then(|constraint| shallow_check_kinds(&constraint))?;
+        Some((kinds, check.expected.to_string()))
+    }
+
+    /// `signature`, with its result checked by kind when the checker
+    /// recorded a check of the result of the `foreign` declaration at
+    /// `site`. Host code gives its result, which is checked when it returns;
+    /// as only its kind is checked, `list<str>` is checked to be a list.
+    fn check_foreign_result(
+        &self,
+        signature: ForeignResourceSignature,
+        site: &SourceSpan,
+    ) -> ForeignResourceSignature {
+        let check = self.boundary_checks.get(site).and_then(|checks| {
+            checks
+                .iter()
+                .find(|check| matches!(check.place, CheckPlace::ForeignResult))
+        });
+        let Some(check) = check else {
+            return signature;
+        };
+        let mut operands = Vec::new();
+        let kinds = lower_check_type(&check.runtime, &mut operands, &mut |_| false)
+            .and_then(|constraint| shallow_check_kinds(&constraint));
+        match kinds {
+            Some(kinds) => signature.with_result_kinds(kinds, check.expected.to_string()),
+            None => signature,
+        }
     }
 
     /// Emits one check of the value on the stack: a match against
@@ -1553,10 +1608,12 @@ impl Compiler {
                     }
                     chunk.parameters = parameters
                         .iter()
-                        .map(|parameter| ParameterSignature {
+                        .enumerate()
+                        .map(|(index, parameter)| ParameterSignature {
                             name: parameter.name.clone(),
                             has_default: parameter.default.is_some(),
                             variadic: parameter.variadic,
+                            kinds: self.parameter_kinds(&expression.span, index),
                         })
                         .collect();
                     let index = self.chunks.len();
@@ -1637,6 +1694,7 @@ impl Compiler {
                     .map(|field| SchemaField {
                         name: field.name.clone(),
                         has_default: field.default.is_some(),
+                        check: self.schema_field_check(&expression.span, &field.name),
                     })
                     .collect(),
             ),
@@ -2570,6 +2628,26 @@ fn check_kinds(constraint: &MatchType) -> Option<u32> {
     })
 }
 
+/// The kinds of value whose outermost part `constraint` accepts, as
+/// `check_kinds` bits: as `check_kinds`, except that a list, map, record,
+/// struct, enum, or resource is any value of that kind.
+fn shallow_check_kinds(constraint: &MatchType) -> Option<u32> {
+    use slug_vm::check_kinds as k;
+    Some(match constraint {
+        MatchType::List(_) => k::LIST,
+        MatchType::Map(_) => k::MAP,
+        MatchType::Record(_) => k::MAP | k::STRUCT,
+        MatchType::Struct(_) => k::STRUCT,
+        MatchType::Enum { .. } => k::ENUM,
+        MatchType::Resource { .. } => k::RESOURCE,
+        MatchType::Union(members) => members
+            .iter()
+            .map(shallow_check_kinds)
+            .try_fold(0, |kinds, member| Some(kinds | member?))?,
+        other => check_kinds(other)?,
+    })
+}
+
 /// The place a check guards, as its failure names it.
 fn check_place_text(place: &CheckPlace) -> String {
     match place {
@@ -2585,7 +2663,7 @@ fn check_place_text(place: &CheckPlace) -> String {
         CheckPlace::Parameter { name, .. } => {
             format!("the argument `{name}`, whose type the function's body relies on")
         }
-        CheckPlace::Field(name) | CheckPlace::SchemaField(name) => format!("the field `{name}`"),
+        CheckPlace::Field(name) => format!("the field `{name}`"),
         CheckPlace::CallResult => "the call's result".into(),
         CheckPlace::ForeignResult => "the foreign function's result".into(),
     }

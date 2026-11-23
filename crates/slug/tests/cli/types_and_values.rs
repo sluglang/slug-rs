@@ -3317,6 +3317,25 @@ fn a_value_the_checker_could_not_prove_is_checked_where_it_reaches_an_annotation
             "val launder = fn<T>(x:T):T { dynamic(x) }\nval n:num = launder(1)\nval s:str = launder(\"s\")\nprintln(s)",
             "",
         ),
+        // A recovering handler's value is the function's result.
+        (
+            "val safe = fn(x):num {\ndefer onerror(e) { dynamic(x) }\nthrow \"boom\"\n}\nsafe(\"s\")",
+            "expected num, got str: the function's result",
+        ),
+        // The schema checks its fields where it is not known.
+        (
+            "val Pet = struct { name: str }\nval make = fn(s, v) { s { name: v } }\nmake(Pet, 7)",
+            "expected str, got num: the field `name`",
+        ),
+        (
+            "val Pet = struct { name: str }\nval rename = fn(p, v) { p copy { name: v } }\nrename(Pet { name: \"a\" }, 7)",
+            "expected str, got num: the field `name`",
+        ),
+        // An overload set called as a value takes the member that accepts.
+        (
+            "val f = fn(x:num) { \"num\" }\nval f = fn(x:str) { \"str\" }\nval apply = fn(h, v) { h(v) }\nif (apply(f, \"a\") != \"str\") { throw \"wrong member\" }\napply(f, true)",
+            "expected num, got bool: the argument `x`",
+        ),
     ] {
         let path = fixture_path("annotation-check");
         fs::write(&path, format!("{prelude}{source}\n")).expect("write annotation check");

@@ -974,10 +974,14 @@ pub(super) fn construct_struct(
         .fields
         .iter()
         .map(|field| {
-            names
+            let given = names
                 .iter()
                 .position(|name| name == field.name.as_ref())
-                .and_then(|index| provided.get(index).cloned())
+                .and_then(|index| provided.get(index).cloned());
+            if let Some(rejected) = given.as_ref().and_then(|value| field.rejects(value)) {
+                return Err(rejected);
+            }
+            given
                 .or_else(|| field.default.clone())
                 .ok_or_else(|| format!("missing required struct field '{}'", field.name))
         })

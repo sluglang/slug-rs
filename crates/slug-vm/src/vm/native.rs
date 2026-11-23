@@ -528,7 +528,7 @@ impl Vm {
                 if operands.is_empty() {
                     return Err(operands);
                 }
-                if copy_cannot_fail(&operands[0], names) {
+                if copy_cannot_fail(&operands[0], names, &operands[1..]) {
                     // Dropped once the cell is no longer borrowed.
                     drop(cell.replace(Value::Nil));
                 }
@@ -647,7 +647,9 @@ impl Vm {
         };
         let right = &operands[operands.len() - 1];
         let left = &operands[operands.len() - 2];
-        if !update_cannot_fail(operator, left, right) || !copy_cannot_fail(&operands[0], names) {
+        if !update_cannot_fail(operator, left, right)
+            || !copy_cannot_fail(&operands[0], names, &operands[1..names.len()])
+        {
             return Err(operands);
         }
         let right = operands.pop().expect("length was checked");
@@ -853,7 +855,7 @@ impl Vm {
     /// rest, as `StructCopy` copies it: in place when nothing else holds it
     /// and the copy cannot fail.
     fn native_copy(names: &[String], mut operands: Vec<Value>) -> Result<Value, Vec<Value>> {
-        if copy_cannot_fail(&operands[0], names) {
+        if copy_cannot_fail(&operands[0], names, &operands[1..]) {
             let base = core::mem::replace(&mut operands[0], Value::Nil);
             // It cannot fail, as checked.
             return copy_value(base, names, &operands[1..]).map_err(|_| Vec::new());

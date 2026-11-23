@@ -14,7 +14,11 @@
   which its assignments must keep. Where the checker proved a type, nothing
   is checked. `slug.string`'s `sort` and `join` now reject a non-string
   element by their `list<str>` annotation, with a `type` error, rather than
-  their own `string.type` one.
+  their own `string.type` one. A `foreign` function's result is checked by
+  kind when the host returns, and a schema checks its annotated fields
+  wherever a struct of it is made or copied. An overload set called as a
+  value takes the member whose parameters accept the arguments, where it
+  took the first that accepted their number.
 
 - A generic function may pass a value of its type parameter to a function
   that takes any value: `fn<T>(x:T):T { log(x); x }` was rejected with

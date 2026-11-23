@@ -891,3 +891,47 @@ fn a_typed_producer_streams_from_a_c_worker_thread() {
         "0\n20100\n0 [42, \"ok\", 0x\"cafe\", nil, true, 0.5] nil\n"
     );
 }
+
+#[test]
+fn a_foreign_result_is_checked_against_its_annotation() {
+    let directory = TemporaryDirectory::new();
+    fs::create_dir_all(directory.path().join("slug")).expect("create module directory");
+    // The host gives a number for each; one is declared to give a string.
+    fs::write(
+        directory.path().join("slug/scalar.slug"),
+        "export foreign add = fn(left:num, right:num):num\n\
+         export foreign label = fn(left:num, right:num):str\n",
+    )
+    .expect("write module source");
+    let loader = ModuleLoader::new(directory.path(), None);
+    let mut vm = Vm::with_host(slug_vm::Shared::new(loader.clone()));
+    let module = NativeModule::new("slug.scalar", ()).expect("static module is valid");
+    vm.define_foreign_batch(
+        ["add", "label"]
+            .into_iter()
+            .map(|name| {
+                module
+                    .function(name, NativeArity::Exact(2), native_scalar_add)
+                    .expect("static function is valid")
+            })
+            .collect(),
+    )
+    .expect("register static natives");
+    let run = |vm: &mut Vm, call: &str| {
+        let program = loader
+            .compile_source(
+                &directory.path().join("main.slug").to_string_lossy(),
+                &format!("val scalar = import(\"slug.scalar\")\n{call}\n"),
+            )
+            .expect("compile foreign call");
+        vm.run_named(&program, "main")
+            .map(|value| value.to_string())
+            .map_err(|error| error.to_string())
+    };
+    assert_eq!(run(&mut vm, "scalar.add(40, 2)"), Ok("42".into()));
+    let error = run(&mut vm, "scalar.label(40, 2)").expect_err("a number is not a str");
+    assert!(
+        error.contains("expected str, got num: the result of foreign `slug.scalar.label`"),
+        "{error}"
+    );
+}

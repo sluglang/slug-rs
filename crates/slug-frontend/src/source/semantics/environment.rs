@@ -287,9 +287,6 @@ pub(super) enum CheckPlace {
     CallResult,
     /// What a `foreign` function returns, which host code gives.
     ForeignResult,
-    /// The field `name` of a struct whose schema is known only when it runs,
-    /// constructed or copied: checked against that schema's annotation.
-    SchemaField(String),
 }
 
 /// A runtime check where a value whose type the checker could not prove
@@ -579,24 +576,6 @@ impl Environment {
                 map: *map,
             },
             other => other.clone(),
-        }
-    }
-
-    /// Records that a runtime check is made at `site` whatever the checker
-    /// knows, as `place` says: one against a type known only when it runs.
-    pub(super) fn record_runtime_check(&self, site: &SourceSpan, place: CheckPlace) {
-        if self.in_trial() {
-            return;
-        }
-        let check = BoundaryCheck {
-            expected: Type::Unknown,
-            place,
-            runtime: Type::Unknown,
-        };
-        let mut records = self.records.borrow_mut();
-        let checks = records.boundary_checks.entry(site.clone()).or_default();
-        if !checks.contains(&check) {
-            checks.push(check);
         }
     }
 

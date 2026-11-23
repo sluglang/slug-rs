@@ -485,12 +485,17 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   the spec's `var` rule forbids, and made `slug.string`'s own element check
   in `sort` and `join` redundant, so it is gone.
 - [ ] Finish the checks:
-  - A `foreign` function's result, which the VM checks when the host
-    returns; and fields of structs of unknown schema, which needs schemas to
-    carry field types at runtime.
-  - A recovering `defer onerror`'s result.
-  - Dynamic overload dispatch by type, as the amended decision requires:
-    the binder needs each member's parameter checks.
+  - [x] A `foreign` function's result, which the VM checks by kind when
+    the host returns; and fields of structs of unknown schema: a schema
+    carries its annotated fields' kinds and checks every value given them.
+    A copy the VM made in place, letting go of the variable first, now does
+    so only when the given fields' checks pass, so a failed check keeps the
+    variable's value.
+  - [x] A recovering `defer onerror`'s result: its handler is compiled as a
+    function of the `defer`'s span, so the result check was already made.
+  - [x] Dynamic overload dispatch by type, as the amended decision
+    requires: each parameter's signature carries its entry check's kinds,
+    and the binder takes the first member they accept.
   - Deep checks of struct and enum type arguments, `Box<num>`, of recursive
     types, and of tuples by position, which are now checked as lists of the
     union of their elements.

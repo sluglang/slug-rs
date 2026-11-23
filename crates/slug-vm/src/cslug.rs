@@ -799,6 +799,14 @@ fn encode_resource_signature(signature: &ForeignResourceSignature, output: &mut 
         encode_resource_identity(identity, output);
     }
     encode_resource_identity(signature.cslug_result_identity(), output);
+    match signature.result_kinds() {
+        None => output.push(0),
+        Some((kinds, expected)) => {
+            output.push(1);
+            uleb(kinds as usize, output);
+            string(expected, output);
+        }
+    }
 }
 
 fn encode_resource_identity(identity: Option<(Option<&str>, &str)>, output: &mut Vec<u8>) {
@@ -865,6 +873,14 @@ fn encode_program_metadata(program: &Program, output: &mut Vec<u8>) -> Result<()
         for field in fields {
             string(&field.name, output);
             boolean(field.has_default, output);
+            match &field.check {
+                None => output.push(0),
+                Some((kinds, expected)) => {
+                    output.push(1);
+                    uleb(*kinds as usize, output);
+                    string(expected, output);
+                }
+            }
         }
     }
     string_lists(struct_fields, output);
@@ -1101,6 +1117,13 @@ fn encode_chunk(chunk: &CompiledChunk, output: &mut Vec<u8>) -> Result<(), Error
         string(&parameter.name, output);
         boolean(parameter.has_default, output);
         boolean(parameter.variadic, output);
+        match parameter.kinds {
+            None => output.push(0),
+            Some(kinds) => {
+                output.push(1);
+                uleb(kinds as usize, output);
+            }
+        }
     }
     optional_usize(callable_identity, output);
     uleb(locals, output);
@@ -1472,9 +1495,21 @@ fn decode_scalar_program(
         let count = reader.count("schema field count")?;
         let mut fields = Vec::with_capacity(count);
         for _ in 0..count {
+            let name = reader.string("schema field name")?;
+            let has_default = reader.bool("schema field default")?;
+            let check = match reader.byte("schema field check")? {
+                0 => None,
+                1 => Some((
+                    u32::try_from(reader.usize("schema field kinds")?)
+                        .map_err(|_| Error::InvalidStructure("schema field kinds".into()))?,
+                    reader.string("schema field type")?,
+                )),
+                _ => return Err(Error::InvalidStructure("schema field check".into())),
+            };
             fields.push(SchemaField {
-                name: reader.string("schema field name")?,
-                has_default: reader.bool("schema field default")?,
+                name,
+                has_default,
+                check,
             });
         }
         schema_fields.push(fields);
@@ -1635,7 +1670,17 @@ fn decode_resource_signature(reader: &mut Reader<'_>) -> Result<ForeignResourceS
         parameters.push(decode_resource_identity(reader)?);
     }
     let result = decode_resource_identity(reader)?;
-    Ok(ForeignResourceSignature::new(parameters, result))
+    let signature = ForeignResourceSignature::new(parameters, result);
+    match reader.byte("foreign result kinds")? {
+        0 => Ok(signature),
+        1 => {
+            let kinds = u32::try_from(reader.usize("foreign result kinds")?)
+                .map_err(|_| Error::InvalidStructure("foreign result kinds".into()))?;
+            let expected = reader.string("foreign result type")?;
+            Ok(signature.with_result_kinds(kinds, expected))
+        }
+        _ => Err(Error::InvalidStructure("foreign result kinds".into())),
+    }
 }
 
 fn decode_resource_identity(
@@ -2042,10 +2087,22 @@ impl<'a> Reader<'a> {
         let parameter_count = self.count("chunk parameter count")?;
         let mut parameters = Vec::with_capacity(parameter_count);
         for _ in 0..parameter_count {
+            let name = self.string("parameter name")?;
+            let has_default = self.bool("parameter default")?;
+            let variadic = self.bool("parameter variadic")?;
+            let kinds = match self.byte("parameter kinds")? {
+                0 => None,
+                1 => Some(
+                    u32::try_from(self.usize("parameter kinds")?)
+                        .map_err(|_| Error::InvalidStructure("parameter kinds".into()))?,
+                ),
+                _ => return Err(Error::InvalidStructure("parameter kinds".into())),
+            };
             parameters.push(ParameterSignature {
-                name: self.string("parameter name")?,
-                has_default: self.bool("parameter default")?,
-                variadic: self.bool("parameter variadic")?,
+                name,
+                has_default,
+                variadic,
+                kinds,
             });
         }
         let callable_identity = match self.byte("chunk callable identity")? {
@@ -2485,6 +2542,7 @@ mod tests {
         uleb(1, &mut record); // schema fields
         string("field", &mut record);
         record.push(1); // default
+        record.push(0); // no check
         uleb(1, &mut record); // struct field lists
         uleb(1, &mut record); // struct fields
         string("field", &mut record);
@@ -2535,6 +2593,10 @@ mod tests {
         uleb(1, &mut record);
         string("field", &mut record);
         record.push(1);
+        // The field's check: `check_kinds::STR`, of type `str`.
+        record.push(1);
+        uleb(8, &mut record);
+        string("str", &mut record);
         uleb(1, &mut record);
         uleb(1, &mut record);
         string("field", &mut record);

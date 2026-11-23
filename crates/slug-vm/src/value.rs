@@ -1507,6 +1507,24 @@ fn release_admission(state: &mut TaskState) {
 pub struct StructField {
     pub(crate) name: Rc<str>,
     pub(crate) default: Option<Value>,
+    /// The kinds the field's annotation accepts, as `check_kinds` bits, and
+    /// the annotated type, which a failed check names.
+    pub(crate) check: Option<(u32, Rc<str>)>,
+}
+
+impl StructField {
+    /// Why `value` cannot be this field's, when its annotation's kinds do not
+    /// include it.
+    pub(crate) fn rejects(&self, value: &Value) -> Option<String> {
+        let (kinds, expected) = self.check.as_ref()?;
+        (!value.has_kind_in(*kinds)).then(|| {
+            format!(
+                "expected {expected}, got {}: the field `{}`",
+                value.type_name(),
+                self.name
+            )
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1549,6 +1567,7 @@ impl StructSchema {
         let field = |name: &str, default: Option<Value>| StructField {
             name: name.into(),
             default,
+            check: None,
         };
         Self {
             fields: alloc::vec![
@@ -1729,6 +1748,9 @@ impl StructValue {
                 .iter()
                 .position(|field| field.name.as_ref() == name)
                 .expect("field names were validated");
+            if let Some(rejected) = copy.schema.fields[index].rejects(replacement) {
+                return Err(rejected);
+            }
             copy.values[index] = replacement.clone();
         }
         Ok(Rc::new(copy))

@@ -6,12 +6,12 @@ verifies it where the value comes from code the checker could not type. The
 rationale is in [Annotations are guarantees](../decisions/2026-11-22-annotations-are-guarantees.md)
 and [the transient soundness model](../decisions/2026-11-22-transient-soundness-model.md).
 
-Status: implemented for declarations, assignments, parameters, results and
-`return`, struct fields, and calls; [stage 6 of the typed-Slug
-plan](../planning/typed-slug.md#6-sound-boundaries) lists what is not yet:
-`foreign` results, structs of unknown schema, a recovering `defer onerror`'s
-result, dispatch of a dynamic overload call by type, and deep checks of
-struct type arguments and recursive types.
+Status: implemented for declarations, assignments, parameters, results,
+`return`, and a recovering `defer onerror`, struct fields, calls, and
+`foreign` results, with dynamic overload dispatch by type; [stage 6 of the
+typed-Slug plan](../planning/typed-slug.md#6-sound-boundaries) lists what is
+not yet: deep checks of struct and enum type arguments and of recursive
+types, tuples by position, and schemas the check cannot name.
 
 ```slug
 val parse = fn(text) { text }        // unannotated: its result is not known
@@ -75,7 +75,7 @@ is made.
 | A rest parameter `...name:list<T>` | The list of rest arguments | On entry |
 | A function's result annotation `:T` | The value it completes with, by reaching the end of its body or by `return` | When it returns |
 | A struct field `name:T` | The field's value against `T`, with the struct's type arguments | At construction, and at a `copy` that replaces the field |
-| A field of a struct whose schema the checker does not know, as `s { name: v }` or `p copy { name: v }` for unannotated `s` and `p` | The value against the schema's annotation for the field, read when it runs | At construction or the copy |
+| A field of a struct whose schema the checker does not know, as `s { name: v }` or `p copy { name: v }` for unannotated `s` and `p` | The value's kind against the schema's annotation for the field, which the schema carries | At construction or the copy, by the schema itself |
 | The sources in the table above | As described there | At the source |
 
 **What the checker relied on is checked, annotated or not.** A `var`'s type
@@ -98,12 +98,18 @@ as a value. Inside a function, its parameters' types are proven. A later
 stage may skip an entry check for a call the checker proved, through a second
 entry point; that is an optimization, not a change of meaning.
 
-**A dynamic call to an overload set selects by type.** Today a call the
-checker could not resolve takes the first member whose parameters bind the
-arguments by shape. With checks, it takes the first member whose parameters
-bind the arguments and whose entry checks they pass, so `f("s")` reaches
-`f(x:str)` though `f(x:num)` was declared first. A call that no member
-accepts is a runtime error naming the first member's failed check.
+**A dynamic call to an overload set selects by type.** A call the checker
+could not resolve, as one through an overload set passed as a value, takes
+the first member whose parameters bind the arguments and whose parameters'
+kinds they have, so `apply(f, "s")` reaches `f(x:str)` though `f(x:num)`
+was declared first. A call that no member accepts reaches the first member
+that binds the arguments, whose entry check fails naming it.
+
+**A `foreign` result and a schema's fields are checked by kind.** Host
+code gives a `foreign` function's result, which is checked to be of the
+annotation's kind when it returns: a `list<str>` result is checked to be a
+list. A schema carries the kinds of its annotated fields, and checks every
+value given them, by a construction or a copy, wherever it happens.
 
 ## What a check covers
 
