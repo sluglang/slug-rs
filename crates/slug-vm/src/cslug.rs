@@ -1102,6 +1102,30 @@ fn encode_match_type(value: &MatchType, depth: usize, output: &mut Vec<u8>) -> R
                 encode_match_type(value, depth + 1, output)?;
             }
         }
+        MatchType::Tuple(elements) => {
+            output.push(17);
+            uleb(elements.len(), output);
+            for element in elements {
+                encode_match_type(element, depth + 1, output)?;
+            }
+        }
+        MatchType::Recursive(body) => {
+            output.push(18);
+            encode_match_type(body, depth + 1, output)?;
+        }
+        MatchType::Recur(index) => {
+            output.push(19);
+            uleb(*index, output);
+        }
+        MatchType::Fields(base, fields) => {
+            output.push(20);
+            encode_match_type(base, depth + 1, output)?;
+            uleb(fields.len(), output);
+            for (name, value) in fields {
+                string(name, output);
+                encode_match_type(value, depth + 1, output)?;
+            }
+        }
     }
     Ok(())
 }
@@ -2044,6 +2068,28 @@ impl<'a> Reader<'a> {
                     ));
                 }
                 Ok(MatchType::Record(fields))
+            }
+            17 => {
+                let count = self.count("match tuple element count")?;
+                let mut elements = Vec::with_capacity(count);
+                for _ in 0..count {
+                    elements.push(self.match_type(depth + 1)?);
+                }
+                Ok(MatchType::Tuple(elements))
+            }
+            18 => Ok(MatchType::Recursive(Box::new(self.match_type(depth + 1)?))),
+            19 => Ok(MatchType::Recur(self.usize("match recursion index")?)),
+            20 => {
+                let base = Box::new(self.match_type(depth + 1)?);
+                let count = self.count("match field count")?;
+                let mut fields = Vec::with_capacity(count);
+                for _ in 0..count {
+                    fields.push((
+                        self.string("match field name")?,
+                        self.match_type(depth + 1)?,
+                    ));
+                }
+                Ok(MatchType::Fields(base, fields))
             }
             _ => Err(Error::InvalidStructure("match type kind".into())),
         }

@@ -496,9 +496,11 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   - [x] Dynamic overload dispatch by type, as the amended decision
     requires: each parameter's signature carries its entry check's kinds,
     and the binder takes the first member they accept.
-  - Deep checks of struct and enum type arguments, `Box<num>`, of recursive
-    types, and of tuples by position, which are now checked as lists of the
-    union of their elements.
+  - [x] Deep checks of struct and enum type arguments, `Box<num>`, of
+    recursive types, and of tuples by position. The VM's match types gain a
+    tuple, a recursive type with its recursion by depth, and a struct test
+    with field checks, which a generic struct's check makes of the fields
+    whose declared types use a type parameter, with its type arguments.
   - A schema the check cannot name, as one private to another module, is
     checked only to be a struct: schemas need an identity the runtime can
     compare.

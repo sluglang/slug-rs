@@ -2522,12 +2522,24 @@ fn member_path(path: &str) -> Expr {
 /// What a check of a value against `value_type` tests, or `None` when it
 /// tests nothing: `unknown`, a type parameter, whose check is erased, and a
 /// type every value conforms to. A function, task, or channel type tests the
-/// value's kind; a tuple, that it is a list of the tuple's element types.
-/// Recursive types are not yet checked.
+/// value's kind; a tuple, each position; a recursive type, by unfolding as
+/// the value is walked; and a generic struct, its fields that use a type
+/// parameter, with its type arguments.
 fn lower_check_type(
     value_type: &super::semantic::Type,
     operands: &mut Vec<PatternOperand>,
     reachable: &mut dyn FnMut(&str) -> bool,
+) -> Option<MatchType> {
+    lower_check_type_in(value_type, operands, reachable, &mut Vec::new())
+}
+
+/// [`lower_check_type`] inside the recursive types `recursion` names,
+/// innermost last.
+fn lower_check_type_in(
+    value_type: &super::semantic::Type,
+    operands: &mut Vec<PatternOperand>,
+    reachable: &mut dyn FnMut(&str) -> bool,
+    recursion: &mut Vec<String>,
 ) -> Option<MatchType> {
     use super::semantic::Type;
 
@@ -2535,22 +2547,36 @@ fn lower_check_type(
         return None;
     }
     let anything = || MatchType::Union(vec![MatchType::Any, MatchType::Nil]);
+    let part = |value_type: &Type,
+                operands: &mut Vec<PatternOperand>,
+                reachable: &mut dyn FnMut(&str) -> bool,
+                recursion: &mut Vec<String>| {
+        lower_check_type_in(value_type, operands, reachable, recursion)
+    };
     match value_type {
-        Type::Unknown
-        | Type::Generic(_)
-        | Type::Never
-        | Type::Recursive { .. }
-        | Type::RecursionVar(_)
-        | Type::AliasApplication(..) => None,
+        Type::Unknown | Type::Generic(_) | Type::Never | Type::AliasApplication(..) => None,
+        Type::Recursive { name, body } => {
+            recursion.push(name.clone());
+            let body = part(body, operands, reachable, recursion);
+            recursion.pop();
+            Some(MatchType::Recursive(Box::new(
+                body.unwrap_or_else(anything),
+            )))
+        }
+        Type::RecursionVar(name) => recursion
+            .iter()
+            .rev()
+            .position(|enclosing| enclosing == name)
+            .map(MatchType::Recur),
         Type::Function(_) => Some(MatchType::Function),
         Type::Task(_) => Some(MatchType::Task),
         Type::Channel(_) => Some(MatchType::Channel),
         Type::List(Some(element)) => Some(MatchType::List(
-            lower_check_type(element, operands, reachable).map(Box::new),
+            part(element, operands, reachable, recursion).map(Box::new),
         )),
         Type::Map(Some((key, value))) => {
-            let key = lower_check_type(key, operands, reachable);
-            let value = lower_check_type(value, operands, reachable);
+            let key = part(key, operands, reachable, recursion);
+            let value = part(value, operands, reachable, recursion);
             Some(MatchType::Map((key.is_some() || value.is_some()).then(
                 || {
                     (
@@ -2560,18 +2586,17 @@ fn lower_check_type(
                 },
             )))
         }
-        Type::Tuple(elements) => {
-            let elements = elements
+        Type::Tuple(elements) => Some(MatchType::Tuple(
+            elements
                 .iter()
                 .map(|element| {
-                    lower_check_type(element, operands, reachable).unwrap_or_else(anything)
+                    part(element, operands, reachable, recursion).unwrap_or_else(anything)
                 })
-                .collect();
-            Some(MatchType::List(Some(Box::new(MatchType::Union(elements)))))
-        }
+                .collect(),
+        )),
         Type::Union(members) => members
             .iter()
-            .map(|member| lower_check_type(member, operands, reachable))
+            .map(|member| part(member, operands, reachable, recursion))
             .collect::<Option<Vec<_>>>()
             .map(MatchType::Union),
         Type::Record { fields, .. } => Some(MatchType::Record(
@@ -2580,13 +2605,29 @@ fn lower_check_type(
                 .map(|(name, field)| {
                     (
                         name.clone(),
-                        lower_check_type(field, operands, reachable).unwrap_or_else(anything),
+                        part(field, operands, reachable, recursion).unwrap_or_else(anything),
                     )
                 })
                 .collect(),
         )),
-        Type::Struct(Some(identity), _) if !reachable(&identity.name) => {
-            Some(MatchType::Struct(None))
+        Type::Struct(Some(identity), arguments) => {
+            let base = if reachable(&identity.name) {
+                lower_match_type(&Type::Struct(Some(identity.clone()), Vec::new()), operands)
+                    .ok()?
+            } else {
+                MatchType::Struct(None)
+            };
+            let fields = super::semantic::parameterized_fields(identity, arguments)
+                .into_iter()
+                .filter_map(|(name, field)| {
+                    part(&field, operands, reachable, recursion).map(|field| (name, field))
+                })
+                .collect::<Vec<_>>();
+            Some(if fields.is_empty() {
+                base
+            } else {
+                MatchType::Fields(Box::new(base), fields)
+            })
         }
         other => lower_match_type(other, operands).ok(),
     }
@@ -2634,7 +2675,7 @@ fn check_kinds(constraint: &MatchType) -> Option<u32> {
 fn shallow_check_kinds(constraint: &MatchType) -> Option<u32> {
     use slug_vm::check_kinds as k;
     Some(match constraint {
-        MatchType::List(_) => k::LIST,
+        MatchType::List(_) | MatchType::Tuple(_) => k::LIST,
         MatchType::Map(_) => k::MAP,
         MatchType::Record(_) => k::MAP | k::STRUCT,
         MatchType::Struct(_) => k::STRUCT,
@@ -2644,6 +2685,8 @@ fn shallow_check_kinds(constraint: &MatchType) -> Option<u32> {
             .iter()
             .map(shallow_check_kinds)
             .try_fold(0, |kinds, member| Some(kinds | member?))?,
+        MatchType::Fields(base, _) => shallow_check_kinds(base)?,
+        MatchType::Recursive(body) => shallow_check_kinds(body)?,
         other => check_kinds(other)?,
     })
 }

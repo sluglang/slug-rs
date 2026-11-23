@@ -1788,21 +1788,48 @@ impl Program {
     }
 
     fn validate_match_type(kind: &MatchType, operands: usize) -> Result<(), String> {
+        Self::validate_match_type_in(kind, operands, 0)
+    }
+
+    /// Validates `kind` inside `recursive` enclosing recursive types.
+    fn validate_match_type_in(
+        kind: &MatchType,
+        operands: usize,
+        recursive: usize,
+    ) -> Result<(), String> {
+        let each = |kinds: &mut dyn Iterator<Item = &MatchType>, recursive| {
+            for kind in kinds {
+                Self::validate_match_type_in(kind, operands, recursive)?;
+            }
+            Ok(())
+        };
         match kind {
-            MatchType::List(Some(element)) => Self::validate_match_type(element, operands),
+            MatchType::List(Some(element)) => {
+                Self::validate_match_type_in(element, operands, recursive)
+            }
             MatchType::Map(Some((key, value))) => {
-                Self::validate_match_type(key, operands)?;
-                Self::validate_match_type(value, operands)
+                Self::validate_match_type_in(key, operands, recursive)?;
+                Self::validate_match_type_in(value, operands, recursive)
             }
             MatchType::Struct(Some(index)) => (*index < operands)
                 .then_some(())
                 .ok_or_else(|| format!("match pattern operand {index} does not exist")),
-            MatchType::Union(members) => members
-                .iter()
-                .try_for_each(|member| Self::validate_match_type(member, operands)),
-            MatchType::Record(fields) => fields
-                .iter()
-                .try_for_each(|(_, field)| Self::validate_match_type(field, operands)),
+            MatchType::Union(members) | MatchType::Tuple(members) => {
+                each(&mut members.iter(), recursive)
+            }
+            MatchType::Record(fields) => {
+                each(&mut fields.iter().map(|(_, field)| field), recursive)
+            }
+            MatchType::Recursive(body) => {
+                Self::validate_match_type_in(body, operands, recursive + 1)
+            }
+            MatchType::Recur(index) => (*index < recursive)
+                .then_some(())
+                .ok_or_else(|| format!("match recursion {index} has no enclosing type")),
+            MatchType::Fields(base, fields) => {
+                Self::validate_match_type_in(base, operands, recursive)?;
+                each(&mut fields.iter().map(|(_, field)| field), recursive)
+            }
             _ => Ok(()),
         }
     }

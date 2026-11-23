@@ -581,6 +581,34 @@ fn matches_type(
     value: &Value,
     operands: &[Value],
 ) -> Result<bool, (RuntimeErrorKind, String)> {
+    matches_type_in(constraint, value, operands, None)
+}
+
+/// The recursive types enclosing a part of a match type, innermost first.
+struct Recursion<'a> {
+    body: &'a MatchType,
+    outer: Option<&'a Recursion<'a>>,
+}
+
+impl<'a> Recursion<'a> {
+    /// The `index`th enclosing recursive type, counting from the innermost.
+    fn get(&'a self, index: usize) -> Option<&'a Recursion<'a>> {
+        match index {
+            0 => Some(self),
+            _ => self.outer?.get(index - 1),
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn matches_type_in(
+    constraint: &MatchType,
+    value: &Value,
+    operands: &[Value],
+    recursion: Option<&Recursion<'_>>,
+) -> Result<bool, (RuntimeErrorKind, String)> {
+    let matches_type =
+        |constraint, value, operands| matches_type_in(constraint, value, operands, recursion);
     match constraint {
         MatchType::Any => Ok(!matches!(value, Value::Nil)),
         MatchType::Nil => Ok(matches!(value, Value::Nil)),
@@ -656,7 +684,61 @@ fn matches_type(
         MatchType::Union(members) => members.iter().try_fold(false, |matches, member| {
             Ok(matches || matches_type(member, value, operands)?)
         }),
-        MatchType::Record(fields) => matches_record(fields, value, operands),
+        MatchType::Record(fields) => matches_record(fields, value, operands, recursion),
+        MatchType::Tuple(elements) => {
+            let Value::List(values) = value else {
+                return Ok(false);
+            };
+            if values.len() != elements.len() {
+                return Ok(false);
+            }
+            elements
+                .iter()
+                .zip(values.iter())
+                .try_fold(true, |matches, (element, value)| {
+                    Ok(matches && matches_type(element, value, operands)?)
+                })
+        }
+        MatchType::Recursive(body) => {
+            let inner = Recursion {
+                body,
+                outer: recursion,
+            };
+            matches_type_in(body, value, operands, Some(&inner))
+        }
+        MatchType::Recur(index) => {
+            let frame = recursion
+                .and_then(|recursion| recursion.get(*index))
+                .ok_or_else(|| {
+                    (
+                        RuntimeErrorKind::InvalidBytecode,
+                        format!("match recursion {index} has no enclosing type"),
+                    )
+                })?;
+            matches_type_in(frame.body, value, operands, Some(frame))
+        }
+        MatchType::Fields(base, fields) => {
+            if !matches_type(base, value, operands)? {
+                return Ok(false);
+            }
+            let Value::Struct(actual) = value else {
+                return Ok(false);
+            };
+            fields.iter().try_fold(true, |matches, (name, field)| {
+                if !matches {
+                    return Ok(false);
+                }
+                let Some(position) = actual
+                    .schema
+                    .fields
+                    .iter()
+                    .position(|candidate| candidate.name.as_ref() == name)
+                else {
+                    return Ok(false);
+                };
+                matches_type(field, &actual.values[position], operands)
+            })
+        }
     }
 }
 
@@ -667,7 +749,10 @@ fn matches_record(
     fields: &[(String, MatchType)],
     value: &Value,
     operands: &[Value],
+    recursion: Option<&Recursion<'_>>,
 ) -> Result<bool, (RuntimeErrorKind, String)> {
+    let matches_type =
+        |constraint, value, operands| matches_type_in(constraint, value, operands, recursion);
     match value {
         Value::Map(values) => fields.iter().try_fold(true, |matches, (name, field)| {
             Ok(matches

@@ -549,18 +549,25 @@ impl Environment {
     fn runtime_check_type(&self, expected: &Type) -> Type {
         let part = |value: &Type| self.runtime_check_type(value);
         match expected {
+            // Type arguments are expanded too: a generic struct's check
+            // takes its fields' types from them.
             Type::Enum(identity, arguments) => {
+                let arguments = arguments.iter().map(part).collect::<Vec<_>>();
+                let enum_type = Type::Enum(identity.clone(), arguments.clone());
                 let payloads = self.enum_payloads(identity);
                 if payloads.is_empty() {
-                    return expected.clone();
+                    return enum_type;
                 }
                 Type::Union(
-                    std::iter::once(expected.clone())
+                    std::iter::once(enum_type)
                         .chain(payloads.iter().map(|case| {
                             Type::Struct(Some(identity.enum_case(case)), arguments.clone())
                         }))
                         .collect(),
                 )
+            }
+            Type::Struct(identity, arguments) => {
+                Type::Struct(identity.clone(), arguments.iter().map(part).collect())
             }
             Type::List(Some(element)) => Type::List(Some(Box::new(part(element)))),
             Type::Map(Some((key, value))) => {

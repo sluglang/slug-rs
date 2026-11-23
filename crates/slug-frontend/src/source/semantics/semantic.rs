@@ -203,6 +203,56 @@ pub(super) fn schema_fields(
     Some(instantiate_fields(arity, fields, arguments))
 }
 
+/// The fields of a struct of the schema `identity` whose declared types use
+/// a type parameter, each with `arguments` for the parameters and sorted by
+/// name: what a check of `S<A>` tests beyond the struct's schema. None when
+/// there are no arguments or the checker has not seen the schema.
+pub(super) fn parameterized_fields(
+    identity: &SchemaIdentity,
+    arguments: &[Type],
+) -> Vec<(String, Type)> {
+    if arguments.is_empty() {
+        return Vec::new();
+    }
+    let Some((arity, fields)) =
+        SCHEMA_FIELDS.with(|schemas| schemas.borrow().get(identity).cloned())
+    else {
+        return Vec::new();
+    };
+    let parameterized = fields
+        .iter()
+        .filter(|(_, field)| uses_type_parameter(field))
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let instantiated = instantiate_fields(arity, fields, arguments);
+    let mut fields = parameterized
+        .into_iter()
+        .filter_map(|name| instantiated.get(&name).cloned().map(|field| (name, field)))
+        .collect::<Vec<_>>();
+    fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+    fields
+}
+
+/// Whether `value_type` mentions a type parameter.
+fn uses_type_parameter(value_type: &Type) -> bool {
+    match value_type {
+        Type::Generic(_) => true,
+        Type::List(Some(value)) | Type::Task(Some(value)) | Type::Channel(Some(value)) => {
+            uses_type_parameter(value)
+        }
+        Type::Map(Some((key, value))) => uses_type_parameter(key) || uses_type_parameter(value),
+        Type::Function(Some(values))
+        | Type::Tuple(values)
+        | Type::Union(values)
+        | Type::AliasApplication(_, values)
+        | Type::Struct(_, values)
+        | Type::Enum(_, values) => values.iter().any(uses_type_parameter),
+        Type::Record { fields, .. } => fields.iter().any(|(_, field)| uses_type_parameter(field)),
+        Type::Recursive { body, .. } => uses_type_parameter(body),
+        _ => false,
+    }
+}
+
 /// A generic schema's `fields` with `arguments` for its `arity` type
 /// parameters, each unknown when it is not given.
 pub(super) fn instantiate_fields<K: Eq + Hash>(

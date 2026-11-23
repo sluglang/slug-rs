@@ -3373,3 +3373,65 @@ fn a_proven_value_and_a_conforming_one_pass_their_checks() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
+    let path = fixture_path("deep-annotation-checks");
+    fs::write(
+        &path,
+        "val {Result, or} = import(\"slug.std\")\n\
+         val dynamic = fn(x) { x }\n\
+         type Tree = {value: num, children: list<Tree>}\n\
+         val Box = struct<T> { value: T }\n\
+         val second = fn(p:[num, str]):str { p[1] }\n\
+         val root = fn(t:Tree):num { t.value }\n\
+         val unbox = fn(b:struct<Box<num>>):num { b.value }\n\
+         val take = fn(r:Result<num, str>):num { r /> or(0) }\n\
+         enum Why {\n  Gone\n  Bad { code: num }\n}\n\
+         val why = fn(r:Result<num, Why>):num { r /> or(-1) }\n\
+         val tries = [\n\
+           fn() { second(dynamic([\"a\", 1])) },\n\
+           fn() { root(dynamic({value: 1, children: [{value: \"x\", children: []}]})) },\n\
+           fn() { unbox(dynamic(Box { value: \"s\" })) },\n\
+           fn() { take(dynamic(Result.Ok { value: \"no\" })) },\n\
+         ]\n\
+         val failed = fn(attempt) {\n\
+           defer onerror(e) { return true }\n\
+           attempt()\n\
+           false\n\
+         }\n\
+         println(second(dynamic([1, \"a\"])), root(dynamic({value: 1, children: [{value: 2, children: []}]})), \
+           unbox(dynamic(Box { value: 2 })), take(dynamic(Result.Ok { value: 3 })), \
+           why(dynamic(Result.Error { error: Why.Bad { code: 1 } })), why(dynamic(Result.Error { error: Why.Gone })))\n\
+         println(failed(tries[0]), failed(tries[1]), failed(tries[2]), failed(tries[3]))\n",
+    )
+    .expect("write deep checks");
+    let artifact = path.with_extension("cslug");
+    let source = slug().arg(&path).output().expect("run deep checks");
+    let compile = slug()
+        .arg("compile")
+        .arg(&path)
+        .arg(&artifact)
+        .output()
+        .expect("compile deep checks");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let compiled = slug()
+        .arg("run")
+        .arg(&artifact)
+        .output()
+        .expect("run compiled deep checks");
+    fs::remove_file(&path).expect("remove deep checks");
+    fs::remove_file(&artifact).expect("remove compiled deep checks");
+    for output in [source, compiled] {
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "a 1 2 3 -1 -1\ntrue true true true\n",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

@@ -10,8 +10,8 @@ Status: implemented for declarations, assignments, parameters, results,
 `return`, and a recovering `defer onerror`, struct fields, calls, and
 `foreign` results, with dynamic overload dispatch by type; [stage 6 of the
 typed-Slug plan](../planning/typed-slug.md#6-sound-boundaries) lists what is
-not yet: deep checks of struct and enum type arguments and of recursive
-types, tuples by position, and schemas the check cannot name.
+not yet: schemas the check cannot name, and the error's code, annotation
+location, and failing part.
 
 ```slug
 val parse = fn(text) { text }        // unannotated: its result is not known
@@ -134,7 +134,14 @@ constraints cannot yet go.
   nothing; at a call, the type arguments the checker inferred are checked
   where the value reaches a concrete type.
 - **Aliases** are checked as what they stand for; a recursive alias is
-  checked by unfolding it as the value is walked.
+  checked by unfolding it as the value is walked, which ends, as a value is
+  finite.
+- **Tuples** are checked by position: `[num, str]` is a list of two, a
+  number then a string.
+- **A generic struct or enum** is checked for its schema or cases and, with
+  its type arguments, for each field whose declared type uses a type
+  parameter: `struct<Box<num>>` checks that `value` is a number, and
+  `Result<num, str>` that an `Ok`'s `value` is.
 
 ## The error
 

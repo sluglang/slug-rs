@@ -323,6 +323,18 @@ pub enum MatchType {
     /// reading `nil`, or a struct whose field of each name, matches the
     /// field's type.
     Record(Vec<(String, MatchType)>),
+    /// A tuple type: a list of exactly these elements' count, each matching
+    /// the type at its position.
+    Tuple(Vec<MatchType>),
+    /// A recursive type, matched by unfolding: `Recur(0)` inside it is the
+    /// type itself, and `Recur(n)` the `n`th enclosing one. A value is finite,
+    /// so the unfolding ends.
+    Recursive(Box<MatchType>),
+    Recur(usize),
+    /// A value that matches the first type, a struct's, and whose struct
+    /// fields of these names match these types: a generic struct's fields,
+    /// with its type arguments.
+    Fields(Box<MatchType>, Vec<(String, MatchType)>),
 }
 
 /// One source-order case consumed by the private select instruction.
