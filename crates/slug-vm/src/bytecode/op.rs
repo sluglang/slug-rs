@@ -215,6 +215,13 @@ pub enum Op {
     /// error whose message is the string constant at the index, followed by
     /// the value's type.
     CheckFailed(usize),
+    /// Checks that the value on the stack, which stays there, is of one of
+    /// `kinds`, a set of `check_kinds` bits; otherwise fails as
+    /// `CheckFailed(message)` does. The check of a first-order type.
+    CheckKinds {
+        kinds: u32,
+        message: usize,
+    },
     Throw,
     EnterScope,
     LeaveScope,

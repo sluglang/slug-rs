@@ -996,6 +996,9 @@ impl Program {
             ),
             Op::MatchFailure => (PackedOpcode::MatchFailure, 0, 0, 0),
             Op::CheckFailed(message) => (PackedOpcode::CheckFailed, operand(*message), 0, 0),
+            Op::CheckKinds { kinds, message } => {
+                (PackedOpcode::CheckKinds, *kinds, operand(*message), 0)
+            }
             Op::Throw => (PackedOpcode::Throw, 0, 0, 0),
             Op::EnterScope => (PackedOpcode::EnterScope, 0, 0, 0),
             Op::LeaveScope => (PackedOpcode::LeaveScope, 0, 0, 0),
@@ -1188,6 +1191,10 @@ impl Program {
             },
             PackedOpcode::MatchFailure => Op::MatchFailure,
             PackedOpcode::CheckFailed => Op::CheckFailed(n(instruction.a)),
+            PackedOpcode::CheckKinds => Op::CheckKinds {
+                kinds: instruction.a,
+                message: n(instruction.b),
+            },
             PackedOpcode::Throw => Op::Throw,
             PackedOpcode::EnterScope => Op::EnterScope,
             PackedOpcode::LeaveScope => Op::LeaveScope,
@@ -1435,7 +1442,7 @@ impl Program {
                 "{} references missing constant {index}",
                 location()
             )),
-            Op::CheckFailed(index)
+            Op::CheckFailed(index) | Op::CheckKinds { message: index, .. }
                 if !matches!(
                     chunk.constants.get(*index),
                     Some(Constant::Value(crate::Value::Str(_)))
@@ -2165,6 +2172,7 @@ impl Program {
             | Op::LeaveScope
             | Op::MatchFailure
             | Op::CheckFailed(_)
+            | Op::CheckKinds { .. }
             | Op::NotImplemented => (0, 0),
             Op::Call(count) | Op::CallPositional(count) => (count.checked_add(1).unwrap_or(0), 1),
             Op::CallSpread(kinds) | Op::CallSelected { kinds, .. } => (kinds.len() + 1, 1),

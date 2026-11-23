@@ -414,6 +414,11 @@ impl<'a> Lifter<'a> {
                 self.end_choice(ip, instruction, &before, state)?;
                 return Ok(true);
             }
+            // A check reads the value on the stack and leaves it there.
+            Op::CheckKinds { .. } => {
+                let top = *state.stack.last().ok_or("a check with an empty stack")?;
+                self.emit(ip, instruction, vec![top], state, snapshot)?;
+            }
             Op::MatchCase { .. } | Op::MatchCasePooled { .. } | Op::JumpIfProvided { .. } => {
                 self.emit(ip, instruction, Vec::new(), state, snapshot)?;
                 self.end_choice(ip, instruction, &before, state)?;

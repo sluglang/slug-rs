@@ -78,6 +78,8 @@ pub use source_diagnostic::{
 #[cfg(feature = "concurrency")]
 pub use value::Task;
 #[doc(hidden)]
+pub use value::check_kinds;
+#[doc(hidden)]
 pub use value::drop_with_work_list;
 pub use value::{
     Builtin, Channel, Closure, EnumValue, StructField, StructSchema, StructValue, Value, ValueKind,

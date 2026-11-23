@@ -130,6 +130,7 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                 | Op::Throw
                 | Op::MatchFailure
                 | Op::CheckFailed(_)
+                | Op::CheckKinds { .. }
                 | Op::NotImplemented
                 | Op::Not
                 | Op::BitNot
@@ -313,6 +314,8 @@ struct Runtime {
     list: cranelift_codegen::ir::SigRef,
     /// `(context, site, base, out) -> status`: `native_operation`.
     operation: cranelift_codegen::ir::SigRef,
+    /// `(value, kinds) -> status`: `native_check_kinds`.
+    kinds: cranelift_codegen::ir::SigRef,
     /// `(context, arguments) -> status`: compiled code's entry.
     entry: cranelift_codegen::ir::SigRef,
     /// `(context, callee context)`: `native_call_exited`.
@@ -364,6 +367,7 @@ impl Runtime {
             operand: signature(&[pointer, types::I32, pointer], &[types::I32]),
             list: signature(&[pointer, types::I32, pointer, pointer], &[]),
             operation: signature(&[pointer, types::I32, pointer, pointer], &[types::I32]),
+            kinds: signature(&[pointer, types::I32], &[types::I32]),
             unary: signature(&[pointer, pointer, pointer], &[types::I32]),
             index: signature(
                 &[
@@ -693,6 +697,7 @@ impl<'a> Lowering<'a> {
                 self.lower_call(inst, Callee::Global(name.get()), *count, position)?;
             }
             Op::CallPositional(count) => self.lower_call(inst, Callee::Value, *count, position)?,
+            Op::CheckKinds { kinds, .. } => self.lower_check_kinds(inst, *kinds),
             op => self.lower_operator(inst, op, position)?,
         }
         Ok(())
@@ -1480,6 +1485,59 @@ impl<'a> Lowering<'a> {
 
         self.builder.switch_to_block(done);
         self.booleans[result_index] = Some(self.builder.block_params(done)[0]);
+    }
+
+    /// `CheckKinds`: a number, `nil`, or a boolean is tested inline by its
+    /// tag, and any other kind by `native_check_kinds`. A value that fails
+    /// leaves to the interpreter at the check, which raises its error.
+    fn lower_check_kinds(&mut self, inst: &Inst, kinds: u32) {
+        use slug_vm::check_kinds as k;
+        let value = self.slot(inst.args[0].index());
+        let tag = self.load_tag(value);
+        let mut inline = None;
+        for (kind, tags) in [
+            (k::NUM, &[layout::INT, layout::FLOAT][..]),
+            (k::NIL, &[layout::NIL][..]),
+            (k::BOOL, &[layout::BOOL][..]),
+        ] {
+            if kinds & kind == 0 {
+                continue;
+            }
+            for expected in tags {
+                let is = self.builder.ins().icmp_imm(IntCC::Equal, tag, *expected);
+                inline = Some(match inline {
+                    Some(previous) => self.builder.ins().bor(previous, is),
+                    None => is,
+                });
+            }
+        }
+        let passed = self.builder.create_block();
+        let others = kinds & !(k::NUM | k::NIL | k::BOOL);
+        let otherwise = if others == 0 {
+            self.exit_block(inst)
+        } else {
+            self.builder.create_block()
+        };
+        match inline {
+            Some(inline) => self.builder.ins().brif(inline, passed, &[], otherwise, &[]),
+            None => self.builder.ins().jump(otherwise, &[]),
+        };
+        if others != 0 {
+            self.builder.switch_to_block(otherwise);
+            let address = self.address(value);
+            let kinds = self
+                .builder
+                .ins()
+                .iconst(types::I32, i64::from(kinds.cast_signed()));
+            let status = self.call(
+                self.runtime.kinds,
+                runtime::native_check_kinds as *const () as usize,
+                &[address, kinds],
+            )[0];
+            self.exit_unless_ok(inst, status);
+            self.builder.ins().jump(passed, &[]);
+        }
+        self.builder.switch_to_block(passed);
     }
 
     /// `~value`: inline for an integer, and through the interpreter's code

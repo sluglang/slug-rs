@@ -501,8 +501,24 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     and the failing part of a deep check.
 - [ ] Keep a checked-element summary with immutable collections, and mark
   values built in typed code as checked.
-- [ ] Measure the cost on every benchmark (interleaved PGO A/B, hold-outs
+- [x] Measure the cost on every benchmark (interleaved PGO A/B, hold-outs
   untouched) and on the clutch suites, before anything relies on the checks.
+  Against the checker alone (8f2373ee), the first checks cost a tuned
+  geomean of 1.26x, hold-outs 1.08x: `higher-order` 7.10x, `invaders-game`
+  1.56x, `fib` 1.49x, Crawl 1.18x to 1.49x. Each check, nearly always of a
+  value's kind, went through the general match: in the interpreter a pop,
+  match, and push, and in the native tier a runtime call that copies values
+  in and out of slots, which `fib` paid on each call for its inferred
+  `n:num`. A first-order check is now its own op, `CheckKinds`, which tests
+  the value on the stack against a set of kinds in place: inline by tag for
+  `num`, `nil`, and `bool` in the native tier, and by a pointer-only call
+  for the other kinds. After it, tuned 1.03x and hold-outs 1.01x: `fib`
+  0.99x, `higher-order` and `closure-accumulate` 1.07x, `crawl-game` 1.11x,
+  the other Crawl workloads and `http-server` 1.04x to 1.07x, `typed-*`
+  twins 1.04x to 1.06x. What remains is not yet profiled; the likeliest
+  part is the checks that still match deeply, as `list<num>` and
+  `struct<S>`, which rescan on every call and `recur`, and which the
+  checked-element summary is for.
 - [ ] Measure how many of the repository's programs and clutches fail a new
   check, and fix them or their annotations.
 

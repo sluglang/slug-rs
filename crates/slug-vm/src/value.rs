@@ -1754,6 +1754,28 @@ pub struct ForeignDeclaration {
     pub(crate) resources: ForeignResourceSignature,
 }
 
+/// The kinds of value an annotation check of a first-order type tests, as
+/// bits of a set: `CheckKinds`'s operand.
+#[doc(hidden)]
+pub mod check_kinds {
+    pub const NIL: u32 = 1;
+    pub const BOOL: u32 = 1 << 1;
+    pub const NUM: u32 = 1 << 2;
+    pub const STR: u32 = 1 << 3;
+    pub const BYTES: u32 = 1 << 4;
+    pub const LIST: u32 = 1 << 5;
+    pub const MAP: u32 = 1 << 6;
+    pub const SCHEMA: u32 = 1 << 7;
+    pub const STRUCT: u32 = 1 << 8;
+    pub const ENUM: u32 = 1 << 9;
+    pub const CHANNEL: u32 = 1 << 10;
+    pub const FUNCTION: u32 = 1 << 11;
+    pub const TASK: u32 = 1 << 12;
+    pub const RESOURCE: u32 = 1 << 13;
+    /// Every kind but `nil`: what `any` accepts.
+    pub const ANY: u32 = (1 << 14) - 1 - NIL;
+}
+
 /// The dynamic values used by the initial Slug VM core.
 ///
 /// Collections are reference-counted so closures and later concurrency support
@@ -1904,6 +1926,39 @@ impl Value {
     #[must_use]
     pub fn is_truthy(&self) -> bool {
         !matches!(self, Self::Nil | Self::Bool(false))
+    }
+
+    /// Whether this value is of one of the `kinds`, a set of
+    /// [`check_kinds`] bits: what an annotation check of a first-order type
+    /// tests. A live module binding is not resolved here; the interpreter
+    /// resolves one before testing it.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn has_kind_in(&self, kinds: u32) -> bool {
+        use check_kinds as k;
+        let kind = match self {
+            Self::Nil => k::NIL,
+            Self::Bool(_) => k::BOOL,
+            Self::Int(_) | Self::Float(_) => k::NUM,
+            Self::Str(_) => k::STR,
+            Self::Bytes(_) => k::BYTES,
+            Self::List(_) => k::LIST,
+            Self::Map(_) => k::MAP,
+            Self::StructSchema(_) => k::SCHEMA,
+            Self::Struct(_) => k::STRUCT,
+            Self::Enum(_) => k::ENUM,
+            Self::Channel(_) => k::CHANNEL,
+            Self::Closure(_)
+            | Self::Native(_)
+            | Self::DeclaredNative { .. }
+            | Self::Builtin(_)
+            | Self::Overloads(_) => k::FUNCTION,
+            #[cfg(feature = "concurrency")]
+            Self::Task(_) => k::TASK,
+            Self::NativeResource(_) => k::RESOURCE,
+            Self::Uninitialized | Self::Binding { .. } => 0,
+        };
+        kinds & kind != 0
     }
 
     #[must_use]

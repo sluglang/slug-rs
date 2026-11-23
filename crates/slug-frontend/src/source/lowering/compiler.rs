@@ -640,6 +640,13 @@ impl Compiler {
         else {
             return Ok(());
         };
+        let message = format!("{}\0{}", check.expected, check_place_text(&check.place));
+        // A first-order type's check tests only the value's kind, in place.
+        if let Some(kinds) = check_kinds(&constraint) {
+            let message = state.constant(Value::string(message));
+            state.emit(Op::CheckKinds { kinds, message }, site);
+            return Ok(());
+        }
         for operand in &operands {
             self.emit_pattern_operand(state, operand, site)?;
         }
@@ -653,11 +660,7 @@ impl Compiler {
         );
         let end = state.jump(site);
         state.patch(failed);
-        let message = state.constant(Value::string(format!(
-            "{}\0{}",
-            check.expected,
-            check_place_text(&check.place)
-        )));
+        let message = state.constant(Value::string(message));
         state.emit(Op::CheckFailed(message), site);
         state.patch(end);
         Ok(())
@@ -2529,6 +2532,42 @@ fn lower_check_type(
         }
         other => lower_match_type(other, operands).ok(),
     }
+}
+
+/// The kinds of value a check by `constraint` accepts, as `check_kinds`
+/// bits, when that is all it tests: a first-order type that is not nominal,
+/// a list or map whose contents it does not test, or a union of those.
+fn check_kinds(constraint: &MatchType) -> Option<u32> {
+    use slug_vm::check_kinds as k;
+    let accepts_anything = |value: &MatchType| {
+        matches!(value, MatchType::Union(members)
+            if members.iter().any(|member| matches!(member, MatchType::Any))
+                && members.iter().any(|member| matches!(member, MatchType::Nil)))
+    };
+    Some(match constraint {
+        MatchType::Any => k::ANY,
+        MatchType::Nil => k::NIL,
+        MatchType::Bool => k::BOOL,
+        MatchType::Num => k::NUM,
+        MatchType::Str => k::STR,
+        MatchType::Bytes => k::BYTES,
+        MatchType::List(None) => k::LIST,
+        MatchType::List(Some(element)) if accepts_anything(element) => k::LIST,
+        MatchType::Map(None) => k::MAP,
+        MatchType::Map(Some((key, value))) if accepts_anything(key) && accepts_anything(value) => {
+            k::MAP
+        }
+        MatchType::Function => k::FUNCTION,
+        MatchType::Task => k::TASK,
+        MatchType::Channel => k::CHANNEL,
+        MatchType::Schema => k::SCHEMA,
+        MatchType::Struct(None) => k::STRUCT,
+        MatchType::Union(members) => members
+            .iter()
+            .map(check_kinds)
+            .try_fold(0, |kinds, member| Some(kinds | member?))?,
+        _ => return None,
+    })
 }
 
 /// The place a check guards, as its failure names it.

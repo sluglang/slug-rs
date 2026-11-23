@@ -892,6 +892,14 @@ pub(crate) extern "C" fn native_bit_not(
     unsafe { produce(out, (*(*context).vm).native_bit_not(&*value)) }
 }
 
+/// Whether `value` fails a check of `kinds`, `check_kinds` bits: 0 when it
+/// is of one of them, so generated code continues, and otherwise 1, so it
+/// leaves to the interpreter, which raises the check's error.
+pub(crate) extern "C" fn native_check_kinds(value: *const Value, kinds: u32) -> u32 {
+    // SAFETY: generated code passes an initialized value.
+    u32::from(!unsafe { &*value }.has_kind_in(kinds))
+}
+
 /// `not value`, for a value that is not on the fast path.
 pub(crate) extern "C" fn native_not(
     context: *mut Context,

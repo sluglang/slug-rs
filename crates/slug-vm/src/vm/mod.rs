@@ -3400,6 +3400,18 @@ impl Vm {
             PackedOpcode::CheckFailed => {
                 return Err(self.check_failed(chunk, instruction.a as usize));
             }
+            PackedOpcode::CheckKinds => {
+                let passes = match self.stack.last() {
+                    Some(value @ Value::Binding { .. }) => value
+                        .resolve()
+                        .is_ok_and(|value| value.has_kind_in(instruction.a)),
+                    Some(value) => value.has_kind_in(instruction.a),
+                    None => false,
+                };
+                if !passes {
+                    return Err(self.check_failed(chunk, instruction.b as usize));
+                }
+            }
             PackedOpcode::Throw => {
                 let value = self.pop()?;
                 return Err(self.thrown(value, self.owned_span(None)));
@@ -3774,10 +3786,10 @@ impl Vm {
             );
         };
         let (expected, place) = message.split_once('\0').unwrap_or((message.as_ref(), ""));
-        let actual = match self.stack.last() {
-            Some(Value::Enum(value)) => value.name.to_string(),
-            Some(value) => value.type_name().into(),
-            None => "nothing".into(),
+        let actual = match self.stack.last().map(Value::resolve) {
+            Some(Ok(Value::Enum(value))) => value.name.to_string(),
+            Some(Ok(value)) => value.type_name().into(),
+            _ => "nothing".into(),
         };
         let mut text = alloc::format!("expected {expected}, got {actual}");
         if !place.is_empty() {
