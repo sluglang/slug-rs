@@ -593,10 +593,22 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     combination, and the gate runs it in both tiers. Against `aaf6f069`
     (7 padded PGO rounds): tuned 0.99x, hold-outs 0.98x, `typed-n-body`
     0.94x at the suite's 50,000 steps, nothing slower outside its spread.
-  - [ ] Unboxed calls between compiled functions, for `fib`: the native
-    tier's own plan's step 3, a calling convention that passes raw numbers
-    to a callee proven to take them. `fib(35)` takes 0.21 s to the Rust
-    loop's 0.040 s.
+  - [x] Calls in kernels. A version may call a function on numbers whose
+    result it computes with, taken to be held as the first argument is; a
+    call made for what it does, as `println`'s, keeps the function general.
+    Every fallback now writes the values the instruction's snapshot names
+    to their slots and leaves to the interpreter there, as the general code
+    does, so a kernel need not be pure: a call writes them first and is the
+    general code's call, a callee that declines or exits leaves as there,
+    and a result held otherwise leaves after the call. `fib(35)`: 0.21 s to
+    0.19 s, as untyped `fib`, whose `n` is inferred a number; n-body
+    unchanged. A call's cost is the call itself.
+  - [ ] Unboxed calls between compiled functions: the native tier's own
+    plan's step 3. Each version compiled as a function of its own, taking
+    and returning numbers in registers, with the context made once, so a
+    call skips boxing, the site record, the callee's context, its entry
+    checks and dispatch, and the result's slot. `fib(35)` takes 0.19 s to
+    the Rust loop's 0.040 s.
   - [ ] Kernels beyond pure arithmetic: list reads, and functions called
     from a kernel.
 - [ ] Measure on the `typed-*` twins and on typed versions of Crawl's hot

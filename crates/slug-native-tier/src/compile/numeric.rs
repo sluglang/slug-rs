@@ -1,18 +1,22 @@
-//! Numeric kernels with their numbers in registers: a prototype.
+//! Numeric kernels with their numbers in registers.
 //!
 //! A function whose entry checks prove each parameter a number, and whose
-//! body only computes with numbers and booleans, branches, and returns or
-//! recurs, gets a version for each combination of its parameters being
-//! integers or floats that its `recur`s keep. A version keeps every value
-//! in a register, with no tag, and writes a `Value` only for its result.
-//! The entry, past the checks, takes the version the arguments' tags name.
+//! body only computes with numbers and booleans, calls functions on
+//! numbers, branches, and returns or recurs, gets a version for each
+//! combination of its parameters being integers or floats that its
+//! `recur`s keep. A version keeps every value in a register, with no tag,
+//! and writes `Value`s only where it leaves its registers: for its result,
+//! a call's arguments, and an exit. The entry, past the checks, takes the
+//! version the arguments' tags name.
 //!
-//! What a version cannot compute as the general code would (an overflow,
-//! a division with a remainder, which Slug makes a float, a result that is
-//! not finite) and a thread that needs attention at a `recur` write the
-//! iteration's parameters back to their slots and run the iteration again
-//! in the general code, past the checks. An iteration only computes, so
-//! running it again gives the same result, or the same error.
+//! Where a version cannot compute an instruction as the general code would
+//! (an overflow, a division with a remainder, which Slug makes a float, a
+//! result that is not finite), at a `recur` when the thread needs
+//! attention, and where a call returns a value held otherwise than planned,
+//! it writes the values the instruction's snapshot names to their slots
+//! and leaves to the interpreter there, as the general code does. A call
+//! writes them before it is made, and is lowered as the general code's, so
+//! a callee that declines or exits leaves as it does there.
 
 use cranelift_codegen::ir::{
     Block as CodeBlock, InstBuilder, MemFlags, Value as CodeValue,
@@ -21,11 +25,11 @@ use cranelift_codegen::ir::{
 };
 use slug_vm::{BinaryOperator, Constant, Op, Value, check_kinds};
 
-use super::{Lowering, Place, binary_operator};
+use super::{Callee, Lowering, Place, binary_operator};
 use crate::{
-    ir::{Edge, Function, Terminator, ValueId},
+    ir::{Edge, Function, Inst, Local, Snapshot, Terminator, ValueDef, ValueId},
     kinds::Kinds,
-    runtime::{RETURNED, layout, offsets},
+    runtime::{RETURNED, layout},
 };
 
 /// How a version holds a value.
@@ -46,7 +50,7 @@ pub(super) struct Version {
 const MAX_PARAMETERS: usize = 4;
 
 /// The most versions a kernel gets, which bounds its code.
-const MAX_VERSIONS: usize = 8;
+pub(super) const MAX_VERSIONS: usize = 8;
 
 /// The versions of `function` that keep their representations, if it is a
 /// numeric kernel.
@@ -72,8 +76,8 @@ pub(super) fn versions(function: &Function, kinds: &Kinds) -> Vec<Version> {
 }
 
 /// Whether `function` is a numeric kernel: every parameter checked to be a
-/// number, and nothing but arithmetic, comparisons, constants, branches,
-/// returns, and `recur`s.
+/// number, and nothing but arithmetic, comparisons, constants, calls whose
+/// results are computed with, branches, returns, and `recur`s.
 fn eligible(function: &Function, kinds: &Kinds) -> bool {
     let arity = function.arity;
     if arity == 0
@@ -111,9 +115,45 @@ fn eligible(function: &Function, kinds: &Kinds) -> bool {
                             Value::Int(_) | Value::Float(_) | Value::Bool(_)
                         ))
                     ),
+                    Op::CallGlobalPooled { count, .. } => {
+                        *count >= 1 && computed_with(function, inst.results[0])
+                    }
                     op => binary_operator(op).is_some_and(supported),
                 })
     })
+}
+
+/// Whether every use of `value`, of which there is one, computes with it
+/// as a number, or passes it on: so a call made for what it does, whose
+/// result is not a number, as `println`'s, keeps its function general.
+fn computed_with(function: &Function, value: ValueId) -> bool {
+    let mut uses = 0;
+    for block in &function.blocks {
+        for inst in &block.insts {
+            if !inst.args.contains(&value) {
+                continue;
+            }
+            uses += 1;
+            let numeric = matches!(inst.op, Op::Negate | Op::CallGlobalPooled { .. })
+                || binary_operator(&inst.op).is_some_and(supported);
+            if !numeric {
+                return false;
+            }
+        }
+        match &block.terminator {
+            Terminator::Branch { cond, .. } if *cond == value => return false,
+            Terminator::Return(returned) if *returned == value => uses += 1,
+            Terminator::Recur(arguments) if arguments.contains(&value) => uses += 1,
+            terminator => {
+                uses += terminator
+                    .edges()
+                    .iter()
+                    .filter(|edge| edge.args.contains(&value))
+                    .count();
+            }
+        }
+    }
+    uses > 0
 }
 
 /// Whether a version computes `operator`.
@@ -223,6 +263,16 @@ fn result_rep(
             Some(Rep::Bool) => return Err(Unsupported),
             rep => rep,
         },
+        // A call's result is taken to be held as its first argument is,
+        // as a recursive call's is; a result held otherwise leaves.
+        Op::CallGlobalPooled { .. } => {
+            let reps = (0..args.len()).map(arg).collect::<Option<Vec<_>>>();
+            match reps {
+                None => None,
+                Some(reps) if reps.contains(&Rep::Bool) => return Err(Unsupported),
+                Some(reps) => reps.first().copied(),
+            }
+        }
         op => {
             let operator = binary_operator(op).ok_or(Unsupported)?;
             let left = arg(0);
@@ -268,7 +318,7 @@ impl Lowering<'_> {
         self.builder.ins().jump(dispatch, &[]);
         let entries = versions
             .iter()
-            .map(|version| self.lower_version(version, general))
+            .map(|version| self.lower_version(version))
             .collect::<Vec<_>>();
         self.builder.switch_to_block(dispatch);
         let params = self.function.blocks[0].params.clone();
@@ -277,12 +327,10 @@ impl Lowering<'_> {
             for (param, rep) in params.iter().zip(&version.params) {
                 let slot = self.slot(param.index());
                 let tag = self.load_tag(slot);
-                let expected = if *rep == Rep::Int {
-                    layout::INT
-                } else {
-                    layout::FLOAT
-                };
-                let is = self.builder.ins().icmp_imm(IntCC::Equal, tag, expected);
+                let is = self
+                    .builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, tag, rep_tag(*rep));
                 matches = Some(match matches {
                     Some(previous) => self.builder.ins().band(previous, is),
                     None => is,
@@ -296,9 +344,9 @@ impl Lowering<'_> {
         self.builder.ins().jump(general, &[]);
     }
 
-    /// Lowers `version`, which leaves to `general`; its entry, which loads
-    /// the parameters from their slots.
-    fn lower_version(&mut self, version: &Version, general: CodeBlock) -> CodeBlock {
+    /// Lowers `version`; its entry, which loads the parameters from their
+    /// slots.
+    fn lower_version(&mut self, version: &Version) -> CodeBlock {
         let function = self.function;
         let entry = self.builder.create_block();
         let blocks = function
@@ -323,15 +371,6 @@ impl Lowering<'_> {
         }
         self.builder.ins().jump(blocks[0], &arguments);
 
-        // Leaving: the iteration's parameters back to their slots, and the
-        // iteration again in the general code.
-        let leave = self.builder.create_block();
-        let iteration = self.builder.block_params(blocks[0]).to_vec();
-        self.builder.switch_to_block(leave);
-        let params = function.blocks[0].params.clone();
-        self.store_params(&params, &iteration, &version.params);
-        self.builder.ins().jump(general, &[]);
-
         for (index, block) in function.blocks.iter().enumerate() {
             self.builder.switch_to_block(blocks[index]);
             for (param, value) in block
@@ -341,33 +380,30 @@ impl Lowering<'_> {
             {
                 values[param.index()] = Some(value);
             }
-            for inst in &block.insts {
+            for (position, inst) in block.insts.iter().enumerate() {
                 let Some(result) = inst.results.first() else {
                     continue;
                 };
-                let value =
-                    self.version_inst(function, &inst.op, &inst.args, version, &values, leave);
+                let value = self.version_inst(inst, (index, position), version, &values);
                 values[result.index()] = Some(value);
             }
-            self.version_terminator(&block.terminator, version, &blocks, &values, general);
+            self.version_terminator(block, version, &blocks, &values);
         }
         entry
     }
 
-    /// Lowers a block's `terminator` in `version`, whose blocks are
-    /// `blocks` and values so far `values`, leaving to `general`.
+    /// Lowers `block`'s terminator in `version`, whose blocks are `blocks`
+    /// and values so far `values`.
     fn version_terminator(
         &mut self,
-        terminator: &Terminator,
+        block: &crate::ir::Block,
         version: &Version,
         blocks: &[CodeBlock],
         values: &[Option<CodeValue>],
-        general: CodeBlock,
     ) {
         let value = |id: &ValueId| values[id.index()].expect("defined before use");
         let edge_args = |edge: &Edge| edge.args.iter().map(value).collect::<Vec<_>>();
-        let params = self.function.blocks[0].params.clone();
-        match terminator {
+        match &block.terminator {
             Terminator::Jump(edge) => {
                 let args = edge_args(edge);
                 self.builder.ins().jump(blocks[edge.block.index()], &args);
@@ -399,7 +435,7 @@ impl Lowering<'_> {
                     self.pointer,
                     MemFlags::trusted(),
                     self.context,
-                    offsets::CONTEXT_RET,
+                    super::offsets::CONTEXT_RET,
                 ));
                 self.store_rep(target, value(result), rep);
                 let status = self.builder.ins().iconst(types::I32, i64::from(RETURNED));
@@ -407,27 +443,71 @@ impl Lowering<'_> {
             }
             Terminator::Recur(next) => {
                 let next = next.iter().map(value).collect::<Vec<_>>();
+                let inst = block.insts.last().expect("a recur block has its recur");
                 let attention = self.attention_requested();
                 let attend = self.builder.create_block();
                 self.builder
                     .ins()
                     .brif(attention, attend, &[], blocks[0], &next);
-                // The next iteration runs in the general code, whose
-                // `recur` attends to the thread.
+                // The interpreter attends to the thread, then recurs.
                 self.builder.switch_to_block(attend);
-                self.store_params(&params, &next, &version.params);
-                self.builder.ins().jump(general, &[]);
+                self.leave_at(inst, version, values);
             }
             Terminator::Choose { .. } | Terminator::Stop => unreachable!("not a kernel"),
         }
     }
 
-    /// Writes `values`, held as `reps`, to the slots of `params`.
-    fn store_params(&mut self, params: &[ValueId], values: &[CodeValue], reps: &[Rep]) {
-        for ((param, value), rep) in params.iter().zip(values).zip(reps) {
-            let slot = self.slot(param.index());
-            self.store_rep(slot, *value, *rep);
+    /// Writes the values `snapshot` names, from their registers, to their
+    /// slots, as the general code would hold them there.
+    fn materialize(
+        &mut self,
+        snapshot: &Snapshot,
+        version: &Version,
+        values: &[Option<CodeValue>],
+    ) {
+        let function = self.function;
+        let locals = snapshot.locals.iter().filter_map(|local| match local {
+            Local::Value(value) => Some(*value),
+            Local::Cell => None,
+        });
+        let stack = snapshot
+            .stack
+            .iter()
+            .copied()
+            .filter(|value| !matches!(function.def(*value), ValueDef::Below(_)));
+        for value in locals.chain(stack).collect::<Vec<_>>() {
+            if let (Some(register), Some(rep)) =
+                (values[value.index()], version.reps[value.index()])
+            {
+                let slot = self.slot(value.index());
+                self.store_rep(slot, register, rep);
+            }
         }
+    }
+
+    /// Leaves to the interpreter before `inst`, with the frame its snapshot
+    /// names.
+    fn leave_at(&mut self, inst: &Inst, version: &Version, values: &[Option<CodeValue>]) {
+        self.materialize(&inst.snapshot, version, values);
+        let exit = self.exit_block(inst);
+        self.builder.ins().jump(exit, &[]);
+    }
+
+    /// Branches to leave before `inst` when `condition` is nonzero, and
+    /// continues in a new block otherwise.
+    fn leave_if(
+        &mut self,
+        condition: CodeValue,
+        inst: &Inst,
+        version: &Version,
+        values: &[Option<CodeValue>],
+    ) {
+        let leave = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(condition, leave, &[], next, &[]);
+        self.builder.switch_to_block(leave);
+        self.leave_at(inst, version, values);
+        self.builder.switch_to_block(next);
     }
 
     /// Writes `value`, held as `rep`, to `place` as a `Value`.
@@ -439,106 +519,158 @@ impl Lowering<'_> {
         }
     }
 
-    /// Computes one instruction in registers, leaving to `leave` where the
-    /// general code would do something else.
+    /// Computes `inst`, instruction `position` of its block, in registers.
     fn version_inst(
         &mut self,
-        function: &Function,
-        op: &Op,
-        args: &[ValueId],
+        inst: &Inst,
+        position: (usize, usize),
         version: &Version,
         values: &[Option<CodeValue>],
-        leave: CodeBlock,
     ) -> CodeValue {
-        use BinaryOperator as B;
+        let function = self.function;
         let rep = |id: ValueId| version.reps[id.index()].expect("planned");
-        let constant =
-            |builder: &mut cranelift_frontend::FunctionBuilder<'_>, index: usize| match function
-                .constants
-                .get(index)
-            {
-                Some(Constant::Value(Value::Int(value))) => {
-                    (builder.ins().iconst(types::I64, *value), Rep::Int)
-                }
-                Some(Constant::Value(Value::Float(value))) => {
-                    (builder.ins().f64const(*value), Rep::Float)
-                }
-                Some(Constant::Value(Value::Bool(value))) => (
-                    builder.ins().iconst(types::I8, i64::from(*value)),
-                    Rep::Bool,
-                ),
-                _ => unreachable!("planned"),
-            };
+        let register = |id: ValueId| values[id.index()].expect("defined before use");
+        let (op, args) = (&inst.op, &inst.args);
         match op {
-            Op::Constant(index) => constant(&mut self.builder, *index).0,
+            Op::Constant(index) => self.version_constant(function, *index).0,
             Op::True | Op::False => self
                 .builder
                 .ins()
                 .iconst(types::I8, i64::from(matches!(op, Op::True))),
             Op::Not => {
-                let value = values[args[0].index()].expect("defined");
+                let value = register(args[0]);
                 self.builder.ins().icmp_imm(IntCC::Equal, value, 0)
             }
             Op::Negate => {
-                let value = values[args[0].index()].expect("defined");
+                let value = register(args[0]);
                 if rep(args[0]) == Rep::Float {
                     return self.builder.ins().fneg(value);
                 }
                 let minimum = self.builder.ins().icmp_imm(IntCC::Equal, value, i64::MIN);
-                self.leave_if(minimum, leave);
+                self.leave_if(minimum, inst, version, values);
                 self.builder.ins().ineg(value)
+            }
+            Op::CallGlobalPooled { name, count } => {
+                self.version_call(inst, (name.get(), *count), position, version, values)
             }
             op => {
                 let operator = binary_operator(op).expect("planned");
-                let (mut a, left) = (values[args[0].index()].expect("defined"), rep(args[0]));
-                let (mut b, right) = match op {
-                    Op::LocalConstantBinary {
-                        constant: index, ..
+                let (a, left) = (register(args[0]), rep(args[0]));
+                let (b, right) = match op {
+                    Op::LocalConstantBinary { constant, .. }
+                    | Op::ConstantBinary { constant, .. } => {
+                        self.version_constant(function, *constant)
                     }
-                    | Op::ConstantBinary {
-                        constant: index, ..
-                    } => constant(&mut self.builder, *index),
-                    _ => (values[args[1].index()].expect("defined"), rep(args[1])),
+                    _ => (register(args[1]), rep(args[1])),
                 };
                 if left == Rep::Int && right == Rep::Int {
-                    return self.int_binary(operator, a, b, leave);
+                    return self.int_binary(operator, a, b, inst, version, values);
                 }
-                // As the VM's `numbers` converts an integer beside a float.
-                if left == Rep::Int {
-                    a = self.builder.ins().fcvt_from_sint(types::F64, a);
-                }
-                if right == Rep::Int {
-                    b = self.builder.ins().fcvt_from_sint(types::F64, b);
-                }
-                let compare = |condition| Some(condition);
-                let condition = match operator {
-                    B::Equal => compare(FloatCC::Equal),
-                    B::Greater | B::GreaterNum => compare(FloatCC::GreaterThan),
-                    B::Less | B::LessNum => compare(FloatCC::LessThan),
-                    _ => None,
-                };
-                if let Some(condition) = condition {
-                    return self.builder.ins().fcmp(condition, a, b);
-                }
-                if matches!(operator, B::Divide | B::DivideNum) {
-                    let zero = self.builder.ins().f64const(0.0);
-                    let is_zero = self.builder.ins().fcmp(FloatCC::Equal, b, zero);
-                    self.leave_if(is_zero, leave);
-                }
-                let value = match operator {
-                    B::Add | B::AddNum => self.builder.ins().fadd(a, b),
-                    B::Subtract | B::SubtractNum => self.builder.ins().fsub(a, b),
-                    B::Multiply | B::MultiplyNum => self.builder.ins().fmul(a, b),
-                    _ => self.builder.ins().fdiv(a, b),
-                };
-                // Finite exactly when `value - value` is zero.
-                let difference = self.builder.ins().fsub(value, value);
-                let zero = self.builder.ins().f64const(0.0);
-                let not_finite = self.builder.ins().fcmp(FloatCC::NotEqual, difference, zero);
-                self.leave_if(not_finite, leave);
-                value
+                self.float_binary(operator, (a, left), (b, right), inst, version, values)
             }
         }
+    }
+
+    /// Constant `index` of `function`, as a register, and how it is held.
+    fn version_constant(&mut self, function: &Function, index: usize) -> (CodeValue, Rep) {
+        match function.constants.get(index) {
+            Some(Constant::Value(Value::Int(value))) => {
+                (self.builder.ins().iconst(types::I64, *value), Rep::Int)
+            }
+            Some(Constant::Value(Value::Float(value))) => {
+                (self.builder.ins().f64const(*value), Rep::Float)
+            }
+            Some(Constant::Value(Value::Bool(value))) => (
+                self.builder.ins().iconst(types::I8, i64::from(*value)),
+                Rep::Bool,
+            ),
+            _ => unreachable!("planned"),
+        }
+    }
+
+    /// A call of module-level name `name` with `count` arguments: the frame
+    /// written to its slots, the general code's call, and its result taken
+    /// into a register, leaving after the call when it is held otherwise.
+    fn version_call(
+        &mut self,
+        inst: &Inst,
+        (name, count): (u32, usize),
+        position: (usize, usize),
+        version: &Version,
+        values: &[Option<CodeValue>],
+    ) -> CodeValue {
+        self.materialize(&inst.snapshot, version, values);
+        self.lower_call(inst, Callee::Global(name), count, position)
+            .expect("a kernel's call lowers");
+        let result = inst.results[0];
+        let rep = version.reps[result.index()].expect("planned");
+        let slot = self.slot(result.index());
+        let tag = self.load_tag(slot);
+        let other = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::NotEqual, tag, rep_tag(rep));
+        let leave = self.builder.create_block();
+        let next = self.builder.create_block();
+        self.builder.ins().brif(other, leave, &[], next, &[]);
+        // The interpreter continues past the call, with its result where the
+        // callee wrote it.
+        self.builder.switch_to_block(leave);
+        let mut snapshot = inst.snapshot.clone();
+        let below = snapshot.stack.len() - inst.args.len();
+        snapshot.stack.truncate(below);
+        snapshot.stack.push(result);
+        self.materialize(&snapshot, version, values);
+        let exit = self.exit_with(inst.ip + 1, &snapshot, 0, super::Leaving::Exit);
+        self.builder.ins().jump(exit, &[]);
+        self.builder.switch_to_block(next);
+        self.load(rep_type(rep), slot, layout::PAYLOAD)
+    }
+
+    /// `a operator b` on two numbers, of which one is a float, converting the
+    /// other as the VM's `numbers` converts it.
+    fn float_binary(
+        &mut self,
+        operator: BinaryOperator,
+        (mut a, left): (CodeValue, Rep),
+        (mut b, right): (CodeValue, Rep),
+        inst: &Inst,
+        version: &Version,
+        values: &[Option<CodeValue>],
+    ) -> CodeValue {
+        use BinaryOperator as B;
+        if left == Rep::Int {
+            a = self.builder.ins().fcvt_from_sint(types::F64, a);
+        }
+        if right == Rep::Int {
+            b = self.builder.ins().fcvt_from_sint(types::F64, b);
+        }
+        let condition = match operator {
+            B::Equal => Some(FloatCC::Equal),
+            B::Greater | B::GreaterNum => Some(FloatCC::GreaterThan),
+            B::Less | B::LessNum => Some(FloatCC::LessThan),
+            _ => None,
+        };
+        if let Some(condition) = condition {
+            return self.builder.ins().fcmp(condition, a, b);
+        }
+        if matches!(operator, B::Divide | B::DivideNum) {
+            let zero = self.builder.ins().f64const(0.0);
+            let is_zero = self.builder.ins().fcmp(FloatCC::Equal, b, zero);
+            self.leave_if(is_zero, inst, version, values);
+        }
+        let value = match operator {
+            B::Add | B::AddNum => self.builder.ins().fadd(a, b),
+            B::Subtract | B::SubtractNum => self.builder.ins().fsub(a, b),
+            B::Multiply | B::MultiplyNum => self.builder.ins().fmul(a, b),
+            _ => self.builder.ins().fdiv(a, b),
+        };
+        // Finite exactly when `value - value` is zero.
+        let difference = self.builder.ins().fsub(value, value);
+        let zero = self.builder.ins().f64const(0.0);
+        let not_finite = self.builder.ins().fcmp(FloatCC::NotEqual, difference, zero);
+        self.leave_if(not_finite, inst, version, values);
+        value
     }
 
     /// `a operator b` on two integers, leaving where the result would not be
@@ -548,7 +680,9 @@ impl Lowering<'_> {
         operator: BinaryOperator,
         a: CodeValue,
         b: CodeValue,
-        leave: CodeBlock,
+        inst: &Inst,
+        version: &Version,
+        values: &[Option<CodeValue>],
     ) -> CodeValue {
         use BinaryOperator as B;
         match operator {
@@ -558,7 +692,7 @@ impl Lowering<'_> {
                     B::Subtract | B::SubtractNum => self.builder.ins().ssub_overflow(a, b),
                     _ => self.builder.ins().smul_overflow(a, b),
                 };
-                self.leave_if(overflow, leave);
+                self.leave_if(overflow, inst, version, values);
                 value
             }
             B::Divide | B::DivideNum => {
@@ -569,16 +703,16 @@ impl Lowering<'_> {
                 let minimum = self.builder.ins().icmp_imm(IntCC::Equal, a, i64::MIN);
                 let overflow = self.builder.ins().band(minus_one, minimum);
                 let fault = self.builder.ins().bor(zero, overflow);
-                self.leave_if(fault, leave);
+                self.leave_if(fault, inst, version, values);
                 let remainder = self.builder.ins().srem(a, b);
-                self.leave_if(remainder, leave);
+                self.leave_if(remainder, inst, version, values);
                 self.builder.ins().sdiv(a, b)
             }
             B::Modulo | B::ModuloNum => {
                 let zero = self.builder.ins().icmp_imm(IntCC::Equal, b, 0);
                 let minus_one = self.builder.ins().icmp_imm(IntCC::Equal, b, -1);
                 let fault = self.builder.ins().bor(zero, minus_one);
-                self.leave_if(fault, leave);
+                self.leave_if(fault, inst, version, values);
                 self.builder.ins().srem(a, b)
             }
             B::BitAnd => self.builder.ins().band(a, b),
@@ -594,13 +728,14 @@ impl Lowering<'_> {
             }
         }
     }
+}
 
-    /// Branches to `leave` when `condition` is nonzero, and continues in a
-    /// new block otherwise.
-    fn leave_if(&mut self, condition: CodeValue, leave: CodeBlock) {
-        let next = self.builder.create_block();
-        self.builder.ins().brif(condition, leave, &[], next, &[]);
-        self.builder.switch_to_block(next);
+/// The tag of a `Value` holding a number held as `rep`.
+fn rep_tag(rep: Rep) -> i64 {
+    match rep {
+        Rep::Int => layout::INT,
+        Rep::Float => layout::FLOAT,
+        Rep::Bool => layout::BOOL,
     }
 }
 
@@ -649,10 +784,23 @@ mod tests {
     }
 
     #[test]
-    fn a_function_that_calls_or_builds_a_collection_is_not_a_kernel() {
+    fn a_call_computed_with_is_part_of_a_kernel() {
+        // The recursive call's result is taken to be an integer, as `n` is;
+        // a float `n` compares a float with `0`, which leaves it general.
+        let versions = versions_of(
+            "val f = fn(n:num) { if (n == 0) { 0 } else { f(n - 1) + 1 } }\n\
+             val main = fn() { println(f(3)) }\n",
+            1,
+            "Call",
+        );
+        assert_eq!(versions, vec![vec![Rep::Int]]);
+    }
+
+    #[test]
+    fn a_call_made_for_what_it_does_or_a_collection_is_not_a_kernel() {
         for (source, needle) in [
             (
-                "val f = fn(n:num) { if (n == 0) { 0 } else { f(n - 1) } }\n\
+                "val f = fn(n:num) { println(n)\n n + 1 }\n\
                  val main = fn() { println(f(3)) }\n",
                 "Call",
             ),

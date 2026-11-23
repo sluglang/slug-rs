@@ -253,7 +253,9 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
             .iter()
             .flat_map(|block| &block.insts)
             .filter(|inst| matches!(inst.op, Op::CallGlobalPooled { .. }))
-            .count(),
+            .count()
+            // A numeric kernel's versions make the same calls.
+            * (1 + numeric::MAX_VERSIONS),
     );
     let (exits, owning, operations, matches) = {
         let builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
@@ -2159,10 +2161,6 @@ impl<'a> Lowering<'a> {
         self.builder.ins().select(is_bool, bool_true, not_nil)
     }
 
-    /// Drops every owning slot that holds something, leaving `nil`: with a
-    /// check per slot inline when there are few, and otherwise by one test
-    /// of all their tags inline, calling the runtime to drop them only when
-    /// one holds a counted value; most hold numbers or `nil`.
     /// Whether the thread needs attention, from its flag, read where it is
     /// as a call reads it: nonzero when it does.
     fn attention_requested(&mut self) -> CodeValue {
@@ -2176,6 +2174,10 @@ impl<'a> Lowering<'a> {
         self.builder.ins().uload8(types::I32, flags, attention, 0)
     }
 
+    /// Drops every owning slot that holds something, leaving `nil`: with a
+    /// check per slot inline when there are few, and otherwise by one test
+    /// of all their tags inline, calling the runtime to drop them only when
+    /// one holds a counted value; most hold numbers or `nil`.
     fn drop_owning(&mut self) {
         // A value known to be a number, a boolean, or `nil` owns nothing.
         let owning: Vec<usize> = (0..self.owning.len())
