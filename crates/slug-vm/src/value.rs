@@ -1774,6 +1774,33 @@ pub mod check_kinds {
     pub const RESOURCE: u32 = 1 << 13;
     /// Every kind but `nil`: what `any` accepts.
     pub const ANY: u32 = (1 << 14) - 1 - NIL;
+
+    /// Each `Value` tag's kind, by the tag, which is the variant's position
+    /// in `Value`'s declaration: 0 for an uninitialized marker and a live
+    /// module binding, which no check accepts as they are. Code that reads
+    /// a value's tag word tests it with [`tag_mask`].
+    #[cfg(feature = "concurrency")]
+    pub const BY_TAG: &[u32] = &[
+        0, NIL, BOOL, NUM, NUM, STR, BYTES, LIST, MAP, SCHEMA, STRUCT, ENUM, CHANNEL, FUNCTION,
+        TASK, FUNCTION, FUNCTION, RESOURCE, FUNCTION, FUNCTION, 0,
+    ];
+    /// Each `Value` tag's kind, without the `Task` variant.
+    #[cfg(not(feature = "concurrency"))]
+    pub const BY_TAG: &[u32] = &[
+        0, NIL, BOOL, NUM, NUM, STR, BYTES, LIST, MAP, SCHEMA, STRUCT, ENUM, CHANNEL, FUNCTION,
+        FUNCTION, FUNCTION, RESOURCE, FUNCTION, FUNCTION, 0,
+    ];
+
+    /// The tags of the values of one of `kinds`, as bits of a word: a value
+    /// whose tag is `t` is of one of them when bit `t` is set.
+    #[must_use]
+    pub fn tag_mask(kinds: u32) -> u64 {
+        BY_TAG
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| *kind & kinds != 0)
+            .fold(0, |mask, (tag, _)| mask | 1 << tag)
+    }
 }
 
 /// The dynamic values used by the initial Slug VM core.

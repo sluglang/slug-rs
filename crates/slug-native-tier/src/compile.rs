@@ -314,8 +314,6 @@ struct Runtime {
     list: cranelift_codegen::ir::SigRef,
     /// `(context, site, base, out) -> status`: `native_operation`.
     operation: cranelift_codegen::ir::SigRef,
-    /// `(value, kinds) -> status`: `native_check_kinds`.
-    kinds: cranelift_codegen::ir::SigRef,
     /// `(context, arguments) -> status`: compiled code's entry.
     entry: cranelift_codegen::ir::SigRef,
     /// `(context, callee context)`: `native_call_exited`.
@@ -367,7 +365,6 @@ impl Runtime {
             operand: signature(&[pointer, types::I32, pointer], &[types::I32]),
             list: signature(&[pointer, types::I32, pointer, pointer], &[]),
             operation: signature(&[pointer, types::I32, pointer, pointer], &[types::I32]),
-            kinds: signature(&[pointer, types::I32], &[types::I32]),
             unary: signature(&[pointer, pointer, pointer], &[types::I32]),
             index: signature(
                 &[
@@ -1487,56 +1484,22 @@ impl<'a> Lowering<'a> {
         self.booleans[result_index] = Some(self.builder.block_params(done)[0]);
     }
 
-    /// `CheckKinds`: a number, `nil`, or a boolean is tested inline by its
-    /// tag, and any other kind by `native_check_kinds`. A value that fails
-    /// leaves to the interpreter at the check, which raises its error.
+    /// `CheckKinds`: inline, by the value's tag against the tags of the
+    /// kinds it accepts. A value that fails, or a live module binding,
+    /// which the interpreter resolves first, leaves to the interpreter at
+    /// the check, which raises its error or continues.
     fn lower_check_kinds(&mut self, inst: &Inst, kinds: u32) {
-        use slug_vm::check_kinds as k;
         let value = self.slot(inst.args[0].index());
         let tag = self.load_tag(value);
-        let mut inline = None;
-        for (kind, tags) in [
-            (k::NUM, &[layout::INT, layout::FLOAT][..]),
-            (k::NIL, &[layout::NIL][..]),
-            (k::BOOL, &[layout::BOOL][..]),
-        ] {
-            if kinds & kind == 0 {
-                continue;
-            }
-            for expected in tags {
-                let is = self.builder.ins().icmp_imm(IntCC::Equal, tag, *expected);
-                inline = Some(match inline {
-                    Some(previous) => self.builder.ins().bor(previous, is),
-                    None => is,
-                });
-            }
-        }
+        let mask = self.builder.ins().iconst(
+            types::I64,
+            slug_vm::check_kinds::tag_mask(kinds).cast_signed(),
+        );
+        let shifted = self.builder.ins().ushr(mask, tag);
+        let accepted = self.builder.ins().band_imm(shifted, 1);
         let passed = self.builder.create_block();
-        let others = kinds & !(k::NUM | k::NIL | k::BOOL);
-        let otherwise = if others == 0 {
-            self.exit_block(inst)
-        } else {
-            self.builder.create_block()
-        };
-        match inline {
-            Some(inline) => self.builder.ins().brif(inline, passed, &[], otherwise, &[]),
-            None => self.builder.ins().jump(otherwise, &[]),
-        };
-        if others != 0 {
-            self.builder.switch_to_block(otherwise);
-            let address = self.address(value);
-            let kinds = self
-                .builder
-                .ins()
-                .iconst(types::I32, i64::from(kinds.cast_signed()));
-            let status = self.call(
-                self.runtime.kinds,
-                runtime::native_check_kinds as *const () as usize,
-                &[address, kinds],
-            )[0];
-            self.exit_unless_ok(inst, status);
-            self.builder.ins().jump(passed, &[]);
-        }
+        let exit = self.exit_block(inst);
+        self.builder.ins().brif(accepted, passed, &[], exit, &[]);
         self.builder.switch_to_block(passed);
     }
 

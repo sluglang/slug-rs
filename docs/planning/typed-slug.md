@@ -515,10 +515,25 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   for the other kinds. After it, tuned 1.03x and hold-outs 1.01x: `fib`
   0.99x, `higher-order` and `closure-accumulate` 1.07x, `crawl-game` 1.11x,
   the other Crawl workloads and `http-server` 1.04x to 1.07x, `typed-*`
-  twins 1.04x to 1.06x. What remains is not yet profiled; the likeliest
-  part is the checks that still match deeply, as `list<num>` and
-  `struct<S>`, which rescan on every call and `recur`, and which the
-  checked-element summary is for.
+  twins 1.04x to 1.06x.
+
+  Counting what `crawl-game` checks (an instrument, not kept) showed the
+  rest is not deep checks: of 2.58 million checks run, about 10,000 are
+  deep. It is first-order checks in number: 595,000 of `slug.string`'s
+  `character:str`, 570,000 each of `find`'s `xs` and `f`, re-checked by
+  every `recur`, 516,000 of the `bool` result of `find`'s `f(h)`, and some
+  275,000 of the engine's inferred `num` parameters. The native tier then
+  tested kinds other than `num`, `nil`, and `bool` by a call; it now tests
+  every one inline, by the value's tag against a mask of the tags of the
+  accepted kinds, from `check_kinds::BY_TAG`, which the tier verifies
+  against real values before it compiles anything. Tuned 1.02x, hold-outs
+  1.02x: `crawl-game` 1.08x, the other Crawl workloads 1.02x to 1.06x,
+  `higher-order`, `closure-accumulate`, `defer-errors`, and `http-server`
+  1.04x, `typed-*` twins 1.05x, the rest within 1.03x. What remains is the
+  number of checks. Two would remove most of Crawl's: `recur` skipping entry
+  checks its arguments are proven to pass, and a caller the checker proved
+  entering past them, the second entry point; the deep checks, for which
+  the checked-element summary is, cost little here.
 - [ ] Measure how many of the repository's programs and clutches fail a new
   check, and fix them or their annotations.
 

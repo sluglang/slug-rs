@@ -47,7 +47,32 @@ pub(crate) fn layout_matches() -> bool {
         // SAFETY: a `Bool` payload is the initialized byte at offset 8.
         unsafe { std::ptr::from_ref(value).cast::<u8>().add(8).read() }
     }
-    size_of::<Value>() == layout::SIZE as usize
+    // A `CheckKinds` tests a tag against `check_kinds::tag_mask`, which
+    // takes each tag's kind from the variant's position: each value here has
+    // the kind its tag says.
+    let kinds_match = [
+        Value::Nil,
+        Value::Bool(true),
+        Value::Int(1),
+        Value::Float(1.5),
+        Value::string("s"),
+        Value::Bytes(std::sync::Arc::new(vec![1])),
+        Value::list(vec![Value::Int(1)]),
+        Value::map(vec![(Value::string("k"), Value::Nil)]),
+        Value::Builtin(slug_vm::Builtin::Int),
+        Value::Uninitialized,
+    ]
+    .iter()
+    .all(|value| {
+        let kind = usize::try_from(tag(value))
+            .ok()
+            .and_then(|tag| slug_vm::check_kinds::BY_TAG.get(tag).copied());
+        kind.is_some_and(|kind| {
+            (kind == 0 && !value.has_kind_in(u32::MAX)) || (kind != 0 && value.has_kind_in(kind))
+        })
+    });
+    kinds_match
+        && size_of::<Value>() == layout::SIZE as usize
         && tag(&Value::Nil) == layout::NIL as u64
         && tag(&Value::Bool(true)) == layout::BOOL as u64
         && byte(&Value::Bool(true)) == 1
@@ -890,14 +915,6 @@ pub(crate) extern "C" fn native_bit_not(
     // SAFETY: generated code passes its own context, an initialized value,
     // and a free slot.
     unsafe { produce(out, (*(*context).vm).native_bit_not(&*value)) }
-}
-
-/// Whether `value` fails a check of `kinds`, `check_kinds` bits: 0 when it
-/// is of one of them, so generated code continues, and otherwise 1, so it
-/// leaves to the interpreter, which raises the check's error.
-pub(crate) extern "C" fn native_check_kinds(value: *const Value, kinds: u32) -> u32 {
-    // SAFETY: generated code passes an initialized value.
-    u32::from(!unsafe { &*value }.has_kind_in(kinds))
 }
 
 /// `not value`, for a value that is not on the fast path.
