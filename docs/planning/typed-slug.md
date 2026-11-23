@@ -563,6 +563,25 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
 
 - [ ] Native tier: keep proven `num` values unboxed and drop guards the
   checker made redundant; start with arithmetic loops.
+  - [x] Drop the guards the checks make redundant. The tier works out which
+    kinds each IR value is known to hold (`kinds.rs`): a parameter its
+    function's entry checks, a constant its own, arithmetic on two numbers
+    a number, a comparison a boolean, a join what all its inputs hold. A
+    `recur` whose arguments are known to pass the entry checks restarts
+    past them, and any other check its value is known to pass emits
+    nothing. Typed code paid its entry checks on every iteration: typed
+    n-body at 50 million steps took 0.32 s to untyped's 0.29 s, and now
+    0.28 s to 0.28 s. Against `c35f26ff` (7 padded PGO rounds): tuned 1.00x,
+    hold-outs 1.01x, every workload inside its spread; the suite's typed
+    twins run under 7 ms, mostly startup.
+  - [ ] Keep proven numbers unboxed. Checks prove `num`, an integer or a
+    float, not which, and Phase 3 of the native tier found an integer
+    version of each function, checked once at entry, gained 1.02x. Each
+    operation now loads a value's tag and payload from its 24-byte slot,
+    branches on integer or float, and stores both back; n-body takes about
+    6 ns an iteration and `fib(35)` 7.7 ns a call. Keeping known numbers in
+    registers between calls and exits, written to slots only there, is
+    the remaining step, to be prototyped on one loop before it is built.
 - [ ] Measure on the `typed-*` twins and on typed versions of Crawl's hot
   functions.
 - [ ] Evaluate fixed layouts for records typed code builds, separately.

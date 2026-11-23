@@ -25,6 +25,7 @@ use slug_vm::{HotChunk, NativeCode, NativeTier, Program};
 pub mod compile;
 pub mod ir;
 mod jit;
+mod kinds;
 pub mod lift;
 mod runtime;
 

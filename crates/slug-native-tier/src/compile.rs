@@ -192,7 +192,7 @@ fn number_constant(function: &Function, index: usize) -> Result<&Value, String> 
 }
 
 /// The operator an instruction applies to its two operands.
-fn binary_operator(op: &Op) -> Option<BinaryOperator> {
+pub(crate) fn binary_operator(op: &Op) -> Option<BinaryOperator> {
     use BinaryOperator as B;
     Some(match op {
         Op::Add => B::Add,
@@ -423,6 +423,11 @@ struct Lowering<'a> {
     next_site: usize,
     /// Where a direct call builds its callee's context.
     callee_context: StackSlot,
+    /// What kinds of value each IR value is known to hold.
+    kinds: crate::kinds::Kinds,
+    /// The entry block past its leading entry checks, where a `recur`
+    /// whose arguments pass them restarts.
+    past_checks: Option<CodeBlock>,
 }
 
 /// Why generated code leaves to the interpreter at an exit.
@@ -509,6 +514,8 @@ impl<'a> Lowering<'a> {
             sites,
             next_site: 0,
             callee_context,
+            kinds: crate::kinds::Kinds::of(function),
+            past_checks: None,
         }
     }
 
@@ -553,6 +560,14 @@ impl<'a> Lowering<'a> {
             self.builder.switch_to_block(self.blocks[index]);
             for (position, inst) in block.insts.iter().enumerate() {
                 self.lower_inst(inst, (index, position))?;
+                // Past the entry checks, a block a `recur` that passes them
+                // may restart at.
+                if index == 0 && position + 1 == self.kinds.leading {
+                    let past = self.builder.create_block();
+                    self.builder.ins().jump(past, &[]);
+                    self.builder.switch_to_block(past);
+                    self.past_checks = Some(past);
+                }
             }
             self.lower_terminator(block)?;
         }
@@ -694,7 +709,7 @@ impl<'a> Lowering<'a> {
                 self.lower_call(inst, Callee::Global(name.get()), *count, position)?;
             }
             Op::CallPositional(count) => self.lower_call(inst, Callee::Value, *count, position)?,
-            Op::CheckKinds { kinds, .. } => self.lower_check_kinds(inst, *kinds),
+            Op::CheckKinds { kinds, .. } => self.lower_check_kinds(inst, *kinds, position),
             op => self.lower_operator(inst, op, position)?,
         }
         Ok(())
@@ -1488,7 +1503,14 @@ impl<'a> Lowering<'a> {
     /// kinds it accepts. A value that fails, or a live module binding,
     /// which the interpreter resolves first, leaves to the interpreter at
     /// the check, which raises its error or continues.
-    fn lower_check_kinds(&mut self, inst: &Inst, kinds: u32) {
+    ///
+    /// A check its value is known to pass tests nothing, except an entry
+    /// check, from which that is known.
+    fn lower_check_kinds(&mut self, inst: &Inst, kinds: u32, position: (usize, usize)) {
+        let entry_check = position.0 == 0 && position.1 < self.kinds.leading;
+        if !entry_check && self.kinds.passes(inst.args[0], kinds) {
+            return;
+        }
         let value = self.slot(inst.args[0].index());
         let tag = self.load_tag(value);
         let mask = self.builder.ins().iconst(
@@ -1959,7 +1981,11 @@ impl<'a> Lowering<'a> {
                     let target = self.slot(param.index());
                     self.copy_words(source, target);
                 }
-                let first = self.blocks[0];
+                // Arguments known to pass the entry checks skip them.
+                let first = match self.past_checks {
+                    Some(past) if self.kinds.recur_passes(arguments) => past,
+                    _ => self.blocks[0],
+                };
                 self.builder.ins().jump(first, &[]);
             }
             Terminator::Choose {
