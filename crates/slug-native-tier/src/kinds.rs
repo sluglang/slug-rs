@@ -103,6 +103,19 @@ impl Kinds {
         self.known[value.index()].is_some_and(|known| known & !kinds == 0)
     }
 
+    /// Whether the value at `index` is known to hold only a number, a
+    /// boolean, or `nil`, which own nothing to count or drop. A slot past
+    /// the IR values, a scratch one, is not known.
+    pub(crate) fn scalar(&self, index: usize) -> bool {
+        self.known
+            .get(index)
+            .copied()
+            .flatten()
+            .is_some_and(|known| {
+                known & !(check_kinds::NUM | check_kinds::BOOL | check_kinds::NIL) == 0
+            })
+    }
+
     /// Whether a `recur` with `arguments` passes the entry block's leading
     /// checks, so it may restart past them.
     pub(crate) fn recur_passes(&self, arguments: &[ValueId]) -> bool {

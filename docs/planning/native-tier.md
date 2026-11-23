@@ -1206,6 +1206,27 @@ the time left in the workloads profiled goes to value copies, builtin and
 foreign calls, and runtime helpers native code calls; and Windows has run
 only in CI, not yet under a real program's load.
 
+### Numeric kernels in registers (2026-11-23)
+
+Annotation checks now prove a parameter a number on entry (stage 6 of
+[the typed-Slug plan](typed-slug.md)), which Phase 3 had not: "type facts
+without a check turned out unsound". With them the tier works out which
+kinds each IR value holds (`kinds.rs`), drops the checks those make
+redundant, and gives a numeric kernel, a function that only computes on
+checked numbers, versions with every value in a register
+(`compile/numeric.rs`): one per combination of integer and float
+parameters its `recur`s keep, entered by the arguments' tags after the
+checks. Where a version would differ from the general code (overflow, a
+division with a remainder, a non-finite result, a mixed equality, or a
+thread that needs attention) it writes the iteration's parameters back and
+runs the iteration again in the general code, which a kernel's purity
+makes the same. No deoptimization mid-iteration is needed.
+
+Typed n-body at 50 million steps: 0.28 s to 0.04 s; the loop written in
+Rust with the same checks takes 0.025 s. Phase 3's integer versions
+gained 1.02x because values stayed in their slots; here they do not.
+`fib`, whose cost is its calls, needs unboxed calls (step 3 above).
+
 ## Risks
 
 - **Two engines to keep in agreement.** Every semantic change lands twice.

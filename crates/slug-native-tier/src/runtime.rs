@@ -1156,14 +1156,6 @@ pub(crate) extern "C" fn native_recur_cells(context: *mut Context, arguments: *m
     }
 }
 
-/// Whether the thread needs attention (a cancelled fork, or forks' host
-/// calls to serve): native code then exits before its `recur`, and the
-/// interpreter's own check deals with it.
-pub(crate) extern "C" fn native_attention(context: *mut Context) -> u32 {
-    // SAFETY: generated code passes its own context.
-    unsafe { u32::from((*(*context).vm).native_needs_attention()) }
-}
-
 /// Clones `source` into `target`, a slot holding no value that needs
 /// dropping.
 pub(crate) extern "C" fn native_clone(source: *const Value, target: *mut Value) {

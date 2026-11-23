@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The native tier runs numeric kernels with their numbers in registers: a
+  function whose parameters are annotated (or inferred) `num`, and whose body
+  only computes, compares, branches, and recurs, runs about 7 times faster
+  at scale. Typed n-body at 50 million steps went from 0.28 s to 0.04 s. A
+  `recur` no longer repeats the entry checks its arguments already pass.
+
 - Annotations are checked when the program runs. Where a value the checker
   could not prove reaches an annotated type, it is checked there: a
   declaration, an assignment, a parameter on entry, a function's result or

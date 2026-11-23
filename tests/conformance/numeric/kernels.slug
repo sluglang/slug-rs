@@ -1,0 +1,31 @@
+// Numeric kernels: functions whose parameters are checked numbers and
+// whose bodies only compute, branch, and recur. The native tier runs them
+// with their numbers in registers, and runs an iteration again in its
+// general code where a register version cannot compute it as Slug does:
+// an overflow, a division with a remainder, a result that is not finite.
+// The results must be the interpreter's, in every combination of integer
+// and float arguments.
+val advance = fn(n:num, p:num, v:num) { if (n == 0) { p } else { recur(n - 1, p + v, v + 0.25) } }
+val sumTo = fn(n:num, acc:num) { if (n == 0) { acc } else { recur(n - 1, acc + n) } }
+// Integer halving is exact until it is not, and then the quotient is a float.
+val halve = fn(n:num, steps:num) { if (n < 1) { steps + n } else { recur(n / 2, steps + 1) } }
+val grow = fn(n:num, x:num) { if (n == 0) { x } else { recur(n - 1, x * 1000000.0) } }
+val big = fn(n:num, x:num) { if (n == 0) { x } else { recur(n - 1, x * 1000000) } }
+val mix = fn(n:num, acc:num) { if (n == 0) { acc } else { recur(n - 1, acc + n % 7 - -n) } }
+val bits = fn(n:num, acc:num) { if (n == 0) { acc } else { recur(n - 1, (acc ^ n) & 1023 | 1) } }
+val less = fn(a:num, b:num) { a < b }
+val same = fn(a:num, b:num) { a == b }
+val neither = fn(a:num, b:num) { !(a < b) && !(b < a) }
+val safe = fn(work) {
+    defer onerror(e) { return e.msg }
+    work()
+}
+println(advance(10, 0, 0.5), advance(10, 0.0, 0.5), advance(3, 1, 2), advance(3.0, 1, 2))
+println(sumTo(1000, 0), sumTo(1000, 0.5), sumTo(10, 0.25), sumTo(10.0, 0))
+println(halve(100, 0), halve(64, 0), halve(64.0, 0), halve(3, 0.5))
+println(less(1, 2), less(2.5, 1), less(3, 3.5), same(1, 1), same(1, 1.0), same(0.5, 0.5))
+println(neither(2, 2), neither(2, 3), mix(100, 0), mix(10, 0.5), bits(50, 0))
+println(grow(3, 1.0), grow(3, 1))
+println(safe(fn() { grow(100, 1.0) }))
+println(safe(fn() { big(10, 1) }))
+println(safe(fn() { sumTo(3, 9223372036854775805) }))

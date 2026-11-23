@@ -55,6 +55,8 @@ use crate::{
     },
 };
 
+mod numeric;
+
 /// The most IR values a compiled function may have. Its native frame holds
 /// a slot for each, and the stack budget is checked only at calls, so one
 /// frame past it could overflow a thread's stack on its own: the main
@@ -298,7 +300,6 @@ pub(crate) fn compile(jit: &Jit, function: &Function, dump: bool) -> Result<Comp
 /// The Rust functions generated code calls, by signature.
 struct Runtime {
     binary: cranelift_codegen::ir::SigRef,
-    attention: cranelift_codegen::ir::SigRef,
     /// `(context, scope) -> status`: `native_cleanup`.
     cleanup: cranelift_codegen::ir::SigRef,
     clone: cranelift_codegen::ir::SigRef,
@@ -341,7 +342,6 @@ impl Runtime {
                 &[pointer, types::I32, pointer, pointer, pointer],
                 &[types::I32],
             ),
-            attention: signature(&[pointer], &[types::I32]),
             cleanup: signature(&[pointer, types::I32], &[types::I32]),
             clone: signature(&[pointer, pointer], &[]),
             drop: signature(&[pointer], &[]),
@@ -564,7 +564,12 @@ impl<'a> Lowering<'a> {
                 // may restart at.
                 if index == 0 && position + 1 == self.kinds.leading {
                     let past = self.builder.create_block();
-                    self.builder.ins().jump(past, &[]);
+                    let versions = numeric::versions(function, &self.kinds);
+                    if versions.is_empty() {
+                        self.builder.ins().jump(past, &[]);
+                    } else {
+                        self.enter_versions(&versions, past);
+                    }
                     self.builder.switch_to_block(past);
                     self.past_checks = Some(past);
                 }
@@ -1948,11 +1953,7 @@ impl<'a> Lowering<'a> {
                     // function's own scope.
                     self.unwind(inst, 2);
                 }
-                let status = self.call(
-                    self.runtime.attention,
-                    runtime::native_attention as *const () as usize,
-                    &[self.context],
-                )[0];
+                let status = self.attention_requested();
                 let exit = self.exit_block(inst);
                 let restart = self.builder.create_block();
                 self.builder.ins().brif(status, exit, &[], restart, &[]);
@@ -1963,7 +1964,11 @@ impl<'a> Lowering<'a> {
                 for (index, argument) in arguments.iter().enumerate() {
                     let source = self.slot(argument.index());
                     let target = self.slot(scratch_base + index);
-                    self.clone_into(source, target);
+                    if self.kinds.scalar(argument.index()) {
+                        self.copy_words(source, target);
+                    } else {
+                        self.clone_into(source, target);
+                    }
                 }
                 self.drop_owning();
                 if self.function.cells.iter().any(|cell| *cell) {
@@ -2158,9 +2163,23 @@ impl<'a> Lowering<'a> {
     /// check per slot inline when there are few, and otherwise by one test
     /// of all their tags inline, calling the runtime to drop them only when
     /// one holds a counted value; most hold numbers or `nil`.
+    /// Whether the thread needs attention, from its flag, read where it is
+    /// as a call reads it: nonzero when it does.
+    fn attention_requested(&mut self) -> CodeValue {
+        let flags = MemFlags::trusted();
+        let attention = self.builder.ins().load(
+            self.pointer,
+            flags,
+            self.context,
+            offsets::CONTEXT_ATTENTION,
+        );
+        self.builder.ins().uload8(types::I32, flags, attention, 0)
+    }
+
     fn drop_owning(&mut self) {
+        // A value known to be a number, a boolean, or `nil` owns nothing.
         let owning: Vec<usize> = (0..self.owning.len())
-            .filter(|index| self.owning[*index])
+            .filter(|index| self.owning[*index] && !self.kinds.scalar(*index))
             .collect();
         if owning.len() > INLINE_TESTS {
             // Too many to test inline: a large function, which nearly

@@ -574,14 +574,31 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     0.28 s to 0.28 s. Against `c35f26ff` (7 padded PGO rounds): tuned 1.00x,
     hold-outs 1.01x, every workload inside its spread; the suite's typed
     twins run under 7 ms, mostly startup.
-  - [ ] Keep proven numbers unboxed. Checks prove `num`, an integer or a
-    float, not which, and Phase 3 of the native tier found an integer
-    version of each function, checked once at entry, gained 1.02x. Each
-    operation now loads a value's tag and payload from its 24-byte slot,
-    branches on integer or float, and stores both back; n-body takes about
-    6 ns an iteration and `fib(35)` 7.7 ns a call. Keeping known numbers in
-    registers between calls and exits, written to slots only there, is
-    the remaining step, to be prototyped on one loop before it is built.
+  - [x] Keep proven numbers unboxed, in numeric kernels. Checks prove
+    `num`, an integer or a float, not which, so the representation is
+    chosen when the function runs. A function whose entry checks prove
+    every parameter a number, and whose body only computes, compares,
+    branches, returns, and recurs, gets a version for each combination of
+    integer and float parameters its `recur`s keep, up to 8, with every
+    value in a register (`compile/numeric.rs`); the entry, past its checks,
+    takes the version its arguments' tags name. What a version cannot
+    compute as the general code would (an overflow, a division with a
+    remainder, a result that is not finite, a mixed equality) and a thread
+    that needs attention write the iteration's parameters back and run it
+    again in the general code; an iteration only computes, so the same.
+    Typed n-body at 50 million steps: 0.28 s to 0.04 s, against 0.025 s for
+    the same loop written in Rust with Slug's checks. The untyped twin,
+    whose parameters nothing checks, is unchanged, as is `fib`, whose cost
+    is its calls. `tests/conformance/numeric` checks the semantics in every
+    combination, and the gate runs it in both tiers. Against `aaf6f069`
+    (7 padded PGO rounds): tuned 0.99x, hold-outs 0.98x, `typed-n-body`
+    0.94x at the suite's 50,000 steps, nothing slower outside its spread.
+  - [ ] Unboxed calls between compiled functions, for `fib`: the native
+    tier's own plan's step 3, a calling convention that passes raw numbers
+    to a callee proven to take them. `fib(35)` takes 0.21 s to the Rust
+    loop's 0.040 s.
+  - [ ] Kernels beyond pure arithmetic: list reads, and functions called
+    from a kernel.
 - [ ] Measure on the `typed-*` twins and on typed versions of Crawl's hot
   functions.
 - [ ] Evaluate fixed layouts for records typed code builds, separately.
