@@ -9,8 +9,8 @@ and [the transient soundness model](../decisions/2026-11-22-transient-soundness-
 Status: implemented for declarations, assignments, parameters, results,
 `return`, and a recovering `defer onerror`, struct fields, calls, and
 `foreign` results, with dynamic overload dispatch by type; [stage 6 of the
-typed-Slug plan](../planning/typed-slug.md#6-sound-boundaries) lists what is
-not yet: the annotation's location in the error.
+typed-Slug plan](../planning/typed-slug.md#6-sound-boundaries) has the
+details.
 
 ```slug
 val parse = fn(text) { text }        // unannotated: its result is not known
@@ -171,8 +171,10 @@ runtime error: expected list<{name: str}>, got list: the argument `people`: the 
 ```
 
 Its location is the declaration, assignment, `return`, struct, or call; for
-a parameter or a body's result, the function, with the call in the frames.
-The annotation's own location, where it differs, is not reported yet.
+a parameter or a body's result, the function whose signature has the
+annotation, with the call in the frames. A field a schema checks where the
+struct is made names where the schema, which has the annotation, was
+declared: `the field \`name\`, annotated in the schema at pets.slug:1:17`.
 
 ## Not checked
 

@@ -1226,7 +1226,10 @@ pub(super) fn construct_struct(
                 .iter()
                 .position(|name| name == field.name.as_ref())
                 .and_then(|index| provided.get(index).cloned());
-            if let Some(rejected) = given.as_ref().and_then(|value| field.rejects(value)) {
+            if let Some(rejected) = given
+                .as_ref()
+                .and_then(|value| field.rejects(value, schema.declared_at.as_ref()))
+            {
                 return Err((RuntimeErrorKind::AnnotationMismatch, rejected));
             }
             given.or_else(|| field.default.clone()).ok_or_else(|| {

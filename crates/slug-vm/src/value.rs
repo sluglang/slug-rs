@@ -1514,15 +1514,28 @@ pub struct StructField {
 
 impl StructField {
     /// Why `value` cannot be this field's, when its annotation's kinds do not
-    /// include it.
-    pub(crate) fn rejects(&self, value: &Value) -> Option<String> {
+    /// include it: naming where the field's schema was declared, which has
+    /// the annotation, when it is known.
+    pub(crate) fn rejects(
+        &self,
+        value: &Value,
+        declared_at: Option<&crate::SourceSpan>,
+    ) -> Option<String> {
         let (kinds, expected) = self.check.as_ref()?;
         (!value.has_kind_in(*kinds)).then(|| {
-            format!(
+            let mut message = format!(
                 "expected {expected}, got {}: the field `{}`",
                 value.type_name(),
                 self.name
-            )
+            );
+            if let Some(declared) = declared_at {
+                let _ = write!(
+                    message,
+                    ", annotated in the schema at {}:{}:{}",
+                    declared.path, declared.line, declared.column
+                );
+            }
+            message
         })
     }
 }
@@ -1754,7 +1767,9 @@ impl StructValue {
                 .iter()
                 .position(|field| field.name.as_ref() == name)
                 .expect("field names were validated");
-            if let Some(rejected) = copy.schema.fields[index].rejects(replacement) {
+            if let Some(rejected) =
+                copy.schema.fields[index].rejects(replacement, copy.schema.declared_at.as_ref())
+            {
                 return Err((crate::RuntimeErrorKind::AnnotationMismatch, rejected));
             }
             copy.values[index] = replacement.clone();

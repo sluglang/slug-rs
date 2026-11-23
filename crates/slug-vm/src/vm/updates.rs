@@ -307,7 +307,7 @@ pub(super) fn copy_cannot_fail(value: &Value, names: &[String], replacements: &[
                     .iter()
                     .find(|field| field.name.as_ref() == name)
                     .is_some_and(|field| match replacements.get(index) {
-                        Some(replacement) => field.rejects(replacement).is_none(),
+                        Some(replacement) => field.rejects(replacement, None).is_none(),
                         None => field.check.is_none(),
                     })
             }),
