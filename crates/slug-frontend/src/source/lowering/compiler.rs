@@ -2050,7 +2050,7 @@ impl Compiler {
                         .iter()
                         .all(|argument| matches!(argument, CallArgument::Positional(_)));
                     let mut kinds = (!positional).then(|| Vec::with_capacity(arguments.len()));
-                    for argument in arguments {
+                    for (index, argument) in arguments.iter().enumerate() {
                         let argument = match argument {
                             CallArgument::Positional(argument) => {
                                 if let Some(kinds) = &mut kinds {
@@ -2074,6 +2074,14 @@ impl Compiler {
                             }
                         };
                         self.expression(state, argument)?;
+                        // A full positional `recur` re-enters past the entry
+                        // checks: what the checker cannot prove is checked
+                        // here instead.
+                        if positional {
+                            self.emit_checks(state, &expression.span, |place| {
+                                matches!(place, CheckPlace::Parameter { index: checked, .. } if *checked == index)
+                            })?;
+                        }
                     }
                     state.emit(
                         if positional {
@@ -2154,8 +2162,10 @@ impl Compiler {
                 }
             }
             // Each parameter is checked on entry, after its default: any
-            // caller may call the function. `recur` restarts here, so its
-            // arguments are checked too.
+            // caller may call the function. A full positional `recur`
+            // re-enters past these checks, its arguments checked where it
+            // is; any other `recur` restarts at the first instruction.
+            let mut checked = false;
             for slot in 0..parameter_metadata.len() {
                 if self.boundary_checks.get(span).is_some_and(|checks| {
                     checks.iter().any(|check| {
@@ -2167,15 +2177,22 @@ impl Compiler {
                         matches!(place, CheckPlace::Parameter { index, .. } if *index == slot)
                     })?;
                     state.emit(Op::Pop, span);
+                    checked = true;
                 }
             }
+            // Where a `recur` passing every argument re-enters, past the
+            // defaults, which it does not need, and the entry checks, which
+            // its own checks replace.
+            let recur_entry = checked.then(|| state.chunk_len());
             self.tail_function_body(&mut state, body)?;
             self.emit_checks(&mut state, span, |place| {
                 matches!(place, CheckPlace::Result)
             })?;
             state.emit(Op::Return, &body.span);
             let captures = parent.resolve_child_captures(state.captures());
-            Ok((state.finish("<fn>", parameters.len()), captures))
+            let mut chunk = state.finish("<fn>", parameters.len());
+            chunk.recur_entry = recur_entry;
+            Ok((chunk, captures))
         })
     }
 

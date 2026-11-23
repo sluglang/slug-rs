@@ -136,6 +136,7 @@ impl<'a> Lifter<'a> {
                     .instructions
                     .iter()
                     .any(|instruction| matches!(instruction.op, Op::Defer { .. })),
+                recur_entry: None,
                 constants: chunk.constants.clone(),
                 values: Vec::new(),
                 blocks: Vec::new(),
@@ -191,7 +192,22 @@ impl<'a> Lifter<'a> {
             return Err(format!("function `{}` falls off its end", self.chunk.name));
         }
         self.resolve_edges()?;
+        self.function.recur_entry = self.recur_entry();
         Ok(self.function)
+    }
+
+    /// The block at the chunk's re-entry, when its parameters are those the
+    /// entry block takes: none of its own, and no local set before it.
+    fn recur_entry(&self) -> Option<BlockId> {
+        let entry = self.chunk.recur_entry?;
+        let block = self.block_at.get(entry).copied().flatten()?;
+        let sets_local = self.chunk.instructions[..entry].iter().any(|instruction| {
+            matches!(
+                instruction.op,
+                Op::SetLocal(_) | Op::JumpIfProvided { .. } | Op::SetCapture(_)
+            )
+        });
+        (self.function.blocks[block.index()].params.is_empty() && !sets_local).then_some(block)
     }
 
     /// Edges name their target instruction until every block exists; this
@@ -217,6 +233,10 @@ impl<'a> Lifter<'a> {
     /// any instruction that does not simply fall through.
     fn find_leaders(&mut self) {
         self.leaders.insert(0);
+        // A `recur` may re-enter there.
+        if let Some(entry) = self.chunk.recur_entry {
+            self.leaders.insert(entry);
+        }
         for (ip, instruction) in self.chunk.instructions.iter().enumerate() {
             if instruction.height.is_none() {
                 continue;

@@ -396,6 +396,10 @@ type Scope = HashMap<String, Rc<SemanticBinding>>;
 struct FunctionReturns {
     expected: Option<Type>,
     returned: Vec<Type>,
+    /// Each parameter's entry check, by position: its name, the type it is
+    /// checked against, and whether that type was inferred. A `recur`
+    /// checks its arguments against them, so it need not re-enter them.
+    parameters: Vec<Option<(String, Type, bool)>>,
     /// Whether a value the checker could not prove may reach a type
     /// parameter in the result.
     result_unproven: bool,
@@ -480,12 +484,25 @@ impl Environment {
 
     /// Begins checking a function body whose result must conform to
     /// `expected`, when it is declared.
-    pub(super) fn enter_function(&mut self, expected: Option<Type>) {
+    pub(super) fn enter_function(
+        &mut self,
+        expected: Option<Type>,
+        parameters: Vec<Option<(String, Type, bool)>>,
+    ) {
         self.function = Some(Rc::new(RefCell::new(FunctionReturns {
             expected,
             returned: Vec::new(),
+            parameters,
             result_unproven: false,
         })));
+    }
+
+    /// The entry check of the parameter at `index` of the function being
+    /// checked, if it has one: its name, type, and whether it was inferred.
+    pub(super) fn parameter_check(&self, index: usize) -> Option<(String, Type, bool)> {
+        self.function
+            .as_ref()
+            .and_then(|function| function.borrow().parameters.get(index).cloned().flatten())
     }
 
     /// The declared result of the function being checked, if any.

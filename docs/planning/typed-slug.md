@@ -619,6 +619,27 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
 
 - [ ] Type the standard library and shipped clutches; record the
   annotations each needed.
+
+  Surveyed 2026-11-23, from source, over every clutch module and
+  `lib/slug`: 756 top-level functions, 282 exported. 87% of parameters
+  (1,148 of 1,318) and 77% of results (581 of 756) are annotated, and 237
+  exported functions are annotated whole. The unannotated are mostly
+  `slug.core/json`'s 55 functions (9 of 143 parameters), `slug.core/test`'s
+  results, and the results of Crawl's `game` and `web`, `slug.net.http`, and
+  `slug.db.sqlite`'s `transaction`. More of the work is precision: 803 of
+  2,858 annotations (28%) are a bare `map` (400 parameters and results),
+  `list` (349), or `fn` (28), which check only a value's kind. Records kept
+  in maps (Crawl's state, HTTP requests and responses, Mustache contexts)
+  want record types, and lists their element types.
+
+  Element types first needed a fix. Entry checks ran again at every
+  `recur`, so a `list<num>` accumulator was scanned whole on each
+  iteration: building a list of 20,000 took 0.32 s interpreted and 0.82 s
+  native, against 0.00 s for a bare `list`. As the annotation-checks spec
+  says, a `recur` now checks its arguments where it is, only those the
+  checker cannot prove pass their parameters' checks, and a full positional
+  one re-enters past the entry checks (a chunk's `recur_entry`, in the VM
+  and the native tier). The same build takes 0.00 s in every mode.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

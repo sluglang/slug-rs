@@ -37,6 +37,9 @@ pub struct VerifiedChunk {
     /// Whether a call or `recur` with exactly `arity` positional arguments
     /// binds them straight into the parameters: no parameter is variadic.
     pub exact_positional: bool,
+    /// Where a `recur` passing every parameter positionally re-enters, past
+    /// the entry checks: the first instruction when `None`.
+    pub recur_entry: Option<usize>,
     pub constants: Vec<Constant>,
     pub instructions: Vec<VerifiedInstruction>,
 }
@@ -330,6 +333,7 @@ impl Program {
             ),
             callable_identity: chunk.callable_identity,
             locals: chunk.locals,
+            recur_entry: chunk.recur_entry.unwrap_or(0),
             constants: chunk.constants.clone(),
             index_hints: super::chunk::index_hints(chunk.constants.len()),
             #[cfg(feature = "native-hooks")]
@@ -1230,6 +1234,7 @@ impl Program {
                 .map(Self::unpack_instruction)
                 .collect::<Result<_, _>>()?,
             captures: chunk.captures.clone(),
+            recur_entry: (chunk.recur_entry != 0).then_some(chunk.recur_entry),
             spans: Vec::new(),
             span_ids: HashMap::new(),
         })
@@ -1904,7 +1909,20 @@ impl Program {
     }
 
     fn validate_stack(&self, chunk: &Chunk, initial_stack: usize) -> Result<(), String> {
-        self.stack_states(chunk, initial_stack).map(drop)
+        let states = self.stack_states(chunk, initial_stack)?;
+        // A `recur` re-enters there with the stack as at the first
+        // instruction and the frame's own scope.
+        if let Some(entry) = chunk.recur_entry
+            && !states.get(entry).is_some_and(|state| {
+                state.is_some_and(|state| state.height == initial_stack && state.scope_depth == 0)
+            })
+        {
+            return Err(format!(
+                "function `{}` re-enters at instruction {entry}, which is not its entry state",
+                chunk.name
+            ));
+        }
+        Ok(())
     }
 
     /// Each instruction's verified state on entry, or `None` for an
@@ -2060,6 +2078,7 @@ impl Program {
             locals: chunk.locals,
             initial_height,
             exact_positional: compiled.binds_full_positional_calls,
+            recur_entry: chunk.recur_entry,
             constants: chunk.constants,
             instructions,
         })

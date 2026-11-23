@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A `recur` no longer repeats its function's entry checks: it checks only the
+  arguments the checker cannot prove, where it is. A recursive helper with a
+  `list<num>` accumulator scanned the whole list on every iteration, which
+  made building a list of 20,000 take most of a second.
+
 - The native tier runs numeric kernels with their numbers in registers: a
   function whose parameters are annotated (or inferred) `num`, and whose body
   only computes, compares, branches, and recurs, runs about 7 times faster

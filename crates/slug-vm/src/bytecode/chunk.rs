@@ -264,6 +264,10 @@ pub struct CompiledChunk {
     pub(crate) plain_defaults: alloc::boxed::Box<[PlainDefault]>,
     pub(crate) callable_identity: Option<usize>,
     pub(crate) locals: usize,
+    /// Where a `recur` passing every parameter positionally re-enters: 0,
+    /// or past the entry checks, which the compiler checked its arguments
+    /// against instead.
+    pub(crate) recur_entry: usize,
     pub(crate) constants: Vec<Constant>,
     #[doc(hidden)]
     pub code: Vec<PackedInstruction>,
@@ -389,11 +393,13 @@ impl CompiledChunk {
         parameters: Vec<ParameterSignature>,
         callable_identity: Option<usize>,
         locals: usize,
+        recur_entry: usize,
         constants: Vec<Constant>,
         code: Vec<PackedInstruction>,
         captures: Vec<super::metadata::CaptureDetail>,
     ) -> Self {
         Self {
+            recur_entry,
             captures,
             name,
             arity,
@@ -425,6 +431,7 @@ impl CompiledChunk {
         &[ParameterSignature],
         Option<usize>,
         usize,
+        usize,
         &[Constant],
         &[PackedInstruction],
         &[super::metadata::CaptureDetail],
@@ -435,6 +442,7 @@ impl CompiledChunk {
             &self.parameters,
             self.callable_identity,
             self.locals,
+            self.recur_entry,
             &self.constants,
             &self.code,
             &self.captures,
@@ -456,6 +464,10 @@ pub struct Chunk {
     pub code: Vec<Instruction>,
     /// What each capture slot holds, when the compiler recorded it.
     pub captures: Vec<super::metadata::CaptureDetail>,
+    /// Where a `recur` that passes every parameter positionally re-enters:
+    /// past the entry checks, which the compiler checked its arguments
+    /// against instead. `None` restarts at the first instruction.
+    pub recur_entry: Option<usize>,
     pub(crate) spans: Vec<SourceSpan>,
     pub(crate) span_ids: HashMap<SourceSpan, SpanId>,
 }
@@ -472,6 +484,7 @@ impl Chunk {
             constants: Vec::new(),
             code: Vec::new(),
             captures: Vec::new(),
+            recur_entry: None,
             spans: Vec::new(),
             span_ids: HashMap::new(),
         }

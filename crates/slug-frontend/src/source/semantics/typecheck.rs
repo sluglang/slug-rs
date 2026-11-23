@@ -2533,6 +2533,7 @@ fn check_function_body_in_scope(
         // A body that is a `match` without a subject matches the arguments,
         // a tuple of the parameters' types as the body sees them.
         let mut arguments = Vec::new();
+        let mut parameter_checks = vec![None; parameters.len()];
         for (index, (parameter, signature_parameter)) in
             parameters.iter().zip(&signature.parameters).enumerate()
         {
@@ -2574,6 +2575,11 @@ fn check_function_body_in_scope(
                             inferred: parameter.annotation.is_none(),
                         },
                     );
+                    parameter_checks[index] = Some((
+                        parameter.name.clone(),
+                        binding_type.clone(),
+                        parameter.annotation.is_none(),
+                    ));
                 }
                 scoped.declare(parameter.name.clone(), SemanticBinding::value(binding_type));
             }
@@ -2587,7 +2593,7 @@ fn check_function_body_in_scope(
                 resolve_static_annotation(annotation, type_parameters, &body.span, environment)
             })
             .transpose()?;
-        scoped.enter_function(expected.clone());
+        scoped.enter_function(expected.clone(), parameter_checks);
         if let ExprKind::Match { subject: None, .. } = &body.kind {
             scoped.record_implicit_subject(body.span.clone(), Type::Tuple(arguments));
         }
@@ -3333,8 +3339,24 @@ fn check_expression_inner(
                 check_expression(body, environment, type_parameters)
             }
             ExprKind::Recur(arguments) => {
-                for argument in arguments {
-                    check_argument(argument, environment, type_parameters)?;
+                // A `recur` re-enters past the entry checks, so it checks
+                // each argument the checker cannot prove passes its own.
+                for (index, argument) in arguments.iter().enumerate() {
+                    let actual = check_argument(argument, environment, type_parameters)?;
+                    if let CallArgument::Positional(_) = argument
+                        && let Some((name, expected, inferred)) = environment.parameter_check(index)
+                    {
+                        environment.record_boundary_check(
+                            &expression.span,
+                            &actual,
+                            &expected,
+                            CheckPlace::Parameter {
+                                name,
+                                index,
+                                inferred,
+                            },
+                        );
+                    }
                 }
                 Ok(Type::Never)
             }
@@ -6981,6 +7003,33 @@ mod tests {
                 (3, parameter("v", true), "num".into()),
                 (4, CheckPlace::Result, "str".into()),
                 (7, CheckPlace::Result, "num".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recur_checks_only_the_arguments_the_checker_cannot_prove() {
+        // `out :+ i` is a `list<num>` from a `list<num>` and a number; the
+        // dynamic one is checked where the `recur` is, as it re-enters past
+        // the entry checks.
+        let checks = recorded_checks(
+            "val dynamic = fn(x) { x }\n\
+             val build = fn(i:num, out:list<num>) { if (i == 0) { out } else { recur(i - 1, out :+ i) } }\n\
+             val loose = fn(i:num, out:list<num>) { if (i == 0) { out } else { recur(i - 1, dynamic(out)) } }\n",
+        );
+        let parameter = |name: &str, index| CheckPlace::Parameter {
+            name: name.into(),
+            index,
+            inferred: false,
+        };
+        assert_eq!(
+            checks,
+            vec![
+                (2, parameter("i", 0), "num".into()),
+                (2, parameter("out", 1), "list<num>".into()),
+                (3, parameter("i", 0), "num".into()),
+                (3, parameter("out", 1), "list<num>".into()),
+                (3, parameter("out", 1), "list<num>".into()),
             ]
         );
     }

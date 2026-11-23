@@ -1988,11 +1988,7 @@ impl<'a> Lowering<'a> {
                     let target = self.slot(param.index());
                     self.copy_words(source, target);
                 }
-                // Arguments known to pass the entry checks skip them.
-                let first = match self.past_checks {
-                    Some(past) if self.kinds.recur_passes(arguments) => past,
-                    _ => self.blocks[0],
-                };
+                let first = self.recur_target(inst, arguments);
                 self.builder.ins().jump(first, &[]);
             }
             Terminator::Choose {
@@ -2159,6 +2155,19 @@ impl<'a> Lowering<'a> {
         let byte = self.load(types::I8, slot, layout::PAYLOAD);
         let bool_true = self.builder.ins().icmp_imm(IntCC::NotEqual, byte, 0);
         self.builder.ins().select(is_bool, bool_true, not_nil)
+    }
+
+    /// Where `inst`, a `recur` with `arguments`, re-enters: past the entry
+    /// checks for a full positional one, whose arguments were checked where
+    /// it is, or one whose arguments are known to pass them; otherwise at the
+    /// entry block.
+    fn recur_target(&self, inst: &Inst, arguments: &[ValueId]) -> CodeBlock {
+        let full = matches!(inst.op, Op::RecurPositional(count) if count == self.function.arity);
+        match (self.function.recur_entry, self.past_checks) {
+            (Some(entry), _) if full => self.blocks[entry.index()],
+            (_, Some(past)) if self.kinds.recur_passes(arguments) => past,
+            _ => self.blocks[0],
+        }
     }
 
     /// Whether the thread needs attention, from its flag, read where it is

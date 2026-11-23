@@ -87,9 +87,12 @@ annotations, so they are checked in the same places. A parameter whose type
 is one of several body-derived alternatives, as for `fn(a, b) { a + b }`, is
 not checked: the body is checked against each alternative.
 
-`recur` re-enters a function without its entry checks: its arguments are
-checked by the checker against the parameters, and any dynamic argument is
-checked at the `recur`.
+A `recur` that passes every argument positionally re-enters its function
+past the entry checks: its arguments are checked by the checker against the
+parameters, and any it cannot prove are checked at the `recur`. So a
+recursive helper's `list<num>` accumulator is not scanned again on each
+iteration. A `recur` with named or spread arguments restarts at the entry,
+checks included.
 
 **Parameters are checked by the function, not its callers.** A function
 cannot know whether its caller was typed, since any function may be passed

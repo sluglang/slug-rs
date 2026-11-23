@@ -126,6 +126,11 @@ impl State {
             .collect();
         self.chunk
     }
+    /// How many instructions the chunk has so far: where the next goes.
+    pub(super) fn chunk_len(&self) -> usize {
+        self.chunk.code.len()
+    }
+
     pub(super) fn is_module_scope(&self) -> bool {
         self.root && self.scopes.len() == 1
     }

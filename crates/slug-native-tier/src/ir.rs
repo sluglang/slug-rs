@@ -197,6 +197,11 @@ pub struct Function {
     /// Whether it defers actions: its `Return`s are then instructions,
     /// which check what is deferred.
     pub defers: bool,
+    /// The block a `recur` passing every parameter positionally re-enters
+    /// at, past the entry checks, which its own arguments were checked
+    /// against: when the chunk has one, and the block reads the parameters
+    /// the entry block takes, nothing before it having set a local.
+    pub recur_entry: Option<BlockId>,
     pub constants: Vec<Constant>,
     pub values: Vec<ValueDef>,
     /// The entry block is first; its parameters are the arguments.

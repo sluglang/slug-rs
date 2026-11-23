@@ -1138,8 +1138,17 @@ fn encode_match_type(value: &MatchType, depth: usize, output: &mut Vec<u8>) -> R
 
 #[allow(dead_code)]
 fn encode_chunk(chunk: &CompiledChunk, output: &mut Vec<u8>) -> Result<(), Error> {
-    let (name, arity, parameters, callable_identity, locals, constants, code, captures) =
-        chunk.cslug_parts();
+    let (
+        name,
+        arity,
+        parameters,
+        callable_identity,
+        locals,
+        recur_entry,
+        constants,
+        code,
+        captures,
+    ) = chunk.cslug_parts();
     string(name, output);
     uleb(arity, output);
     uleb(parameters.len(), output);
@@ -1157,6 +1166,7 @@ fn encode_chunk(chunk: &CompiledChunk, output: &mut Vec<u8>) -> Result<(), Error
     }
     optional_usize(callable_identity, output);
     uleb(locals, output);
+    uleb(recur_entry, output);
     uleb(constants.len(), output);
     for constant in constants {
         match constant {
@@ -2173,6 +2183,7 @@ impl<'a> Reader<'a> {
             _ => return Err(Error::InvalidStructure("chunk callable identity".into())),
         };
         let locals = self.count("chunk local count")?;
+        let recur_entry = self.usize("chunk recur entry")?;
         let constant_count = self.count("constant count")?;
         let mut constants = Vec::with_capacity(constant_count);
         for _ in 0..constant_count {
@@ -2204,6 +2215,7 @@ impl<'a> Reader<'a> {
             parameters,
             callable_identity,
             locals,
+            recur_entry,
             constants,
             code,
             Vec::new(),
@@ -2298,6 +2310,7 @@ mod tests {
         uleb(0, output); // parameters
         output.push(0); // callable identity
         uleb(0, output); // locals
+        uleb(0, output); // recur entry
         uleb(0, output); // constants
         uleb(2, output); // instructions
         output.push(PackedOpcode::Nil as u8);
@@ -2712,6 +2725,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(1, &mut record); // constants
         record.push(0); // source literal constant
         record.push(3); // integer value
@@ -2726,6 +2740,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(2, &mut record); // instructions
         record.push(PackedOpcode::Nil as u8);
@@ -2762,6 +2777,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(0, &mut record); // instructions
 
@@ -2798,6 +2814,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(locals, &mut record);
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(code.len(), &mut record);
         for (opcode, a) in code {
@@ -2919,6 +2936,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(1, &mut record); // instructions
         record.push(PackedOpcode::Jump as u8);
@@ -2951,6 +2969,7 @@ mod tests {
         record.push(1); // callable identity present
         uleb(0, &mut record); // missing callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(0, &mut record); // instructions
 
@@ -2980,6 +2999,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(2, &mut record); // instructions
         record.push(PackedOpcode::Nil as u8);
@@ -3013,6 +3033,7 @@ mod tests {
         uleb(0, &mut record); // parameters
         record.push(0); // callable identity
         uleb(0, &mut record); // locals
+        uleb(0, &mut record); // recur entry
         uleb(0, &mut record); // constants
         uleb(2, &mut record); // instructions
         record.push(PackedOpcode::Nil as u8);

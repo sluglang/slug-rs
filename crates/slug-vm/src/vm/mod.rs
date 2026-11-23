@@ -2507,9 +2507,11 @@ impl Vm {
     /// frame check, which enters it.
     #[cfg(feature = "native-hooks")]
     #[inline]
-    fn count_recur(&mut self, chunk: &crate::bytecode::CompiledChunk) {
+    /// Counts a `recur` for the native tier; whether its code is ready, so
+    /// that the frame re-enters at its first instruction to run it.
+    fn count_recur(&mut self, chunk: &crate::bytecode::CompiledChunk) -> bool {
         let Some(frame) = self.frames.last_mut() else {
-            return;
+            return false;
         };
         if chunk
             .native
@@ -2518,7 +2520,9 @@ impl Vm {
         {
             frame.ip = 0;
             self.frames_changed();
+            return true;
         }
+        false
     }
 
     /// Runs the active frame's native code from its first instruction.
@@ -3478,7 +3482,7 @@ impl Vm {
                     self.pooled_call_arguments(program, CallArgumentsId::new(instruction.a))?;
                 self.recur(program, kinds)?;
                 #[cfg(feature = "native-hooks")]
-                self.count_recur(chunk);
+                let _ = self.count_recur(chunk);
                 #[cfg(all(feature = "threads", not(target_os = "none")))]
                 self.check_attention()?;
                 #[cfg(all(
@@ -3490,8 +3494,15 @@ impl Vm {
             }
             PackedOpcode::RecurPositional => {
                 self.recur_positional(program, operand)?;
+                // Every parameter given, checked where the `recur` is: past
+                // the entry checks, unless native code is ready to run.
+                let target = if operand == chunk.arity {
+                    chunk.recur_entry
+                } else {
+                    0
+                };
                 #[cfg(feature = "native-hooks")]
-                self.count_recur(chunk);
+                let target = if self.count_recur(chunk) { 0 } else { target };
                 #[cfg(all(feature = "threads", not(target_os = "none")))]
                 self.check_attention()?;
                 #[cfg(all(
@@ -3499,7 +3510,7 @@ impl Vm {
                     not(all(feature = "threads", not(target_os = "none")))
                 ))]
                 self.yield_at_recur();
-                *ip = 0;
+                *ip = target;
             }
             PackedOpcode::Return => {
                 let value = self.pop()?;
