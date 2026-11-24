@@ -667,6 +667,26 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   map literal in a tuple, `[[], i]`, was a list of unknown elements (it takes
   the element type expected). The parser's results are now proven, and
   checked nowhere.
+
+  The rest of `slug.core` typed next. `slug.test` exports a `Failure` record
+  type, which `check` and `runTest` return, and `attempt` returns `{threw:
+  bool, value: any|nil}`; the `slug test` runner, itself Slug, checks
+  against them. `slug.random` exports a `Generator` record type of its
+  functions; since a record type also describes structs, it is not a `map`,
+  so Crawl's `rng`, which annotated a generator `map`, now says
+  `random.Generator`. `slug.std`'s `get`, `put`, and `remove` are generic over
+  `map<K, V>`, `signal.notify` takes `list<str>`, and `slug.string`'s sort
+  works on `list<str>`. Three gaps in generics, each worked around:
+  - [ ] `m - k` does not accept a key of a type parameter, `k:K`, so
+    `remove` takes `k:any|nil`.
+  - [ ] A nested function cannot name its enclosing function's type
+    parameters (`unknown type T`), so `shuffle`'s helper takes `list`.
+  - [ ] A generic function is not assignable to a function type it would
+    instantiate to, so `shuffle` (a `Generator` field `fn<list, list>`) is
+    not generic.
+
+  `slug.fmt.toml` remains: its `parse` returns `map`, and its readers return
+  `[value, position]` pairs typed `list`, as `slug.fmt.json`'s did.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

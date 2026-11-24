@@ -76,10 +76,10 @@ export val toBytes = fn(text:str):bytes {
 // `values` sorted, bottom up: each pass merges neighbouring sorted runs of
 // `width` into runs of twice that, with no slicing until a run's rest is
 // appended whole. Equal values keep their order.
-val mergeSort = fn(values:list):list {
+val mergeSort = fn(values:list<str>):list<str> {
     val n = len(values)
-    val pass = fn(width:num, values:list):list {
-        val merge = fn(i:num, j:num, middle:num, end:num, out:list):list {
+    val pass = fn(width:num, values:list<str>):list<str> {
+        val merge = fn(i:num, j:num, middle:num, end:num, out:list<str>):list<str> {
             if (i == middle) {
                 out + values[j:end]
             } else if (j == end) {
@@ -90,7 +90,7 @@ val mergeSort = fn(values:list):list {
                 recur(i + 1, j, middle, end, out :+ values[i])
             }
         }
-        val runs = fn(start:num, out:list):list {
+        val runs = fn(start:num, out:list<str>):list<str> {
             if (start >= n) { return out }
             val middle = if (start + width < n) { start + width } else { n }
             val end = if (start + 2 * width < n) { start + 2 * width } else { n }
@@ -98,7 +98,7 @@ val mergeSort = fn(values:list):list {
         }
         runs(0, [])
     }
-    val go = fn(width:num, values:list):list {
+    val go = fn(width:num, values:list<str>):list<str> {
         if (width >= n) { values } else { recur(width * 2, pass(width, values)) }
     }
     go(1, values)

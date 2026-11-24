@@ -12,6 +12,14 @@
   an empty `[]` or `{}` in a tuple is of the element type expected, so fewer
   values need checking when the program runs.
 
+- More of `slug.core` is typed. `slug.test` exports `Failure`, what `check`
+  and `runTest` return, and its assertions say what they take and return.
+  `slug.random` exports `Generator`, the record of functions `generator`
+  returns: a program that annotated a generator `map` should say
+  `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
+  `put`, and `remove` keep a map's key and value types, and
+  `signal.notify` takes a `list<str>`.
+
 - A `recur` no longer repeats its function's entry checks: it checks only the
   arguments the checker cannot prove, where it is. A recursive helper with a
   `list<num>` accumulator scanned the whole list on every iteration, which

@@ -18,6 +18,19 @@ val MASK = 0xFFFFFFFF
 val RANGE = 4294967296
 
 /**
+ * A generator's functions, as `generator` returns them.
+ */
+export type Generator = {
+    next: fn<num>,
+    below: fn<num, num>,
+    between: fn<num, num, num>,
+    float: fn<num>,
+    pick: fn<any|nil, list>,
+    shuffle: fn<list, list>,
+    state: fn<num>,
+}
+
+/**
  * A generator seeded with the integer `seed`; seeds that are equal modulo
  * 2^32 give the same sequence. It has these functions:
  *
@@ -35,7 +48,7 @@ val RANGE = 4294967296
  * `below`, `between`, and `pick` throw an `Error` of type `random.range` for
  * an empty range.
  */
-export val generator = fn(seed:num):map {
+export val generator = fn(seed:num):Generator {
     // xorshift32 never leaves 0, so a zero seed starts elsewhere.
     var state = if ((seed & MASK) == 0) { 0x9E3779B9 } else { seed & MASK }
 
@@ -72,7 +85,7 @@ export val generator = fn(seed:num):map {
         next() / 4294967296.0
     }
 
-    val pick = fn(items:list) {
+    val pick = fn(items:list):any|nil {
         if (len(items) == 0) {
             throw Error {type: "random.range", msg: "pick needs a non-empty list"}
         }

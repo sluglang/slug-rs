@@ -33,7 +33,7 @@ val KINDS = {int: 1, term: 2}
  * Throws an `Error` of type `signal.name` for a name it does not know, and
  * of type `signal.error` when the system will not let it watch.
  */
-export val notify = fn(names:list):chan<str> {
+export val notify = fn(names:list<str>):chan<str> {
     val kinds = (fn(i:num, bits:num):num {
         if (i == len(names)) { return bits }
         match KINDS[names[i]] {

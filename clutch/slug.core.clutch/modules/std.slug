@@ -1,12 +1,12 @@
-export val get = fn(m:map, k) {
+export val get = fn<K, V>(m:map<K, V>, k:K):V|nil {
     m[k]
 }
 
-export val put = fn(m:map, k, v):map {
+export val put = fn<K, V>(m:map<K, V>, k:K, v:V):map<K, V> {
     m + {[k]: v}
 }
 
-export val remove = fn(m:map, k):map {
+export val remove = fn<K, V>(m:map<K, V>, k:any|nil):map<K, V> {
     m - k
 }
 
@@ -132,7 +132,7 @@ export val find = fn<T>(xs:list<T>, f:fn<bool, T>):T|nil match {
 	[[1, nil], nil], true,
 	[[[1, 2]], [1, 2]], true
 )
-export val contains = fn(xs:list, v):bool {
+export val contains = fn(xs:list, v:any|nil):bool {
 	val go = fn(i:num):bool {
 		if (i == len(xs)) { false } else if (xs[i] == v) { true } else { recur(i + 1) }
 	}

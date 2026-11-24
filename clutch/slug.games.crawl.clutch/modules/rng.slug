@@ -12,10 +12,10 @@ var gen = random.generator(0)
 
 // The generator `within` runs code on, while it does, or nil. Each task has
 // its own, so a fork can draw from one without changing `gen`.
-task var scoped:map|nil = nil
+task var scoped:random.Generator|nil = nil
 
 // The generator draws come from now.
-val drawing = fn():map { scoped ?? gen }
+val drawing = fn():random.Generator { scoped ?? gen }
 
 /**
  * Starts the sequence for a game's seed; seeds equal modulo 2^32 are the
