@@ -3435,3 +3435,30 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
         );
     }
 }
+
+#[test]
+fn a_list_literal_ending_a_branch_is_the_tuple_expected() {
+    let path = fixture_path("tuple-branches");
+    fs::write(
+        &path,
+        "val pair = fn(v:num|nil, e:num):[num, num] {\n\
+           if (v == nil) { throw \"no value\" } else { [v, e] }\n\
+         }\n\
+         val pick = fn(k:str):[str, num] {\n\
+           match k {\n\
+             \"a\" => [\"first\", 1]\n\
+             _ => [k, 0]\n\
+           }\n\
+         }\n\
+         println(pair(1, 2), pick(\"a\"), pick(\"z\"))\n",
+    )
+    .expect("write tuple branches");
+    let output = slug().arg(&path).output().expect("run tuple branches");
+    fs::remove_file(&path).expect("remove tuple branches");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[1, 2] [\"first\", 1] [\"z\", 0]\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

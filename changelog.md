@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `slug.fmt.json`'s `parse` and `parseStrict` return the new `Json` type,
+  `nil|bool|num|str|list<Json>|map<str, Json>`, exported from the module.
+  Code that uses a parsed document as a map or list must narrow it first,
+  as with `match json.parse(text) { m: map => m }`. A list literal that ends
+  an `if` or `match` branch is now the tuple an annotation expects. A call to
+  a function declared later in its module or block takes the function's
+  annotated result, `val [a, b] = pair` gives `a` and `b` their types, and
+  an empty `[]` or `{}` in a tuple is of the element type expected, so fewer
+  values need checking when the program runs.
+
 - A `recur` no longer repeats its function's entry checks: it checks only the
   arguments the checker cannot prove, where it is. A recursive helper with a
   `list<num>` accumulator scanned the whole list on every iteration, which

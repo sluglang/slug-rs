@@ -196,7 +196,11 @@ val pagesThatDrawTheirMapsAreSentItAsData = fn() {
     val events = get("/events", id, {cols: "40", rows: "12"})
     val data = fn(event:str, kind:str):map {
         assertTrue(includes(event, "event: " + kind + "\ndata: "))
-        json.parse(split(event, "\ndata: ")[1])
+        // An event's data is a JSON object.
+        match json.parse(split(event, "\ndata: ")[1]) {
+            m: map => m
+            other => throw Error {type: "test", msg: "event data is not an object: ${other}"}
+        }
     }
     val legend = data(recv(events.body, 1000), "legend")
     assertEqual([legend.width, legend.height, legend.classes["%"]], [level.WIDTH, level.HEIGHT, "stairs"])

@@ -126,7 +126,12 @@ val parseStrictKeepsParseBehavior = fn() {
 @test
 val limitsDepth = fn() {
     val nested = fn(depth:num):str { "[" * depth + "]" * depth }
-    assertEqual(len(json.parse(nested(json.DEFAULT_MAX_DEPTH))), 1)
+    // `parse` gives a `Json`: a list here, which the test narrows to.
+    val deepest = match json.parse(nested(json.DEFAULT_MAX_DEPTH)) {
+        l: list => len(l)
+        _ => -1
+    }
+    assertEqual(deepest, 1)
     val e = assertThrows(fn() { json.parse(nested(json.DEFAULT_MAX_DEPTH + 1)) }, "json.limit")
     assertEqual(e.data, {limit: "depth", max: 1000, offset: 1000})
     assertEqual(json.parse("[[1]]", {maxDepth: 2}), [[1]])

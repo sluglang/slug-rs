@@ -16,9 +16,17 @@ val OPTIONS = {
     images: ["relative", "http", "https"],
 }
 
-val commonmark = json.parse(fromBytes(asset("commonmark-0.31.2.json")))
-val gfm = json.parse(fromBytes(asset("gfm-0.29-extensions.json")))
-val deviations = json.parse(fromBytes(asset("commonmark-deviations.json")))
+// Each file is a list of examples, which `parse` gives as a `Json`.
+val examples = fn(document:json.Json):list {
+    match document {
+        l: list => l
+        _ => throw Error {type: "spec", msg: "an examples file must be a list"}
+    }
+}
+
+val commonmark = examples(json.parse(fromBytes(asset("commonmark-0.31.2.json"))))
+val gfm = examples(json.parse(fromBytes(asset("gfm-0.29-extensions.json"))))
+val deviations = examples(json.parse(fromBytes(asset("commonmark-deviations.json"))))
 
 val byExample = fn(entries:list):map {
     val go = fn(i:num, out:map):map {

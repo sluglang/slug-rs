@@ -63,6 +63,14 @@ val TABLES = [
     "CREATE TABLE IF NOT EXISTS populations (key TEXT PRIMARY KEY, counts TEXT NOT NULL)",
 ]
 
+// A stored state that must be an object, as parsed.
+val object = fn(value:json.Json):map {
+    match value {
+        m: map => m
+        _ => throw Error {type: "store", msg: "a stored state must be an object"}
+    }
+}
+
 val metaOf = fn(db:sqlite.Database, key:str) {
     match sqlite.query(db, "SELECT value FROM meta WHERE key = ?", key) {
         [row] => json.parse(row.value)
@@ -88,11 +96,16 @@ export val open = fn(path:str):Result<sqlite.Database, StoreError> {
             sqlite.exec(db, "INSERT INTO meta VALUES ('version', ?)", json.stringify(VERSION))
             Result.Ok { value: db }
         }
-        v => if (v == VERSION) {
+        v: num => if (v == VERSION) {
             Result.Ok { value: db }
         } else {
             sqlite.close(db)
             Result.Error { error: StoreError.WrongLayout { found: v, expected: VERSION } }
+        }
+        // A version that is not a number is no layout this knows.
+        _ => {
+            sqlite.close(db)
+            Result.Error { error: StoreError.WrongLayout { found: -1, expected: VERSION } }
         }
     }
 }
@@ -173,7 +186,7 @@ export val read = fn(db:sqlite.Database):Result<map, StoreError> {
         acc + {[row.player]: (acc[row.player] ?? {}) + {[row.chunk]: json.parse(row.rows)}}
     })
     val players = reduce(sqlite.query(db, "SELECT id, state FROM players"), {}, fn(acc, row) {
-        acc + {[row.id]: json.parse(row.state) + {memory: memories[row.id] ?? {}}}
+        acc + {[row.id]: object(json.parse(row.state)) + {memory: memories[row.id] ?? {}}}
     })
     val populations = reduce(sqlite.query(db, "SELECT key, counts FROM populations"), {}, fn(acc, row) {
         acc + {[row.key]: json.parse(row.counts)}

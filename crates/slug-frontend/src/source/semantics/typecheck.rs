@@ -1995,6 +1995,8 @@ fn analyze_expressions(
         }
     }
     infer_nil_starts(expressions, &environment, &[], false);
+    // A module's functions may call one another whatever their order.
+    predeclare_functions(expressions, &mut environment);
     for expression in expressions {
         let _ = check_expression_with_flow(expression, &mut environment, &[])?;
         record_exports(expression, &environment, &mut exports, &mut types);
@@ -3903,10 +3905,39 @@ fn predeclare_functions(values: &[Expr], environment: &mut Environment) {
             value: declared,
             ..
         } = &value.kind
-            && matches!(declared.kind, ExprKind::Function { .. })
+            && let ExprKind::Function {
+                type_parameters,
+                parameters,
+                return_annotation,
+                ..
+            } = &declared.kind
             && environment.lookup_in_scope(name).is_none()
         {
-            environment.declare(name.clone(), SemanticBinding::value(Type::Unknown));
+            // A function with a declared result is called, before its
+            // declaration, as its annotations say: its declaration replaces
+            // this, as a declaration replaces an implicit builtin.
+            let annotated = return_annotation
+                .as_ref()
+                .and_then(|annotation| {
+                    function_type(
+                        type_parameters,
+                        parameters,
+                        Some(annotation),
+                        &declared.span,
+                        environment,
+                        None,
+                    )
+                    .ok()
+                })
+                .map(|signature| {
+                    let mut binding = SemanticBinding::callable(signature);
+                    binding.implicit = true;
+                    binding
+                });
+            environment.declare(
+                name.clone(),
+                annotated.unwrap_or_else(|| SemanticBinding::value(Type::Unknown)),
+            );
         }
     }
 }
@@ -4356,7 +4387,18 @@ fn as_expected_tuple(
     environment: &Environment,
 ) -> Type {
     let ExprKind::List(items) = &value.kind else {
-        return actual;
+        // A conditional whose branches end in list literals is the tuples
+        // they make, where they make what is expected.
+        return match &value.kind {
+            ExprKind::If { .. } | ExprKind::Block(_) | ExprKind::Match { .. }
+                if !actual.is_proven_assignable_to(expected) =>
+            {
+                tuple_tails(expected, value, environment)
+                    .filter(|tails| tails.is_proven_assignable_to(expected))
+                    .unwrap_or(actual)
+            }
+            _ => actual,
+        };
     };
     let wants = |length: usize| match expected {
         Type::Tuple(elements) => elements.len() == length,
@@ -4365,17 +4407,74 @@ fn as_expected_tuple(
             .any(|member| matches!(member, Type::Tuple(elements) if elements.len() == length)),
         _ => false,
     };
-    if actual.is_assignable_to(expected) || !wants(items.len()) {
+    // Refined where the literal is not proven to be what is expected, as a
+    // list holding an empty list, which is a list of any element type.
+    if actual.is_proven_assignable_to(expected) || !wants(items.len()) {
         return actual;
     }
+    // The tuple of that length expected, whose element an empty list or map
+    // literal takes: it has no elements, so it is one of any element type.
+    let wanted = match expected {
+        Type::Tuple(elements) => Some(elements.as_slice()),
+        Type::Union(members) => members.iter().find_map(|member| match member {
+            Type::Tuple(elements) if elements.len() == items.len() => Some(elements.as_slice()),
+            _ => None,
+        }),
+        _ => None,
+    };
     let elements = items
         .iter()
-        .map(|item| match item {
-            ListElement::Value(element) => environment.recorded_expression_type(&element.span),
+        .enumerate()
+        .map(|(index, item)| match item {
+            ListElement::Value(element) => {
+                let empty = matches!(&element.kind, ExprKind::List(values) if values.is_empty())
+                    || matches!(&element.kind, ExprKind::Map(entries) if entries.is_empty());
+                match wanted.and_then(|wanted| wanted.get(index)) {
+                    Some(wanted)
+                        if empty && matches!(wanted.unfolded(), Type::List(_) | Type::Map(_)) =>
+                    {
+                        Some(wanted.clone())
+                    }
+                    _ => environment.recorded_expression_type(&element.span),
+                }
+            }
             ListElement::Spread(_) => None,
         })
         .collect::<Option<Vec<_>>>();
     elements.map_or(actual, Type::Tuple)
+}
+
+/// The type of `value` where `expected` wants a tuple, when it ends in list
+/// literals: each branch of an `if` or a `match` and the last value of a
+/// block, a list literal of the length a tuple wants becoming that tuple,
+/// and one that does not complete adding nothing. `None` when a branch ends
+/// otherwise.
+fn tuple_tails(expected: &Type, value: &Expr, environment: &Environment) -> Option<Type> {
+    // A conditional that ends a body is checked where flow facts are kept,
+    // and has no recorded type of its own; its branches do.
+    let recorded = environment.recorded_expression_type(&value.span);
+    if recorded == Some(Type::Never) {
+        return Some(Type::Never);
+    }
+    match &value.kind {
+        ExprKind::List(_) => Some(as_expected_tuple(expected, value, recorded?, environment)),
+        ExprKind::Block(values) => tuple_tails(expected, values.last()?, environment),
+        ExprKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => Some(Type::union([
+            tuple_tails(expected, then_branch, environment)?,
+            tuple_tails(expected, else_branch.as_deref()?, environment)?,
+        ])),
+        ExprKind::Match { cases, .. } => cases
+            .iter()
+            .map(|case| tuple_tails(expected, &case.value, environment))
+            .collect::<Option<Vec<_>>>()
+            .map(Type::union),
+        // Any other branch is what it was found to be.
+        _ => recorded,
+    }
 }
 
 /// The position a constant integer index, possibly negative, names in a
@@ -5257,11 +5356,11 @@ fn bind_semantic_pattern(
                 environment.declare_type(name.clone(), member.clone());
             }
         }
-        Pattern::List { .. }
-        | Pattern::Literal(_)
-        | Pattern::Wildcard
-        | Pattern::Pinned(_)
-        | Pattern::EnumCase { .. } => {}
+        // A destructured list binds its items as a match case does: a
+        // tuple's in order, a list's by its element type.
+        Pattern::List { .. } => bind_case_pattern(pattern, &binding.value_type, environment),
+        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Pinned(_) | Pattern::EnumCase { .. } => {
+        }
     });
 }
 
@@ -7035,6 +7134,32 @@ mod tests {
     }
 
     #[test]
+    fn forward_calls_destructuring_and_empty_literals_are_proven() {
+        // `later` is declared after the call, `[v, j]` destructures a tuple,
+        // and `[[], i]` holds an empty list where a `list<num>` is expected:
+        // the checker proves each, so nothing is checked when it runs.
+        let checks = recorded_checks(
+            "val first = fn(i:num):[list<num>, num] {\n\
+               val [v, j] = later(i)\n\
+               if (j > 0) { [v, j] } else { [[], i] }\n\
+             }\n\
+             val later = fn(i:num):[list<num>, num] { [[i], i - 1] }\n",
+        );
+        let parameter = |name: &str, line| {
+            (
+                line,
+                CheckPlace::Parameter {
+                    name: name.into(),
+                    index: 0,
+                    inferred: false,
+                },
+                "num".to_string(),
+            )
+        };
+        assert_eq!(checks, vec![parameter("i", 1), parameter("i", 5)]);
+    }
+
+    #[test]
     fn a_call_through_a_function_value_checks_its_result() {
         let checks = recorded_checks(
             "val apply = fn(f:fn<str, num>) { f(1) }\n\
@@ -7105,10 +7230,11 @@ mod tests {
             checks,
             vec![
                 (3, CheckPlace::CallResult, "num".into()),
-                // A call before its callee is checked has an unknown
-                // result, which its caller checks.
-                (4, CheckPlace::Result, "num".into()),
-                (9, CheckPlace::Result, "num".into()),
+                // A call before its callee is checked takes its declared
+                // result, which the callee turns out not to prove: the
+                // call checks it, as any other.
+                (4, CheckPlace::CallResult, "num".into()),
+                (9, CheckPlace::CallResult, "num".into()),
             ]
         );
     }

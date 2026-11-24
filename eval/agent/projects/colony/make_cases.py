@@ -31,9 +31,15 @@ val finish = fn() {
     if (len(problems) == 0) { println("PASS") } else { println("FAIL", problems) }
 }
 // Compares the colony's snapshot with `wanted`, JSON text, field by field.
+val object = fn(value:json.Json):map {
+    match value {
+        m: map => m
+        _ => {}
+    }
+}
 val same = fn(label, wanted:str) {
-    val want = json.parse(wanted)
-    val got = json.parse(json.stringify(colony.snapshot()))
+    val want = object(json.parse(wanted))
+    val got = object(json.parse(json.stringify(colony.snapshot())))
     map(["turn", "store", "stats", "rows", "ants"], fn(k) {
         if (got[k] != want[k]) { problems = problems :+ (label + " " + k) }
     })

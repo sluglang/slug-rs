@@ -640,6 +640,33 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   checker cannot prove pass their parameters' checks, and a full positional
   one re-enters past the entry checks (a chunk's `recur_entry`, in the VM
   and the native tier). The same build takes 0.00 s in every mode.
+
+  `slug.fmt.json` (2026-11-23): all 55 functions annotated, and an exported
+  recursive alias, `Json`, the result of `parse` and `parseStrict`;
+  `stringify` takes `any|nil`. Inside the module, a map lookup and an
+  optional result needed narrowing (`?? 0`, a `nil` branch). The precise
+  result made callers narrow: 5 of the 7 files importing the module, and
+  the colony eval's prelude and the mustache harness programs, each use a
+  parsed value as a map or list, and now match it to one first. Orble,
+  outside the repository, needs the same at `webauthn.slug:59` and its
+  feed's `markdown.render(record.body)`; it is left to Orble's agent.
+  Found on the way: a list literal ending an `if`'s or `match`'s branch was
+  not the tuple an annotation expects (fixed), and narrowing does not
+  continue after an early exit, `if (v == nil) { fail() }`, which an `else`
+  works around (open).
+
+  The typed parser then ran a deep check of `Json` results at every level of
+  a document, quadratic and deep enough to overflow a debug build's stack on
+  the 1000-level test, because three things the checker should prove it did
+  not, each fixed: a call to a function declared later had an unknown
+  result, since only blocks predeclared functions and only as unknown (a
+  module's and a block's functions are now predeclared with their annotated
+  signatures, which their declarations replace; this closes stage 5's
+  forward-reference item for annotated functions); `val [v, j] = pair`
+  bound nothing typed (it binds as a match case does); and an empty list or
+  map literal in a tuple, `[[], i]`, was a list of unknown elements (it takes
+  the element type expected). The parser's results are now proven, and
+  checked nowhere.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

@@ -37,14 +37,20 @@ foreign findAnyRaw = fn(data:bytes, set:bytes, from:num):num
 // control characters.
 val ESCAPED = 0x"225c000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 
+/**
+ * A JSON value as Slug holds it: what `parse` returns, and what `stringify`
+ * writes back as the same JSON.
+ */
+export type Json = nil|bool|num|str|list<Json>|map<str, Json>
+
 // ---------------------------------------------------------------------------
 // Errors
 
-val fail = fn(offset) {
+val fail = fn(offset:num) {
     throw Error {type: "json.parse", msg: "invalid JSON at offset $offset", data: {offset: offset}}
 }
 
-val duplicateFail = fn(offset, key) {
+val duplicateFail = fn(offset:num, key:str) {
     throw Error {
         type: "json.parse",
         msg: "duplicate key \"$key\" at offset $offset",
@@ -52,11 +58,11 @@ val duplicateFail = fn(offset, key) {
     }
 }
 
-val typeFail = fn(what) {
+val typeFail = fn(what:str) {
     throw Error {type: "json.type", msg: "$what has no JSON form"}
 }
 
-val depthFail = fn(offset, max) {
+val depthFail = fn(offset:num, max:num) {
     throw Error {
         type: "json.limit",
         msg: "JSON nested deeper than $max at offset $offset",
@@ -102,8 +108,8 @@ val LIMB_BITS = 24
 val LIMB_MASK = 16777215
 
 // Returns a * m + c for small non-negative integers m and c.
-val bigMulAdd = fn(a, m, c) {
-    val go = fn(i, carry, out) {
+val bigMulAdd = fn(a:list<num>, m:num, c:num):list<num> {
+    val go = fn(i:num, carry:num, out:list<num>):list<num> {
         if (i < len(a)) {
             val x = a[i] * m + carry
             recur(i + 1, x >> LIMB_BITS, out :+ (x & LIMB_MASK))
@@ -118,7 +124,7 @@ val bigMulAdd = fn(a, m, c) {
 
 val POW10_INT = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000]
 
-val bigMulPow10 = fn(a, e) {
+val bigMulPow10 = fn(a:list<num>, e:num):list<num> {
     if (e >= 7) {
         recur(bigMulAdd(a, 10000000, 0), e - 7)
     } else if (e == 0) {
@@ -128,24 +134,24 @@ val bigMulPow10 = fn(a, e) {
     }
 }
 
-val smallBitLen = fn(x, bits = 0) {
+val smallBitLen = fn(x:num, bits:num = 0):num {
     if (x == 0) { bits } else { recur(x >> 1, bits + 1) }
 }
 
-val bigBitLen = fn(a) {
+val bigBitLen = fn(a:list<num>):num {
     if (len(a) == 0) { 0 } else { (len(a) - 1) * LIMB_BITS + smallBitLen(a[-1]) }
 }
 
-val zeros = fn(count, out = []) {
+val zeros = fn(count:num, out:list<num> = []):list<num> {
     if (count == 0) { out } else { recur(count - 1, out :+ 0) }
 }
 
-val bigShl = fn(a, s) {
+val bigShl = fn(a:list<num>, s:num):list<num> {
     if (len(a) == 0) {
         a
     } else {
         val bits = s % LIMB_BITS
-        val go = fn(i, carry, out) {
+        val go = fn(i:num, carry:num, out:list<num>):list<num> {
             if (i < len(a)) {
                 val x = (a[i] << bits) | carry
                 recur(i + 1, x >> LIMB_BITS, out :+ (x & LIMB_MASK))
@@ -160,11 +166,11 @@ val bigShl = fn(a, s) {
 }
 
 // Returns -1, 0, or 1 as a is less than, equal to, or greater than b.
-val bigCmp = fn(a, b) {
+val bigCmp = fn(a:list<num>, b:list<num>):num {
     if (len(a) != len(b)) {
         if (len(a) < len(b)) { -1 } else { 1 }
     } else {
-        val go = fn(i) {
+        val go = fn(i:num):num {
             if (i < 0) {
                 0
             } else if (a[i] == b[i]) {
@@ -179,13 +185,13 @@ val bigCmp = fn(a, b) {
     }
 }
 
-val trimHigh = fn(a) {
+val trimHigh = fn(a:list<num>):list<num> {
     if (len(a) > 0 && a[-1] == 0) { recur(a[:-1]) } else { a }
 }
 
 // Returns a - b for a >= b.
-val bigSub = fn(a, b) {
-    val go = fn(i, borrow, out) {
+val bigSub = fn(a:list<num>, b:list<num>):list<num> {
+    val go = fn(i:num, borrow:num, out:list<num>):list<num> {
         if (i < len(a)) {
             val x = a[i] - borrow - (if (i < len(b)) { b[i] } else { 0 })
             if (x < 0) {
@@ -200,15 +206,15 @@ val bigSub = fn(a, b) {
     go(0, 0, [])
 }
 
-val digitValue = fn(c) { ord(c) - 48 }
+val digitValue = fn(c:str):num { ord(c) - 48 }
 
 // Converts a string of decimal digits to a big integer.
-val bigFromDigits = fn(digits) {
+val bigFromDigits = fn(digits:str):list<num> {
     val n = len(digits)
-    val chunk = fn(from, to, acc) {
+    val chunk = fn(from:num, to:num, acc:num):num {
         if (from == to) { acc } else { recur(from + 1, to, acc * 10 + digitValue(digits[from])) }
     }
-    val go = fn(i, acc) {
+    val go = fn(i:num, acc:list<num>):list<num> {
         if (i >= n) {
             acc
         } else {
@@ -231,7 +237,7 @@ val TWO_52 = 4503599627370496
 val TWO_53 = 9007199254740992
 
 // Returns x * 2^k, exactly when the result is representable.
-val scale = fn(x, k) {
+val scale = fn(x:num, k:num):num {
     if (k > 0) {
         recur(x * 2.0, k - 1)
     } else if (k < 0) {
@@ -243,7 +249,7 @@ val scale = fn(x, k) {
 
 // Returns the binary64 value nearest to digits * 10^exp, where digits has no
 // leading or trailing zeros, or nil when it is too large for binary64.
-val nearestFloat = fn(digits, exp) {
+val nearestFloat = fn(digits:str, exp:num):num|nil {
     val num0 = bigFromDigits(digits)
     val num = if (exp > 0) { bigMulPow10(num0, exp) } else { num0 }
     val den = if (exp < 0) { bigMulPow10([1], -exp) } else { [1] }
@@ -252,11 +258,11 @@ val nearestFloat = fn(digits, exp) {
     // Divide num by den * 2^k0; the quotient is below 2^55.
     val dividend = if (k0 < 0) { bigShl(num, -k0) } else { num }
     val divisor = if (k0 > 0) { bigShl(den, k0) } else { den }
-    val shifted = fn(b, out) {
+    val shifted = fn(b:num, out:list<list<num>>):list<list<num>> {
         if (b > 54) { out } else { recur(b + 1, out :+ bigShl(out[-1], 1)) }
     }
     val divisors = shifted(1, [divisor])
-    val divide = fn(b, rem, q) {
+    val divide = fn(b:num, rem:list<num>, q:num):[num, list<num>] {
         if (b < 0) {
             [q, rem]
         } else if (bigCmp(rem, divisors[b]) >= 0) {
@@ -266,7 +272,7 @@ val nearestFloat = fn(digits, exp) {
         }
     }
     val [q, rem] = divide(54, dividend, 0)
-    val remainderHalf = fn() { bigCmp(bigShl(rem, 1), divisor) }
+    val remainderHalf = fn():num { bigCmp(bigShl(rem, 1), divisor) }
     roundToFloat(q, k0, remainderHalf, len(rem) > 0)
 }
 
@@ -274,7 +280,7 @@ val nearestFloat = fn(digits, exp) {
 // q < 2^53 or q >= 2^54 when f is not available, `remainderHalf()` compares
 // f with one half, and `inexact` is whether f is nonzero; or nil when the
 // value is too large for binary64.
-val roundToFloat = fn(q, k0, remainderHalf, inexact) {
+val roundToFloat = fn(q:num, k0:num, remainderHalf:fn<num>, inexact:bool):num|nil {
     val excess = if (q >= TWO_53) { smallBitLen(q) - 53 } else { 0 }
     val kept = q >> excess
     // Compare the discarded part with one half: -1 below, 0 equal, 1 above.
@@ -318,10 +324,10 @@ val TWO_54 = 18014398509481984
 // 0 < d < 2^62 and 1 <= k <= 26, using only 64-bit integer arithmetic:
 // d / 10^k is (d / 5^k) * 2^-k, and the quotient is extended bit by bit
 // until it has at least 55 bits.
-val divPow10 = fn(d, k) {
+val divPow10 = fn(d:num, k:num):num|nil {
     val divisor = POW5[k]
     val room = 62 - smallBitLen(divisor)
-    val extend = fn(q, r, shift) {
+    val extend = fn(q:num, r:num, shift:num):num|nil {
         if (q >= TWO_54) {
             roundToFloat(q, -shift - k, fn() { 0 }, r != 0)
         } else {
@@ -339,15 +345,15 @@ val divPow10 = fn(d, k) {
 val INT64_MAX = "9223372036854775807"
 val INT64_MIN = "9223372036854775808"
 
-val firstNonZero = fn(s, i) {
+val firstNonZero = fn(s:str, i:num):num {
     if (i < len(s) && s[i] == "0") { recur(s, i + 1) } else { i }
 }
 
-val lastNonZero = fn(s, i) {
+val lastNonZero = fn(s:str, i:num):num {
     if (i >= 0 && s[i] == "0") { recur(s, i - 1) } else { i }
 }
 
-val digitsToInt = fn(digits, neg, i = 0, acc = 0) {
+val digitsToInt = fn(digits:str, neg:bool, i:num = 0, acc:num = 0):num {
     if (i == len(digits)) {
         acc
     } else if (neg) {
@@ -359,7 +365,7 @@ val digitsToInt = fn(digits, neg, i = 0, acc = 0) {
 
 // Returns the number for the JSON number with the given sign, significant
 // digits, and decimal exponent, or nil when it is too large for binary64.
-val numberValue = fn(neg, allDigits, exp) {
+val numberValue = fn(neg:bool, allDigits:str, exp:num):num|nil {
     val lead = firstNonZero(allDigits, 0)
     if (lead == len(allDigits)) {
         0
@@ -401,20 +407,20 @@ val numberValue = fn(neg, allDigits, exp) {
 // ---------------------------------------------------------------------------
 // Parsing
 
-val isWs = fn(c) { c == " " || c == "\n" || c == "\r" || c == "\t" }
+val isWs = fn(c:str):bool { c == " " || c == "\n" || c == "\r" || c == "\t" }
 
-val isDigit = fn(c) { c >= "0" && c <= "9" }
+val isDigit = fn(c:str):bool { c >= "0" && c <= "9" }
 
-val skipWs = fn(t, n, i) {
+val skipWs = fn(t:str, n:num, i:num):num {
     if (i < n && isWs(t[i])) { recur(t, n, i + 1) } else { i }
 }
 
-val scanDigits = fn(t, n, i) {
+val scanDigits = fn(t:str, n:num, i:num):num {
     if (i < n && isDigit(t[i])) { recur(t, n, i + 1) } else { i }
 }
 
-val parseLiteral = fn(t, n, i, word, value) {
-    val go = fn(j) {
+val parseLiteral = fn(t:str, n:num, i:num, word:str, value:bool|nil):[bool|nil, num] {
+    val go = fn(j:num):[bool|nil, num] {
         if (j == len(word)) {
             [value, i + j]
         } else if (i + j >= n) {
@@ -430,7 +436,7 @@ val parseLiteral = fn(t, n, i, word, value) {
 
 // Returns the integer value of the exponent digits t[from:to], capped well
 // beyond any exponent that can matter.
-val exponentValue = fn(t, from, to, acc = 0) {
+val exponentValue = fn(t:str, from:num, to:num, acc:num = 0):num {
     if (from == to) {
         acc
     } else if (acc > 100000000) {
@@ -443,8 +449,8 @@ val exponentValue = fn(t, from, to, acc = 0) {
 val DIGITS = {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9}
 
 // Returns acc extended by the decimal digits t[from:to].
-val rangeToInt = fn(t, from, to, acc) {
-    if (from == to) { acc } else { recur(t, from + 1, to, acc * 10 + DIGITS[t[from]]) }
+val rangeToInt = fn(t:str, from:num, to:num, acc:num):num {
+    if (from == to) { acc } else { recur(t, from + 1, to, acc * 10 + (DIGITS[t[from]] ?? 0)) }
 }
 
 val POW10_EXACT = [
@@ -456,7 +462,7 @@ val POW10_EXACT = [
 
 // Returns the number for sign, an integer 0 <= d < 10^18, and a decimal
 // exponent, or nil when it is too large for binary64.
-val smallNumberValue = fn(neg:bool, d:num, e:num) {
+val smallNumberValue = fn(neg:bool, d:num, e:num):num|nil {
     val sign = if (neg) { -1 } else { 1 }
     if (d == 0) {
         0
@@ -467,13 +473,14 @@ val smallNumberValue = fn(neg:bool, d:num, e:num) {
     } else if (e < 0 && e >= -22 && d < TWO_53) {
         sign * (d * 1.0 / POW10_FLOAT[-e])
     } else if (e < 0 && e >= -26) {
-        sign * divPow10(d, -e)
+        val quotient = divPow10(d, -e)
+        if (quotient == nil) { nil } else { sign * quotient }
     } else {
         numberValue(neg, "$d", e)
     }
 }
 
-val parseNumber = fn(t, n, i) {
+val parseNumber = fn(t:str, n:num, i:num):[num, num] {
     val neg = t[i] == "-"
     val a = if (neg) { i + 1 } else { i }
     if (a >= n) { fail(n) }
@@ -500,11 +507,10 @@ val parseNumber = fn(t, n, i) {
     } else {
         numberValue(neg, t[a:intEnd] + fracDigits, exp - len(fracDigits))
     }
-    if (value == nil) { fail(i) }
-    [value, end]
+    if (value == nil) { fail(i) } else { [value, end] }
 }
 
-val hexValue = fn(c) {
+val hexValue = fn(c:str):num {
     val code = ord(c)
     if (code >= 48 && code <= 57) {
         code - 48
@@ -518,8 +524,8 @@ val hexValue = fn(c) {
 }
 
 // Returns the value of the four hex digits starting at j.
-val hex4 = fn(t, n, j) {
-    val go = fn(k, acc) {
+val hex4 = fn(t:str, n:num, j:num):num {
+    val go = fn(k:num, acc:num):num {
         if (k == 4) {
             acc
         } else if (j + k >= n) {
@@ -534,7 +540,7 @@ val hex4 = fn(t, n, j) {
 }
 
 // Parses the \u escape whose backslash is at i.
-val unicodeEscape = fn(t, n, i) {
+val unicodeEscape = fn(t:str, n:num, i:num):[str, num] {
     val code = hex4(t, n, i + 2)
     val j = i + 6
     if (code >= 55296 && code <= 56319) {
@@ -553,7 +559,7 @@ val unicodeEscape = fn(t, n, i) {
 }
 
 // Parses the escape whose backslash is at i.
-val parseEscape = fn(t, n, i) {
+val parseEscape = fn(t:str, n:num, i:num):[str, num] {
     if (i + 1 >= n) { fail(n) }
     match t[i + 1] {
         "\"" => ["\"", i + 2]
@@ -570,7 +576,7 @@ val parseEscape = fn(t, n, i) {
 }
 
 // Parses string contents starting at i, just after the opening quote.
-val parseString = fn(t, n, i, start = i, out = "") {
+val parseString = fn(t:str, n:num, i:num, start:num = i, out:str = ""):[str, num] {
     if (i >= n) { fail(n) }
     val c = t[i]
     if (c == "\"") {
@@ -589,7 +595,7 @@ val parseString = fn(t, n, i, start = i, out = "") {
 // object that repeats a key, after decoding escapes, is an error. `room` is
 // how many more arrays and objects may open inside the ones already open;
 // `max` is the whole limit, for the error.
-val parseValue = fn(t, n, i, strict, room, max) {
+val parseValue = fn(t:str, n:num, i:num, strict:bool, room:num, max:num):[Json, num] {
     if (i >= n) { fail(n) }
     val c = t[i]
     if (c == "{") {
@@ -613,7 +619,9 @@ val parseValue = fn(t, n, i, strict, room, max) {
     }
 }
 
-val arrayItems = fn(t, n, i, acc, strict, room, max) {
+val arrayItems = fn(
+    t:str, n:num, i:num, acc:list<Json>, strict:bool, room:num, max:num,
+):[list<Json>, num] {
     val [v, p] = parseValue(t, n, i, strict, room, max)
     val q = skipWs(t, n, p)
     if (q >= n) { fail(n) }
@@ -628,11 +636,13 @@ val arrayItems = fn(t, n, i, acc, strict, room, max) {
 }
 
 // Parses array contents starting at i, the first non-whitespace after "[".
-val parseArray = fn(t, n, i, strict, room, max) {
+val parseArray = fn(t:str, n:num, i:num, strict:bool, room:num, max:num):[list<Json>, num] {
     if (i < n && t[i] == "]") { [[], i + 1] } else { arrayItems(t, n, i, [], strict, room, max) }
 }
 
-val objectMembers = fn(t, n, i, acc, strict, room, max) {
+val objectMembers = fn(
+    t:str, n:num, i:num, acc:map<str, Json>, strict:bool, room:num, max:num,
+):[map<str, Json>, num] {
     if (i >= n) { fail(n) }
     if (t[i] != "\"") { fail(i) }
     val [k, p] = parseString(t, n, i + 1)
@@ -657,11 +667,13 @@ val objectMembers = fn(t, n, i, acc, strict, room, max) {
 }
 
 // Parses object contents starting at i, the first non-whitespace after "{".
-val parseObject = fn(t, n, i, strict, room, max) {
+val parseObject = fn(
+    t:str, n:num, i:num, strict:bool, room:num, max:num,
+):[map<str, Json>, num] {
     if (i < n && t[i] == "}") { [{}, i + 1] } else { objectMembers(t, n, i, {}, strict, room, max) }
 }
 
-val parseDocument = fn(text, strict, options) {
+val parseDocument = fn(text:str, strict:bool, options:map):Json {
     val max = maxDepthOf(options)
     val n = len(text)
     val [value, end] = parseValue(text, n, skipWs(text, n, 0), strict, max, max)
@@ -690,7 +702,7 @@ val parseDocument = fn(text, strict, options) {
     ["2.5E-3"], 0.0025,
     ["\"\\u00e9\\ud83d\\ude00\""], "é😀"
 )
-export val parse = fn(text:str, options:map = {}) { parseDocument(text, false, options) }
+export val parse = fn(text:str, options:map = {}):Json { parseDocument(text, false, options) }
 
 /**
  * Returns the Slug value for the JSON document `text`, rejecting any object,
@@ -708,14 +720,14 @@ export val parse = fn(text:str, options:map = {}) { parseDocument(text, false, o
     ["{\"a\": {\"b\": null}, \"c\": [{\"b\": 1}]}"], {a: {b: nil}, c: [{b: 1}]},
     ["[1, \"x\"]"], [1, "x"]
 )
-export val parseStrict = fn(text:str, options:map = {}) { parseDocument(text, true, options) }
+export val parseStrict = fn(text:str, options:map = {}):Json { parseDocument(text, true, options) }
 
 // ---------------------------------------------------------------------------
 // Serialization
 
 val HEX = "0123456789abcdef"
 
-val escapeChar = fn(c) {
+val escapeChar = fn(c:str):str {
     match c {
         "\"" => "\\\""
         "\\" => "\\\\"
@@ -731,14 +743,14 @@ val escapeChar = fn(c) {
     }
 }
 
-val needsEscape = fn(c) { c == "\"" || c == "\\" || c < " " }
+val needsEscape = fn(c:str):bool { c == "\"" || c == "\\" || c < " " }
 
 // Appends the quoted JSON form of s to out: whole when it has nothing to
 // escape, as most strings do.
-val emitString = fn(s, out) {
+val emitString = fn(s:str, out:str):str {
     if (findAnyRaw(toBytes(s), ESCAPED, 0) < 0) { return out + "\"" + s + "\"" }
     val n = len(s)
-    val go = fn(i, start, acc) {
+    val go = fn(i:num, start:num, acc:str):str {
         if (i == n) {
             acc + s[start:i] + "\""
         } else if (needsEscape(s[i])) {
@@ -750,7 +762,7 @@ val emitString = fn(s, out) {
     go(0, 0, out + "\"")
 }
 
-val requireStringKeys = fn(ks, i = 0) {
+val requireStringKeys = fn(ks:list, i:num = 0) {
     if (i < len(ks)) {
         match ks[i] {
             _:str => recur(ks, i + 1)
@@ -760,7 +772,7 @@ val requireStringKeys = fn(ks, i = 0) {
 }
 
 // Appends the JSON form of value to out.
-val emit = fn(value, out) {
+val emit = fn(value:any|nil, out:str):str {
     match value {
         _: nil => out + "null"
         b: bool => out + (if (b) { "true" } else { "false" })
@@ -772,7 +784,7 @@ val emit = fn(value, out) {
     }
 }
 
-val emitList = fn(l, i, out) {
+val emitList = fn(l:list, i:num, out:str):str {
     if (i == len(l)) {
         out + "]"
     } else if (i == 0) {
@@ -782,11 +794,11 @@ val emitList = fn(l, i, out) {
     }
 }
 
-val emitMap = fn(m, out) {
+val emitMap = fn(m:map, out:str):str {
     val ks = keys(m)
     requireStringKeys(ks)
     val sorted = sort(ks)
-    val go = fn(i, acc) {
+    val go = fn(i:num, acc:str):str {
         if (i == len(sorted)) {
             acc + "}"
         } else {
@@ -811,6 +823,6 @@ val emitMap = fn(m, out) {
     ["tab\there"], "\"tab\\there\"",
     [1.0], "1"
 )
-export val stringify = fn(value):str {
+export val stringify = fn(value:any|nil):str {
     emit(value, "")
 }

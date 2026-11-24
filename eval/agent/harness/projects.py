@@ -88,7 +88,10 @@ val check = fn() {{
   defer onerror(err) {{ println("FAIL threw", err) }}
   val template = cfg("template", "")
   val data = json.parse(cfg("data", "null"))
-  val partials = json.parse(cfg("partials", "{{}}"))
+  val partials = match json.parse(cfg("partials", "{{}}")) {{
+    p: map => p
+    _ => {{}}
+  }}
   val direct = mustache.render(template, data, partials)
   val parsed = mustache.render(mustache.parse(template), data, partials)
   if (direct != cfg("expect", "")) {{
@@ -112,7 +115,10 @@ val check = fn() {{
       e => println("FAIL wrong error", e)
     }}
   }}
-  val partials = json.parse(cfg("partials", "{{}}"))
+  val partials = match json.parse(cfg("partials", "{{}}")) {{
+    p: map => p
+    _ => {{}}
+  }}
   val actual = if (len(keys(partials)) == 0) {{
     mustache.parse(cfg("template", ""))
   }} else {{

@@ -43,7 +43,11 @@ val main = fn() {
         }
         val text = read("")
         fs.close(file)
-        game.load(json.parse(text))
+        // A saved game is a JSON object.
+        match json.parse(text) {
+            snapshot: map => game.load(snapshot)
+            _ => throw Error {type: "crawl.save", msg: "a saved game must be a JSON object"}
+        }
     }
     arcade.open("Crawl", screen.WIDTH, screen.HEIGHT, {scale: 2})
     arcade.overlay(0, 0, screen.WIDTH, 10, 0xffff60)
