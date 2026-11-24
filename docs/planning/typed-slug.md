@@ -685,8 +685,14 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     instantiate to, so `shuffle` (a `Generator` field `fn<list, list>`) is
     not generic.
 
-  `slug.fmt.toml` remains: its `parse` returns `map`, and its readers return
-  `[value, position]` pairs typed `list`, as `slug.fmt.json`'s did.
+  `slug.fmt.toml` then, as `slug.fmt.json`: it exports a recursive `Toml`
+  type, its readers return typed `[value, position]` pairs, and `parse`
+  returns `map<str, Toml>`, since a document is a table. The `slug test`
+  runner narrows the manifest's `modules` table and `tests.files` strings.
+  Typing it found a checker bug, fixed: a generic call whose type parameter
+  was solved to a recursive type, as `keys(table)` on a `map<str, Toml>`,
+  overflowed the stack, since looking for functions in the type unfolded it
+  without end.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

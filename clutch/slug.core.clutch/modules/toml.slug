@@ -16,6 +16,12 @@
 val {toInt, chr, join} = import("slug.string")
 
 /**
+ * A TOML value as `parse` gives it: a table is a map with string keys, an
+ * array a list, and a string, integer, or boolean a `str`, `num`, or `bool`.
+ */
+export type Toml = bool|num|str|list<Toml>|map<str, Toml>
+
+/**
  * Returns the TOML document `text` as a map: a table is a map with string
  * keys, an array a list, a string a `str`, an integer a `num`, and a boolean a
  * `bool`. `parse("[a]\nb = 1")` is `{a: {b: 1}}`.
@@ -25,7 +31,7 @@ val {toInt, chr, join} = import("slug.string")
     ["x = 'raw'\ny = [1, 2]\nz = { k = true }"], {x: "raw", y: [1, 2], z: {k: true}},
     [""], {}
 )
-export val parse = fn(text:str):map {
+export val parse = fn(text:str):map<str, Toml> {
     // Each step returns the position after what it read; values come back as
     // `[value, position]`. `state` carries the document being built, the
     // current table's path, and the tables a header has defined.
@@ -107,12 +113,12 @@ export val parse = fn(text:str):map {
         go(i, 0)
     }
 
-    val basicString = fn(i:num):list {
+    val basicString = fn(i:num):[str, num] {
         if (at(i + 1) == "\"" && at(i + 2) == "\"") {
             fail(i, "multi-line strings are not supported")
         }
         val escapes = {"\"": "\"", "\\": "\\", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
-        val go = fn(j:num, out:str):list {
+        val go = fn(j:num, out:str):[str, num] {
             val c = at(j)
             if (c == "") {
                 fail(j, "unterminated string")
@@ -138,11 +144,11 @@ export val parse = fn(text:str):map {
         go(i + 1, "")
     }
 
-    val literalString = fn(i:num):list {
+    val literalString = fn(i:num):[str, num] {
         if (at(i + 1) == "'" && at(i + 2) == "'") {
             fail(i, "multi-line strings are not supported")
         }
-        val go = fn(j:num):list {
+        val go = fn(j:num):[str, num] {
             val c = at(j)
             if (c == "") {
                 fail(j, "unterminated string")
@@ -157,7 +163,7 @@ export val parse = fn(text:str):map {
         go(i + 1)
     }
 
-    val simpleKey = fn(i:num):list {
+    val simpleKey = fn(i:num):[str, num] {
         val c = at(i)
         if (c == "\"") {
             basicString(i)
@@ -173,8 +179,8 @@ export val parse = fn(text:str):map {
     }
 
     // A dotted key such as `a."b.c".d`, as a list of its parts.
-    val keyPath = fn(i:num):list {
-        val go = fn(j:num, parts:list):list {
+    val keyPath = fn(i:num):[list<str>, num] {
+        val go = fn(j:num, parts:list<str>):[list<str>, num] {
             val [part, after] = simpleKey(skipSpaces(j))
             val next = skipSpaces(after)
             if (at(next) == ".") {
@@ -188,7 +194,7 @@ export val parse = fn(text:str):map {
 
     val isDigit = fn(c:str):bool { c >= "0" && c <= "9" }
 
-    val number = fn(i:num):list {
+    val number = fn(i:num):[num, num] {
         // Digits, signs, and the characters of floats and dates, so an
         // unsupported form is reported whole rather than misread.
         val go = fn(j:num):num {
@@ -235,11 +241,10 @@ export val parse = fn(text:str):map {
         if (len(plain) == 0) { fail(i, "invalid integer") }
         if (len(plain) > 1 && plain[0] == "0") { fail(i, "an integer must not have a leading zero") }
         val result = toInt((if (at(i) == "-") { "-" } else { "" }) + plain)
-        if (result == nil) { fail(i, "integer is out of range") }
-        [result, end]
+        if (result == nil) { fail(i, "integer is out of range") } else { [result, end] }
     }
 
-    val word = fn(i:num, spelling:str, result):list {
+    val word = fn(i:num, spelling:str, result:bool):[bool, num] {
         if (i + len(spelling) <= n && text[i:i + len(spelling)] == spelling && !bareKeyChar(at(i + len(spelling)))) {
             [result, i + len(spelling)]
         } else {
@@ -247,7 +252,7 @@ export val parse = fn(text:str):map {
         }
     }
 
-    val value = fn(i:num):list {
+    val value = fn(i:num):[Toml, num] {
         val c = at(i)
         if (c == "\"") {
             basicString(i)
@@ -270,8 +275,8 @@ export val parse = fn(text:str):map {
         }
     }
 
-    val array = fn(i:num):list {
-        val go = fn(j:num, items:list):list {
+    val array = fn(i:num):[list<Toml>, num] {
+        val go = fn(j:num, items:list<Toml>):[list<Toml>, num] {
             val k = skipBlank(j)
             if (at(k) == "]") {
                 [items, k + 1]
@@ -290,12 +295,12 @@ export val parse = fn(text:str):map {
         go(i + 1, [])
     }
 
-    val inlineTable = fn(i:num):list {
+    val inlineTable = fn(i:num):[map<str, Toml>, num] {
         val first = skipSpaces(i + 1)
         if (at(first) == "}") {
             return [{}, first + 1]
         }
-        val go = fn(j:num, table:map):list {
+        val go = fn(j:num, table:map<str, Toml>):[map<str, Toml>, num] {
             val [path, afterKey] = keyPath(j)
             if (at(afterKey) != "=") { fail(afterKey, "expected `=` after a key") }
             val [item, afterValue] = value(skipSpaces(afterKey + 1))
@@ -314,7 +319,7 @@ export val parse = fn(text:str):map {
 
     // `table` with `value` at `path`, creating the tables along it. A key is
     // defined once; a path cannot pass through a value that is not a table.
-    val assign = fn(table:map, path:list, item, i:num):map {
+    val assign = fn(table:map<str, Toml>, path:list<str>, item:Toml, i:num):map<str, Toml> {
         val key = path[0]
         val existing = table[key]
         if (len(path) == 1) {
@@ -331,7 +336,7 @@ export val parse = fn(text:str):map {
     }
 
     // `table` with a table at `path`, creating it when it does not exist.
-    val ensureTable = fn(table:map, path:list, i:num):map {
+    val ensureTable = fn(table:map<str, Toml>, path:list<str>, i:num):map<str, Toml> {
         if (len(path) == 0) {
             return table
         }
@@ -346,7 +351,7 @@ export val parse = fn(text:str):map {
 
     // `defined` holds each table a header named, by its path's parts joined
     // with a character no key can contain unquoted.
-    val document = fn(i:num, root:map, current:list, defined:map):map {
+    val document = fn(i:num, root:map<str, Toml>, current:list<str>, defined:map<str, bool>):map<str, Toml> {
         val j = skipBlank(i)
         if (j >= n) {
             root

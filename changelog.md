@@ -19,6 +19,10 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- `slug.fmt.toml` is typed: it exports `Toml`, and `parse` returns
+  `map<str, Toml>`, so a program narrows a nested table or array with
+  `match` before using it. A generic call such as `keys(table)` on a map of
+  a recursive type no longer crashes the checker.
 
 - A `recur` no longer repeats its function's entry checks: it checks only the
   arguments the checker cannot prove, where it is. A recursive helper with a

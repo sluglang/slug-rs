@@ -5753,7 +5753,9 @@ fn holds_function_signature(value_type: &Type) -> bool {
         Type::Struct(_, arguments) | Type::Enum(_, arguments) => {
             arguments.iter().any(holds_function_signature)
         }
-        Type::Recursive { .. } => holds_function_signature(&value_type.unfolded()),
+        // A recursive type holds one when its body does: a reference to
+        // itself there adds nothing, and unfolding it would never end.
+        Type::Recursive { body, .. } => holds_function_signature(body),
         _ => false,
     }
 }
@@ -7130,6 +7132,17 @@ mod tests {
                 (3, parameter("out", 1), "list<num>".into()),
                 (3, parameter("out", 1), "list<num>".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_generic_call_takes_a_recursive_type() {
+        // Solving `V` to a recursive type once looked for functions in it by
+        // unfolding it without end.
+        recorded_checks(
+            "type T = num|map<str, T>\n\
+             val g = fn<V>(m:V):V { m }\n\
+             val f = fn(m:T) { g(m) }\n",
         );
     }
 

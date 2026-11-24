@@ -127,12 +127,39 @@ val report = fn(outcome:map) {
     }
 }
 
+// The table at `key` in a manifest's `table`, or an empty one.
+val tableAt = fn(table:map<str, toml.Toml>, key:str):map<str, toml.Toml> {
+    match table[key] {
+        m: map => m
+        _ => {}
+    }
+}
+
+// The strings in the array at `key` in a manifest's `table`.
+val stringsAt = fn(table:map<str, toml.Toml>, key:str):list<str> {
+    val items = match table[key] {
+        l: list => l
+        _ => []
+    }
+    val go = fn(i:num, out:list<str>):list<str> {
+        if (i == len(items)) {
+            out
+        } else {
+            match items[i] {
+                s: str => recur(i + 1, out :+ s)
+                _ => recur(i + 1, out)
+            }
+        }
+    }
+    go(0, [])
+}
+
 // Runs one clutch's tests and returns how many failed.
 val runClutch = fn(path:str):num {
     val clutch = clutchName(path)
     val manifest = toml.parse(readText(path + "/clutch.toml"))
-    val modules = keys(manifest.modules ?? {})
-    val files = (manifest.tests ?? {}).files ?? []
+    val modules = keys(tableAt(manifest, "modules"))
+    val files = stringsAt(tableAt(manifest, "tests"), "files")
     val names = modules + map(files, fn(file) { testModuleName(clutch, file) })
     val outcomes = flatten(map(names, runModule))
     val go = fn(i:num, failed:num):num {
