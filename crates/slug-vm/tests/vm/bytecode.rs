@@ -1380,6 +1380,7 @@ fn verifies_a_global_call_against_its_arguments_alone() {
         .emit(Op::CallGlobal {
             name: "f".into(),
             count: 2,
+            proven: false,
         })
         .emit(Op::Return);
 

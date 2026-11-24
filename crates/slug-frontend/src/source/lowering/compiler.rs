@@ -29,6 +29,7 @@ pub(super) struct Compiler {
     module_functions: HashSet<String>,
     declarations: Vec<ModuleDeclaration>,
     selected_calls: HashMap<SourceSpan, CallableIdentity>,
+    proven_calls: HashSet<SourceSpan>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -114,6 +115,7 @@ impl Compiler {
             module_functions,
             declarations: Vec::new(),
             selected_calls: analysis.selected_calls.clone(),
+            proven_calls: analysis.proven_calls.clone(),
             function_identities: analysis.function_identities.clone(),
             foreign_identities: analysis.foreign_identities.clone(),
             foreign_resource_signatures: analysis.foreign_resource_signatures.clone(),
@@ -1355,11 +1357,22 @@ impl Compiler {
                         }))
                     .then(|| state.take_trailing_global())
                     .flatten();
+                    let proven = self.proven_calls.contains(&expression.span);
                     let mut kinds = Vec::with_capacity(arguments.len());
-                    for argument in arguments {
+                    for (index, argument) in arguments.iter().enumerate() {
                         let argument = match argument {
                             CallArgument::Positional(argument) => {
                                 kinds.push(CallArgumentKind::Positional);
+                                // A proven call enters past the entry checks:
+                                // what the checker cannot prove of this
+                                // argument is checked here instead.
+                                if proven {
+                                    self.expression(state, argument)?;
+                                    self.emit_checks(state, &expression.span, |place| {
+                                        matches!(place, CheckPlace::Parameter { index: checked, .. } if *checked == index)
+                                    })?;
+                                    continue;
+                                }
                                 argument
                             }
                             CallArgument::Named { name, value } => {
@@ -1379,9 +1392,12 @@ impl Compiler {
                         Op::CallGlobal {
                             name,
                             count: arguments.len(),
+                            proven,
                         }
                     } else if let Some(identity) = self.selected_identity(&expression.span) {
                         Op::CallSelected { kinds, identity }
+                    } else if positional && proven {
+                        Op::CallPositionalProven(arguments.len())
                     } else if positional {
                         Op::CallPositional(arguments.len())
                     } else {

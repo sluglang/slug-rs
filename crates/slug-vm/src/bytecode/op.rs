@@ -135,15 +135,23 @@ pub enum Op {
     Call(usize),
     /// A source call whose arguments are syntactically positional.
     CallPositional(usize),
+    /// A positional call whose arguments the checker proved pass every one
+    /// of the callee's entry checks, each parameter given: a closure that
+    /// marks where those checks end is entered there, as a full positional
+    /// `recur` re-enters it.
+    CallPositionalProven(usize),
     /// A positional call of a module-level name, whose `count` arguments are
     /// on the stack without the callee: it reads the name itself.
     CallGlobal {
         name: String,
         count: usize,
+        /// Whether the arguments are proven, as for `CallPositionalProven`.
+        proven: bool,
     },
     CallGlobalPooled {
         name: GlobalNameId,
         count: usize,
+        proven: bool,
     },
     CallSpread(Vec<CallArgumentKind>),
     CallSpreadPooled(CallArgumentsId),

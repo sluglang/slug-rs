@@ -3437,6 +3437,34 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
 }
 
 #[test]
+fn a_call_checks_what_it_cannot_prove_and_enters_past_the_checks() {
+    // `add`'s calls in `go` are proven and enter past its entry check, a
+    // walk of `out`; the call in `bad` checks its unproven argument where it
+    // is, and fails as the entry check would.
+    let path = fixture_path("proven-calls");
+    fs::write(
+        &path,
+        "val add = fn(out:list<str>, s:str):list<str> { out :+ s }\n\
+         val go = fn(i:num, out:list<str>):list<str> {\n\
+           if (i == 0) { out } else { go(i - 1, add(out, \"x\")) }\n\
+         }\n\
+         println(len(go(2000, [])))\n\
+         val loose = fn(x) { x }\n\
+         val bad = fn() { add(loose([1]), \"y\") }\n\
+         bad()\n",
+    )
+    .expect("write proven calls");
+    let output = slug().arg(&path).output().expect("run proven calls");
+    fs::remove_file(&path).expect("remove proven calls");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2000\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("expected list<str>, got list: the argument `out`"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_nil_case_covers_nil() {
     let path = fixture_path("nil-covers-nil");
     fs::write(

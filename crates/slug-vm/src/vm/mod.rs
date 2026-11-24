@@ -2561,7 +2561,7 @@ impl Vm {
             }
         }
         let closure = Value::Closure(frame.closure.clone());
-        let outcome = native.run(self, &closure, &mut locals);
+        let outcome = native.run(self, &closure, &mut locals, false);
         locals.clear();
         self.native_arguments = locals;
         match outcome {
@@ -2614,6 +2614,7 @@ impl Vm {
         stack_base: usize,
         arguments: usize,
         cleanup: Option<NativeCleanup>,
+        past_checks: bool,
     ) -> VmResult<Option<crate::sync::Code<Closure>>> {
         let compiled = closure
             .program
@@ -2633,7 +2634,7 @@ impl Vm {
         let native = chunk.native.compiled().expect("code was checked");
         let mut arguments_moved = core::mem::take(&mut self.native_arguments);
         arguments_moved.extend(self.stack.drain(arguments..));
-        let outcome = native.run(self, &callee, &mut arguments_moved);
+        let outcome = native.run(self, &callee, &mut arguments_moved, past_checks);
         arguments_moved.clear();
         self.native_arguments = arguments_moved;
         chunk
@@ -3363,16 +3364,18 @@ impl Vm {
             // One call site keeps `call_positional` inlined here: a second
             // caller changed this loop's code layout and slowed every call.
             PackedOpcode::CallPositional | PackedOpcode::CallGlobal => {
-                let count = if instruction.opcode == PackedOpcode::CallGlobal {
+                // A proven call is marked in `c` for a global, `b` otherwise.
+                let (count, proven) = if instruction.opcode == PackedOpcode::CallGlobal {
                     let count = instruction.b as usize;
-                    if self.call_global(program, GlobalNameId::new(instruction.a), count)? {
+                    let proven = instruction.c != 0;
+                    if self.call_global(program, GlobalNameId::new(instruction.a), count, proven)? {
                         return Ok(InstructionOutcome::Continue);
                     }
-                    count
+                    (count, proven)
                 } else {
-                    operand
+                    (operand, instruction.b != 0)
                 };
-                self.call_positional(program, count)?;
+                self.call_positional(program, count, proven)?;
             }
             PackedOpcode::CallSpread => {
                 let kinds =
@@ -5392,7 +5395,7 @@ impl Vm {
         if kinds
             .iter()
             .all(|kind| matches!(kind, CallArgumentKind::Positional))
-            && self.call_positional_closure(program, kinds.len(), selected)?
+            && self.call_positional_closure(program, kinds.len(), selected, false)?
         {
             #[cfg(feature = "metrics")]
             self.record_exact_positional_closure_call();
@@ -5451,11 +5454,11 @@ impl Vm {
 
     /// Handles a source call whose compiler-provided argument shape is exactly
     /// positional, retaining the generic binder only for closures that need it.
-    fn call_positional(&mut self, program: &Program, count: usize) -> VmResult<()> {
+    fn call_positional(&mut self, program: &Program, count: usize, proven: bool) -> VmResult<()> {
         if self.positional_callee_is_native(count) {
             return self.call(program, count, None);
         }
-        if self.call_positional_closure(program, count, None)? {
+        if self.call_positional_closure(program, count, None, proven)? {
             #[cfg(feature = "metrics")]
             self.record_exact_positional_closure_call();
             return Ok(());
@@ -5505,7 +5508,13 @@ impl Vm {
     /// enters an exact closure call itself and reports whether it did;
     /// otherwise the caller finishes the call as `CallPositional`.
     #[inline(never)]
-    fn call_global(&mut self, program: &Program, id: GlobalNameId, count: usize) -> VmResult<bool> {
+    fn call_global(
+        &mut self,
+        program: &Program,
+        id: GlobalNameId,
+        count: usize,
+        proven: bool,
+    ) -> VmResult<bool> {
         let callee = self.global_value(program, id)?;
         let base = self.stack.len().checked_sub(count).ok_or_else(|| {
             self.error_at(
@@ -5515,7 +5524,7 @@ impl Vm {
         })?;
         let callee = match callee {
             Value::Closure(closure) => {
-                match self.enter_positional_closure(closure, base, count)? {
+                match self.enter_positional_closure(closure, base, count, proven)? {
                     None => {
                         #[cfg(feature = "metrics")]
                         self.record_exact_positional_closure_call();
@@ -5568,6 +5577,7 @@ impl Vm {
         _program: &Program,
         count: usize,
         selected: Option<&CallableIdentity>,
+        proven: bool,
     ) -> VmResult<bool> {
         let required = count.checked_add(1).ok_or_else(|| {
             self.error_at(
@@ -5603,7 +5613,7 @@ impl Vm {
             return Ok(false);
         };
         Ok(self
-            .enter_positional_closure(closure, base, count)?
+            .enter_positional_closure(closure, base, count, proven)?
             .is_none())
     }
 
@@ -5619,6 +5629,7 @@ impl Vm {
         closure: crate::sync::Code<Closure>,
         stack_base: usize,
         count: usize,
+        proven: bool,
     ) -> VmResult<Option<crate::sync::Code<Closure>>> {
         let arguments = self.stack.len() - count;
         // Arguments move from the stack into the callee's locals. A live
@@ -5630,6 +5641,9 @@ impl Vm {
             return Ok(Some(closure));
         }
         let frame_program = &closure.program;
+        // A proven call that gives every parameter starts past the entry
+        // checks, where the chunk marks they end, as a full `recur` does.
+        let mut entry = 0;
         let local_count = {
             let chunk = frame_program.chunk(closure.chunk).ok_or_else(|| {
                 self.error_at(
@@ -5656,6 +5670,20 @@ impl Vm {
             for slot in count..chunk.arity {
                 self.stack.push(chunk.plain_default(slot));
             }
+            if proven && count == chunk.arity {
+                entry = chunk.recur_entry;
+                // The interpreter counts an entry at the first instruction
+                // for the native tier; one past the checks counts here, and
+                // starts at the first instruction once there is native code
+                // to run.
+                #[cfg(feature = "native-hooks")]
+                if entry != 0
+                    && chunk.native.compiled().is_none()
+                    && chunk.native.tick(frame_program, closure.chunk).is_some()
+                {
+                    entry = 0;
+                }
+            }
             if chunk.locals < chunk.arity {
                 return Err(self.error_at(
                     RuntimeErrorKind::InvalidBytecode,
@@ -5668,7 +5696,9 @@ impl Vm {
             chunk.locals
         };
         #[cfg(feature = "native-hooks")]
-        let Some(closure) = self.enter_native_call(closure, stack_base, arguments, None)? else {
+        let Some(closure) =
+            self.enter_native_call(closure, stack_base, arguments, None, entry != 0)?
+        else {
             return Ok(None);
         };
         let count = self.stack.len() - arguments;
@@ -5683,7 +5713,7 @@ impl Vm {
         self.push_frame(Frame {
             closure,
             call_span: self.frame_call_span(),
-            ip: 0,
+            ip: entry,
             stack_base,
             locals,
             provided: ProvidedArguments::All,
@@ -5728,7 +5758,7 @@ impl Vm {
             if selected.is_none() && self.positional_callee_is_native(count) {
                 return self.call(program, count, None);
             }
-            if self.call_positional_closure(program, count, selected)? {
+            if self.call_positional_closure(program, count, selected, false)? {
                 return Ok(());
             }
         }

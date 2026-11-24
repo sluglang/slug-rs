@@ -658,7 +658,13 @@ impl Vm {
                         recovers: recovers_error,
                         owner_depth: frame_depth,
                     };
-                    match self.enter_native_call(closure, stack_base, stack_base, Some(cleanup))? {
+                    match self.enter_native_call(
+                        closure,
+                        stack_base,
+                        stack_base,
+                        Some(cleanup),
+                        false,
+                    )? {
                         None if self.frames.len() > frames => return Ok(None),
                         None => {
                             let value = self.stack.pop().expect("native code returned a value");

@@ -70,8 +70,8 @@ val isBlank = fn(c:str):bool { c == " " || c == "\t" }
 val isSpace = fn(c:str):bool { c == " " || c == "\t" || c == "\n" || c == "\r" }
 
 // The whitespace-separated words of `text`.
-val words = fn(text:str):list {
-    val go = fn(i:num, word:str, out:list):list {
+val words = fn(text:str):list<str> {
+    val go = fn(i:num, word:str, out:list<str>):list<str> {
         if (i == len(text)) { return if (word == "") { out } else { out :+ word } }
         val c = text[i]
         if (isSpace(c)) {
@@ -89,7 +89,7 @@ val indentLines = fn(text:str, indent:str):str {
     if (indent == "") { return text }
     val lines = split(text, "\n")
     val last = len(lines) - 1
-    val indented = fn(i:num, out:list):list {
+    val indented = fn(i:num, out:list<str>):list<str> {
         if (i > last) { return out }
         val line = lines[i]
         recur(i + 1, out :+ (if (i == last && line == "") { line } else { indent + line }))
@@ -111,8 +111,8 @@ val tagName = fn(content:str, text:str, position:num):str {
 
 // `text` as text tokens, one per line: each ends with its line ending, but
 // the last may have none.
-val textTokens = fn(text:str, at:num):list {
-    val go = fn(i:num, start:num, out:list):list {
+val textTokens = fn(text:str, at:num):list<map> {
+    val go = fn(i:num, start:num, out:list<map>):list<map> {
         if (i == len(text)) {
             return if (start == i) { out } else { out :+ {type: "text", text: text[start:], at: at + start} }
         }
@@ -127,8 +127,8 @@ val textTokens = fn(text:str, at:num):list {
 
 // The template's text and tags, in order. A set delimiter tag changes the
 // delimiters for the tags after it.
-val tokenize = fn(text:str):list {
-    val loop = fn(pos:num, open:str, close:str, out:list):list {
+val tokenize = fn(text:str):list<map> {
+    val loop = fn(pos:num, open:str, close:str, out:list<map>):list<map> {
         val tagAt = find(text, open, pos)
         if (tagAt < 0) { return out + textTokens(text[pos:], pos) }
         val before = out + textTokens(text[pos:tagAt], pos)
@@ -168,7 +168,7 @@ val blankText = fn(text:str):bool {
 
 // Whether a line's tokens make it standalone: tags that can stand alone,
 // at least one, with only blanks around them.
-val isStandalone = fn(line:list):bool {
+val isStandalone = fn(line:list<map>):bool {
     val go = fn(i:num, tags:num):bool {
         if (i == len(line)) { return tags > 0 }
         val token = line[i]
@@ -185,9 +185,9 @@ val isStandalone = fn(line:list):bool {
 
 // A standalone line's tags, without its blanks or line ending; partial and
 // parent tags take the blanks before the line's first tag as indentation.
-val standaloneTags = fn(line:list):list {
+val standaloneTags = fn(line:list<map>):list<map> {
     val indent = if (line[0].type == "text") { line[0].text } else { "" }
-    val go = fn(i:num, out:list):list {
+    val go = fn(i:num, out:list<map>):list<map> {
         if (i == len(line)) { return out }
         val token = line[i]
         recur(i + 1, if (token.type == "text") {
@@ -202,8 +202,8 @@ val standaloneTags = fn(line:list):list {
 }
 
 // The tokens with each standalone line reduced to its tags.
-val trimStandalone = fn(tokens:list):list {
-    val go = fn(i:num, line:list, out:list):list {
+val trimStandalone = fn(tokens:list<map>):list<map> {
+    val go = fn(i:num, line:list<map>, out:list<map>):list<map> {
         val ends = i == len(tokens) || (len(line) > 0 && line[len(line) - 1].type == "text" && endsLine(line[len(line) - 1].text))
         if (ends) {
             val kept = if (len(line) == 0) { out } else if (isStandalone(line)) { out + standaloneTags(line) } else { out + line }
@@ -218,8 +218,8 @@ val trimStandalone = fn(tokens:list):list {
 val endsLine = fn(text:str):bool { len(text) > 0 && text[len(text) - 1] == "\n" }
 
 // The blocks directly inside a parent tag, by name: its arguments.
-val blocksOf = fn(nodes:list):map {
-    val go = fn(i:num, out:map):map {
+val blocksOf = fn(nodes:list<map>):map<str, list<map>> {
+    val go = fn(i:num, out:map<str, list<map>>):map<str, list<map>> {
         if (i == len(nodes)) { return out }
         val node = nodes[i]
         recur(i + 1, if (node.kind == "block") { out + {[node.name]: node.nodes} } else { out })
@@ -232,8 +232,8 @@ val blocksOf = fn(nodes:list):map {
  * the tag that opened them (nil at the top level). Returns the nodes and the
  * index after the end tag.
  */
-val build = fn(text:str, tokens:list, start:num, opening):list {
-    val loop = fn(i:num, nodes:list):list {
+val build = fn(text:str, tokens:list<map>, start:num, opening:map|nil):[list<map>, num] {
+    val loop = fn(i:num, nodes:list<map>):[list<map>, num] {
         if (i == len(tokens)) {
             if (opening != nil) { fail("unclosed section `" + opening.name + "`", text, opening.at) }
             return [nodes, i]
@@ -266,7 +266,7 @@ val build = fn(text:str, tokens:list, start:num, opening):list {
     loop(start, [])
 }
 
-val parseNodes = fn(text:str):list {
+val parseNodes = fn(text:str):list<map> {
     build(text, trimStandalone(tokenize(text)), 0, nil)[0]
 }
 
@@ -291,7 +291,7 @@ val escapeHtml = fn(text:str):str {
     if (plain(0)) { text } else { join(map(chars(text), fn(c) { ESCAPES[c] ?? c }), "") }
 }
 
-val has = fn(value, name:str):bool {
+val has = fn(value:any|nil, name:str):bool {
     match value {
         m:map => m[name] != nil || contains(keys(m), name)
         _ => false
@@ -300,21 +300,21 @@ val has = fn(value, name:str):bool {
 
 // The value `name` gives on `stack`, whose top is its last item; nil when it
 // does not resolve.
-val lookup = fn(stack:list, name:str) {
+val lookup = fn(stack:list, name:str):any|nil {
     if (name == ".") { return stack[len(stack) - 1] }
     val parts = split(name, ".")
-    val first = fn(i:num) {
+    val first = fn(i:num):any|nil {
         if (i < 0) { return nil }
         if (has(stack[i], parts[0])) { stack[i][parts[0]] } else { recur(i - 1) }
     }
-    val rest = fn(i:num, value) {
+    val rest = fn(i:num, value:any|nil):any|nil {
         if (i == len(parts)) { return value }
         if (has(value, parts[i])) { recur(i + 1, value[parts[i]]) } else { nil }
     }
     rest(1, first(len(stack) - 1))
 }
 
-val truthy = fn(value):bool {
+val truthy = fn(value:any|nil):bool {
     match value {
         nil => false
         b:bool => b
@@ -323,7 +323,7 @@ val truthy = fn(value):bool {
     }
 }
 
-val toText = fn(value):str {
+val toText = fn(value:any|nil):str {
     match value {
         nil => ""
         s:str => s
@@ -337,15 +337,15 @@ val toText = fn(value):str {
  * renders as nothing. Throws a `mustache.syntax` error for a malformed
  * template or partial.
  */
-export val render = fn(template, data, partials:map = {}):str {
+export val render = fn(template:str|map, data:any|nil, partials:map<str, str> = {}):str {
     val nodes = match template {
         t:str => parse(t).mustache
         p:map => p.mustache
     }
-    var cache = {}
+    var cache:map<str, list<map>> = {}
     // A partial's nodes, parsed with `indent` before each line; nil when
     // there is no such partial.
-    val partial = fn(name:str, indent:str) {
+    val partial = fn(name:str, indent:str):list<map>|nil {
         val key = indent + "\n" + name
         val cached = cache[key]
         if (cached != nil) { return cached }
@@ -355,13 +355,15 @@ export val render = fn(template, data, partials:map = {}):str {
         cache = cache + {[key]: parsed}
         parsed
     }
-    val renderNodes = fn(nodes:list, stack:list, blocks:map, out:list):list {
-        val each = fn(i:num, out:list):list {
+    val renderNodes = fn(nodes:list<map>, stack:list, blocks:map<str, list<map>>, out:list<str>):list<str> {
+        val each = fn(i:num, out:list<str>):list<str> {
             if (i == len(nodes)) { return out }
             val node = nodes[i]
             val kind = node.kind
             val next = if (kind == "text") {
-                out :+ node.text
+                // A string, as parsed: `toText` says so, and the list stays
+                // one of strings, which is then not checked again.
+                out :+ toText(node.text)
             } else if (kind == "var") {
                 val text = toText(lookup(stack, node.name))
                 out :+ (if (node.escape) { escapeHtml(text) } else { text })
@@ -372,7 +374,7 @@ export val render = fn(template, data, partials:map = {}):str {
                 } else {
                     match value {
                         items:list => {
-                            val go = fn(j:num, out:list):list {
+                            val go = fn(j:num, out:list<str>):list<str> {
                                 if (j == len(items)) { return out }
                                 recur(j + 1, renderNodes(node.nodes, stack :+ items[j], blocks, out))
                             }

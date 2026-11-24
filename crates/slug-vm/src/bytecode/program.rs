@@ -634,9 +634,14 @@ impl Program {
             Op::SetGlobal(name) => Some(Op::SetGlobalPooled(
                 self.intern_global_name(mem::take(name)),
             )),
-            Op::CallGlobal { name, count } => Some(Op::CallGlobalPooled {
+            Op::CallGlobal {
+                name,
+                count,
+                proven,
+            } => Some(Op::CallGlobalPooled {
                 name: self.intern_global_name(mem::take(name)),
                 count: *count,
+                proven: *proven,
             }),
             Op::MakeClosure { chunk, captures } => Some(Op::MakeClosurePooled {
                 chunk: *chunk,
@@ -955,9 +960,18 @@ impl Program {
             ),
             Op::Call(v) => (PackedOpcode::Call, operand(*v), 0, 0),
             Op::CallPositional(v) => (PackedOpcode::CallPositional, operand(*v), 0, 0),
-            Op::CallGlobalPooled { name, count } => {
-                (PackedOpcode::CallGlobal, name.0, operand(*count), 0)
-            }
+            // `b` marks a proven call, which older artifacts never have.
+            Op::CallPositionalProven(v) => (PackedOpcode::CallPositional, operand(*v), 1, 0),
+            Op::CallGlobalPooled {
+                name,
+                count,
+                proven,
+            } => (
+                PackedOpcode::CallGlobal,
+                name.0,
+                operand(*count),
+                u32::from(*proven),
+            ),
             Op::CallSpreadPooled(v) => (PackedOpcode::CallSpread, v.0, 0, 0),
             Op::CallSelectedPooled(v) => (PackedOpcode::CallSelected, v.0, 0, 0),
             Op::PipelineCallPooled(v) => (PackedOpcode::PipelineCall, v.0, 0, 0),
@@ -1159,10 +1173,14 @@ impl Program {
                 target: n(instruction.b),
             },
             PackedOpcode::Call => Op::Call(n(instruction.a)),
+            PackedOpcode::CallPositional if instruction.b != 0 => {
+                Op::CallPositionalProven(n(instruction.a))
+            }
             PackedOpcode::CallPositional => Op::CallPositional(n(instruction.a)),
             PackedOpcode::CallGlobal => Op::CallGlobalPooled {
                 name: GlobalNameId(instruction.a),
                 count: n(instruction.b),
+                proven: instruction.c != 0,
             },
             PackedOpcode::CallSpread => Op::CallSpreadPooled(CallArgumentsId(instruction.a)),
             PackedOpcode::CallSelected => Op::CallSelectedPooled(SelectedCallId(instruction.a)),
@@ -2220,7 +2238,9 @@ impl Program {
             | Op::CheckFailed(_)
             | Op::CheckKinds { .. }
             | Op::NotImplemented => (0, 0),
-            Op::Call(count) | Op::CallPositional(count) => (count.checked_add(1).unwrap_or(0), 1),
+            Op::Call(count) | Op::CallPositional(count) | Op::CallPositionalProven(count) => {
+                (count.checked_add(1).unwrap_or(0), 1)
+            }
             Op::CallSpread(kinds) | Op::CallSelected { kinds, .. } => (kinds.len() + 1, 1),
             Op::CallSpreadPooled(id) => (
                 self.call_arguments(*id)

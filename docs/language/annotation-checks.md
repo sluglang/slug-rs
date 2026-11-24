@@ -96,9 +96,18 @@ checks included.
 
 **Parameters are checked by the function, not its callers.** A function
 cannot know whether its caller was typed, since any function may be passed
-as a value. Inside a function, its parameters' types are proven. A later
-stage may skip an entry check for a call the checker proved, through a second
-entry point; that is an optimization, not a change of meaning.
+as a value. Inside a function, its parameters' types are proven.
+
+A call that names its function directly, as `render(nodes, out)` names a
+`val`, and gives every parameter positionally does as a full `recur` does:
+the checker checks its arguments against the parameters, the call checks
+where it is any argument the checker cannot prove, and it enters past the
+function's entry checks. A proven `list<str>` accumulator passed from one
+helper to another is then not scanned again on each call. It is an
+optimization, not a change of meaning: an unproven argument fails as the
+entry check would, naming the same parameter. A call through a function
+value, of an overload set, of a generic function, or with named, spread, or
+defaulted arguments enters at the start, checks included.
 
 **A dynamic call to an overload set selects by type.** A call the checker
 could not resolve, as one through an overload set passed as a value, takes

@@ -66,6 +66,65 @@ mod numeric;
 #[allow(clippy::cast_sign_loss, reason = "a slot's size is positive")]
 const MAX_VALUES: usize = runtime::STACK_BUDGET / 4 / layout::SIZE as usize;
 
+/// Whether native code runs `op` as it is, with no further condition.
+fn supported(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Nil
+            | Op::True
+            | Op::False
+            | Op::CallGlobalPooled { .. }
+            | Op::CallPositional(_)
+            | Op::CallPositionalProven(_)
+            | Op::GetGlobalPooled(_)
+            | Op::SetGlobalPooled(_)
+            | Op::GetCapture(_)
+            | Op::SetCapture(_)
+            | Op::GetLocal(_)
+            | Op::SetLocal(_)
+            | Op::MakeClosure { .. }
+            | Op::MakeClosurePooled { .. }
+            | Op::ListAppend
+            | Op::ListPrepend
+            | Op::GetSlice { .. }
+            | Op::Struct(_)
+            | Op::StructPooled(_)
+            | Op::StructCopy(_)
+            | Op::StructCopyPooled(_)
+            | Op::CopyGlobalPooled { .. }
+            | Op::UpdateCapture { .. }
+            | Op::UpdateGlobalPooled { .. }
+            | Op::CopyGlobalUpdatePooled { .. }
+            | Op::Map(_)
+            | Op::InterpolatePooled(_)
+            | Op::MatchCasePooled { .. }
+            | Op::MatchLocalsPooled { .. }
+            | Op::TryMatchPooled { .. }
+            | Op::JumpIfProvided { .. }
+            | Op::Defer { .. }
+            | Op::LeaveScope
+            | Op::Return
+            | Op::Throw
+            | Op::MatchFailure
+            | Op::CheckFailed(_)
+            | Op::CheckKinds { .. }
+            | Op::NotImplemented
+            | Op::Not
+            | Op::BitNot
+            | Op::Negate
+            | Op::List(_)
+            | Op::GetIndex
+            | Op::GetIndexConstant(_)
+            | Op::ReadIndex {
+                source: ReadSource::Local(_) | ReadSource::Capture(_) | ReadSource::GlobalPooled(_),
+            }
+            | Op::ReadIndexConstant {
+                source: ReadSource::Local(_) | ReadSource::Capture(_) | ReadSource::GlobalPooled(_),
+                ..
+            }
+    )
+}
+
 /// Why a function does not compile, or `Ok` if it can.
 ///
 /// # Errors
@@ -96,59 +155,7 @@ pub fn qualify(function: &Function) -> Result<(), String> {
                         return Err(format!("constant {index} does not exist"));
                     }
                 }
-                Op::Nil
-                | Op::True
-                | Op::False
-                | Op::CallGlobalPooled { .. }
-                | Op::CallPositional(_)
-                | Op::GetGlobalPooled(_)
-                | Op::SetGlobalPooled(_)
-                | Op::GetCapture(_)
-                | Op::SetCapture(_)
-                | Op::GetLocal(_)
-                | Op::SetLocal(_)
-                | Op::MakeClosure { .. }
-                | Op::MakeClosurePooled { .. }
-                | Op::ListAppend
-                | Op::ListPrepend
-                | Op::GetSlice { .. }
-                | Op::Struct(_)
-                | Op::StructPooled(_)
-                | Op::StructCopy(_)
-                | Op::StructCopyPooled(_)
-                | Op::CopyGlobalPooled { .. }
-                | Op::UpdateCapture { .. }
-                | Op::UpdateGlobalPooled { .. }
-                | Op::CopyGlobalUpdatePooled { .. }
-                | Op::Map(_)
-                | Op::InterpolatePooled(_)
-                | Op::MatchCasePooled { .. }
-                | Op::MatchLocalsPooled { .. }
-                | Op::TryMatchPooled { .. }
-                | Op::JumpIfProvided { .. }
-                | Op::Defer { .. }
-                | Op::LeaveScope
-                | Op::Return
-                | Op::Throw
-                | Op::MatchFailure
-                | Op::CheckFailed(_)
-                | Op::CheckKinds { .. }
-                | Op::NotImplemented
-                | Op::Not
-                | Op::BitNot
-                | Op::Negate
-                | Op::List(_)
-                | Op::GetIndex
-                | Op::GetIndexConstant(_)
-                | Op::ReadIndex {
-                    source:
-                        ReadSource::Local(_) | ReadSource::Capture(_) | ReadSource::GlobalPooled(_),
-                }
-                | Op::ReadIndexConstant {
-                    source:
-                        ReadSource::Local(_) | ReadSource::Capture(_) | ReadSource::GlobalPooled(_),
-                    ..
-                } => {}
+                op if supported(op) => {}
                 Op::LocalConstantBinary { constant, .. } | Op::ConstantBinary { constant, .. } => {
                     value_constant(function, *constant)?;
                 }
@@ -359,6 +366,7 @@ impl Runtime {
                     pointer,
                     types::I64,
                     pointer,
+                    types::I32,
                 ],
                 &[types::I32],
             ),
@@ -465,6 +473,7 @@ impl<'a> Lowering<'a> {
             .filter_map(|inst| match inst.op {
                 Op::CallGlobalPooled { count, .. }
                 | Op::CallPositional(count)
+                | Op::CallPositionalProven(count)
                 | Op::List(count) => Some(count),
                 _ => None,
             })
@@ -556,7 +565,26 @@ impl<'a> Lowering<'a> {
             self.copy_words(source, target);
         }
         let first = self.blocks[0];
-        self.builder.ins().jump(first, &[]);
+        // A call proven to pass the entry checks starts where they end, as
+        // a full positional `recur` re-enters past them. A numeric kernel's
+        // checks are all leading kind checks, after which its versions are
+        // chosen: it starts there. Any other function starts at its re-entry,
+        // past checks the leading ones may be only the first of.
+        let kernel = !numeric::versions(function, &self.kinds).is_empty();
+        let checked = function.recur_entry.map(|_| self.builder.create_block());
+        if let Some(checked) = checked {
+            let flags = MemFlags::trusted();
+            let past = self.builder.ins().load(
+                types::I32,
+                flags,
+                self.context,
+                offsets::CONTEXT_PAST_CHECKS,
+            );
+            self.builder.ins().brif(past, checked, &[], first, &[]);
+        } else {
+            self.builder.ins().jump(first, &[]);
+        }
+        let mut checked_placed = false;
 
         for (index, block) in function.blocks.iter().enumerate() {
             self.builder.switch_to_block(self.blocks[index]);
@@ -565,6 +593,11 @@ impl<'a> Lowering<'a> {
                 // Past the entry checks, a block a `recur` that passes them
                 // may restart at.
                 if index == 0 && position + 1 == self.kinds.leading {
+                    if let Some(checked) = checked.filter(|_| kernel) {
+                        self.builder.ins().jump(checked, &[]);
+                        self.builder.switch_to_block(checked);
+                        checked_placed = true;
+                    }
                     let past = self.builder.create_block();
                     let versions = numeric::versions(function, &self.kinds);
                     if versions.is_empty() {
@@ -577,6 +610,13 @@ impl<'a> Lowering<'a> {
                 }
             }
             self.lower_terminator(block)?;
+        }
+        // Without leading checks to end, a proven call starts where a full
+        // `recur` re-enters.
+        if let (Some(checked), Some(entry), false) = (checked, function.recur_entry, checked_placed)
+        {
+            self.builder.switch_to_block(checked);
+            self.builder.ins().jump(self.blocks[entry.index()], &[]);
         }
 
         while let Some(pending) = self.pending.pop() {
@@ -712,10 +752,9 @@ impl<'a> Lowering<'a> {
             | Op::MatchFailure
             | Op::CheckFailed(_)
             | Op::NotImplemented => {}
-            Op::CallGlobalPooled { name, count } => {
-                self.lower_call(inst, Callee::Global(name.get()), *count, position)?;
+            Op::CallGlobalPooled { .. } | Op::CallPositional(_) | Op::CallPositionalProven(_) => {
+                self.lower_call_op(inst, position)?;
             }
-            Op::CallPositional(count) => self.lower_call(inst, Callee::Value, *count, position)?,
             Op::CheckKinds { kinds, .. } => self.lower_check_kinds(inst, *kinds, position),
             op => self.lower_operator(inst, op, position)?,
         }
@@ -1624,11 +1663,36 @@ impl<'a> Lowering<'a> {
     /// reads for the last time is moved to it, not copied, so a collection
     /// the callee updates may be updated in place, as the interpreter's own
     /// calls allow; if the call is declined, it is moved back.
+    /// Lowers a call instruction: of a module-level name, or of a value.
+    fn lower_call_op(&mut self, inst: &Inst, position: (usize, usize)) -> Result<(), String> {
+        match &inst.op {
+            Op::CallGlobalPooled {
+                name,
+                count,
+                proven,
+            } => self.lower_call(
+                inst,
+                Callee::Global(name.get()),
+                (*count, *proven),
+                position,
+            ),
+            Op::CallPositional(count) => {
+                self.lower_call(inst, Callee::Value, (*count, false), position)
+            }
+            Op::CallPositionalProven(count) => {
+                self.lower_call(inst, Callee::Value, (*count, true), position)
+            }
+            op => Err(format!("{op:?} is not a call")),
+        }
+    }
+
+    /// Lowers a call of `count` arguments; a `proven` one, whose arguments
+    /// pass the callee's entry checks, may enter past them.
     fn lower_call(
         &mut self,
         inst: &Inst,
         callee: Callee,
-        count: usize,
+        (count, proven): (usize, bool),
         position: (usize, usize),
     ) -> Result<(), String> {
         // A called value is below its arguments.
@@ -1668,7 +1732,7 @@ impl<'a> Lowering<'a> {
         let done = self.builder.create_block();
         if let Some(site) = site {
             let slow = self.builder.create_block();
-            self.direct_call(site, (arguments, count), inst, (slow, done, after));
+            self.direct_call(site, (arguments, count, proven), inst, (slow, done, after));
             self.builder.switch_to_block(slow);
         }
         #[expect(clippy::cast_possible_wrap, reason = "a bit mask")]
@@ -1682,6 +1746,7 @@ impl<'a> Lowering<'a> {
             .builder
             .ins()
             .iconst(types::I32, i64::try_from(count).expect("count fits"));
+        let past_checks = self.builder.ins().iconst(types::I32, i64::from(proven));
         let result = self.slot(inst.results[0].index());
         let result = self.address(result);
         let status = self.call(
@@ -1696,6 +1761,7 @@ impl<'a> Lowering<'a> {
                 arguments,
                 moved_mask,
                 result,
+                past_checks,
             ],
         )[0];
         let not_returned = self.builder.create_block();
@@ -1819,7 +1885,7 @@ impl<'a> Lowering<'a> {
     fn direct_call(
         &mut self,
         site: usize,
-        (arguments, count): (CodeValue, usize),
+        (arguments, count, proven): (CodeValue, usize, bool),
         inst: &Inst,
         (slow, done, after): (CodeBlock, CodeBlock, CodeBlock),
     ) {
@@ -1878,6 +1944,10 @@ impl<'a> Lowering<'a> {
         self.builder
             .ins()
             .store(flags, null, callee, offsets::CONTEXT_DEFERRED);
+        let past_checks = self.builder.ins().iconst(types::I32, i64::from(proven));
+        self.builder
+            .ins()
+            .store(flags, past_checks, callee, offsets::CONTEXT_PAST_CHECKS);
         let result = self.slot(inst.results[0].index());
         let result = self.address(result);
         self.builder
@@ -2642,6 +2712,7 @@ fn owning_values(function: &Function) -> Vec<bool> {
                     Op::Constant(index) => number_constant(function, *index).is_err(),
                     Op::CallGlobalPooled { .. }
                     | Op::CallPositional(_)
+                    | Op::CallPositionalProven(_)
                     | Op::GetGlobalPooled(_)
                     | Op::GetCapture(_)
                     | Op::GetLocal(_)

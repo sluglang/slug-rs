@@ -714,6 +714,40 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   coverage when the other cases were typed, so `match v { nil => 0; n:num =>
   n }` on a `num|nil` was "missing nil". A `nil` case on a value that cannot
   be `nil` is now reported unreachable, as any such case is.
+
+  Then `slug.text.mustache`: its words and output are `list<str>`, its tokens
+  and nodes `list<map>` (they are maps of several shapes, told apart by
+  `type` and `kind`, and the checker does not narrow a union of record types
+  by a field's value), `parse`'s nodes and a section's are `[list<map>,
+  num]`, and `render` takes `str|map`, `any|nil`, and `map<str, str>`.
+  Typed, it made `crawl-pages` 27% slower: a `list<str>` accumulator passed
+  to a helper was walked by the helper's entry check on every call, though
+  the caller had proven it, which only `recur` avoided. So calls now do what
+  a full `recur` does: a call that names a function (a `val`, or one
+  predeclared with every parameter annotated) and gives every parameter
+  positionally checks where it is the arguments the checker cannot prove,
+  and enters past the entry checks. The compiler marks such a call in the
+  packed `CallPositional`'s `b` and `CallGlobal`'s `c`, which older
+  artifacts leave 0; the VM starts the frame at `recur_entry`, counting the
+  entry for the native tier itself, since the interpreter counts only frames
+  at their first instruction (missing that left a third of the hot
+  functions uncompiled); and native code takes a `past_checks` flag in its
+  context, entering at the re-entry block, or for a numeric kernel where its
+  versions are chosen (entering after only the leading kind checks ran a
+  kernel-less function's deep checks still). A parameter's `inferred` flag,
+  which a failed check's message reports, joined its signature, outside its
+  identity and equality. Also found: `out :+ node.text`, with `node.text`
+  unknown, made the accumulator unproven, so each `recur` walked it; the
+  library appends `toText(node.text)`.
+
+  A/B against the previous commit, PGO, 7 rounds: `crawl-pages` and
+  `crawl-crowd` 0.88x, most workloads level, `crawl-game` 1.03x and the
+  hold-outs `expression-evaluator` and `text-wrap` 1.02x (open: where the
+  call-site checks of inferred parameters cost more than the entry checks
+  they replace). Typed mustache is now within 3% of untyped with native code
+  and 1% without, on `crawl-pages`.
+  - [ ] Check an append's new element, not the whole list: `out :+ x` with
+    `out` proven `list<T>` and `x` unknown could check `x` alone.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

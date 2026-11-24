@@ -550,7 +550,7 @@ impl Lowering<'_> {
                 self.leave_if(minimum, inst, version, values);
                 self.builder.ins().ineg(value)
             }
-            Op::CallGlobalPooled { name, count } => {
+            Op::CallGlobalPooled { name, count, .. } => {
                 self.version_call(inst, (name.get(), *count), position, version, values)
             }
             op => {
@@ -600,7 +600,7 @@ impl Lowering<'_> {
         values: &[Option<CodeValue>],
     ) -> CodeValue {
         self.materialize(&inst.snapshot, version, values);
-        self.lower_call(inst, Callee::Global(name), count, position)
+        self.lower_call(inst, Callee::Global(name), (count, false), position)
             .expect("a kernel's call lowers");
         let result = inst.results[0];
         let rep = version.reps[result.index()].expect("planned");

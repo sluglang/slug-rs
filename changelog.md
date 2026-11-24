@@ -19,6 +19,14 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- A call that names its function and gives every parameter positionally
+  checks the arguments the checker cannot prove where it is, and enters past
+  the function's entry checks, as a full `recur` does: a proven list or map
+  passed from helper to helper is no longer walked again by each. A failed
+  check still names the parameter, as the entry check did. `crawl-pages`
+  and `crawl-crowd` run 12% faster.
+- `slug.text.mustache` is typed: `render` takes a template as `str|map`, its
+  data as `any|nil`, and its partials as `map<str, str>`.
 - `slug.net.http` exports `Request` and `Options`, the types of a request
   as the server gives it and of what `serve` takes; `form` returns
   `map<str, str>`. `slug.io.fs` exports `Stat`, what `stat` returns, and

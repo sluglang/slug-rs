@@ -8,12 +8,41 @@ use slug_vm::{CallableIdentity, ForeignResourceSignature, SourceSpan};
 
 use super::semantic::{EnumIdentity, InferredAlternative, ResourceIdentity, SchemaIdentity, Type};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub(super) struct CallableParameter {
     pub(super) label: Option<String>,
     pub(super) value_type: Type,
     pub(super) has_default: bool,
     pub(super) variadic: bool,
+    /// Whether `value_type` is what the function's body relies on, without
+    /// an annotation, which a failed check of it says. It is not part of the
+    /// signature: two that differ only in it are the same, with the same
+    /// identity.
+    pub(super) inferred: bool,
+}
+
+impl PartialEq for CallableParameter {
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label
+            && self.value_type == other.value_type
+            && self.has_default == other.has_default
+            && self.variadic == other.variadic
+    }
+}
+
+impl Eq for CallableParameter {}
+
+// A signature's identity is built from this, so it leaves `inferred` out.
+impl std::fmt::Debug for CallableParameter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CallableParameter")
+            .field("label", &self.label)
+            .field("value_type", &self.value_type)
+            .field("has_default", &self.has_default)
+            .field("variadic", &self.variadic)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +123,10 @@ pub(super) struct SemanticBinding {
     /// An implicit builtin, such as `close`, which a declaration of the same
     /// name replaces rather than overloads, as it does at runtime.
     pub(super) implicit: bool,
+    /// A function declared later in its block or module, by the signature
+    /// its annotations give, every parameter annotated: a call before the
+    /// declaration calls what that signature describes.
+    pub(super) predeclared: bool,
     /// For an immutable binding, the narrowed types of string-keyed members a
     /// nil test established on this path, such as `r.error` after
     /// `r.error != nil`. The binding never changes, so neither do they.
@@ -166,6 +199,7 @@ impl SemanticBinding {
             declared: None,
             nil_start: None,
             implicit: false,
+            predeclared: false,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -185,6 +219,7 @@ impl SemanticBinding {
             declared: None,
             nil_start: None,
             implicit: false,
+            predeclared: false,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -208,6 +243,7 @@ impl SemanticBinding {
             declared: None,
             nil_start: None,
             implicit: false,
+            predeclared: false,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -306,6 +342,10 @@ pub(super) struct SemanticAnalysis {
     pub(super) snapshot: ModuleSnapshot,
     pub(super) session_snapshot: SessionSnapshot,
     pub(super) selected_calls: HashMap<SourceSpan, CallableIdentity>,
+    /// The calls of a function a `val` names that give every argument
+    /// positionally: such a call checks the arguments the checker cannot
+    /// prove where it is, and enters past the function's entry checks.
+    pub(super) proven_calls: HashSet<SourceSpan>,
     pub(super) function_identities: HashMap<SourceSpan, CallableIdentity>,
     pub(super) foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     pub(crate) foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -332,6 +372,10 @@ struct SemanticRecords {
     /// callee expects of it.
     expected_parameters: HashMap<SourceSpan, Vec<Type>>,
     selected_calls: HashMap<SourceSpan, CallableIdentity>,
+    /// Whether each call that may skip its callee's entry checks was found
+    /// proven every time it was checked: a trial, or a body checked again,
+    /// that finds it unproven makes it unproven for good.
+    proven_calls: HashMap<SourceSpan, bool>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -1029,6 +1073,14 @@ impl Environment {
         self.imports.get(name)
     }
 
+    /// Notes whether the call at `span` was proven, this time it is checked,
+    /// to pass every one of its callee's entry checks.
+    pub(super) fn record_proven_call(&self, span: SourceSpan, proven: bool) {
+        let mut records = self.records.borrow_mut();
+        let entry = records.proven_calls.entry(span).or_insert(true);
+        *entry &= proven;
+    }
+
     pub(super) fn record_selected_call(&self, span: SourceSpan, identity: CallableIdentity) {
         self.records
             .borrow_mut()
@@ -1183,6 +1235,12 @@ impl Environment {
             snapshot,
             session_snapshot: self.session_snapshot(),
             selected_calls: records.selected_calls.clone(),
+            proven_calls: records
+                .proven_calls
+                .iter()
+                .filter(|(_, proven)| **proven)
+                .map(|(span, _)| span.clone())
+                .collect(),
             function_identities: records.function_identities.clone(),
             foreign_identities: records.foreign_identities.clone(),
             foreign_resource_signatures: records.foreign_resource_signatures.clone(),
@@ -1246,6 +1304,7 @@ mod tests {
                 value_type: input,
                 has_default: false,
                 variadic: false,
+                inferred: false,
             }],
             result,
             inferred_alternatives: Vec::new(),

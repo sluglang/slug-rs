@@ -2419,6 +2419,9 @@ fn function_type(
                         .unwrap_or_else(Type::universal),
                     has_default: parameter.default.is_some(),
                     variadic: parameter.variadic,
+                    inferred: parameter.annotation.is_none()
+                        && inferred_parameters
+                            .is_some_and(|parameters| parameters.contains_key(&parameter.name)),
                 })
             })
             .collect::<Result<Vec<_>, SourceError>>()?,
@@ -3938,6 +3941,9 @@ fn predeclare_functions(values: &[Expr], environment: &mut Environment) {
                 .map(|signature| {
                     let mut binding = SemanticBinding::callable(signature);
                     binding.implicit = true;
+                    binding.predeclared = parameters
+                        .iter()
+                        .all(|parameter| parameter.annotation.is_some());
                     binding
                 });
             environment.declare(
@@ -5062,6 +5068,7 @@ fn declare_vm_builtins(environment: &mut Environment) {
                     value_type: parameter,
                     has_default: false,
                     variadic: false,
+                    inferred: false,
                 }],
                 result,
                 inferred_alternatives: Vec::new(),
@@ -5666,6 +5673,32 @@ fn check_call(
             environment
                 .record_selected_call(expression.span.clone(), most_specific[0].identity.clone());
         }
+        if let ([signature], ExprKind::Name(_), 0) =
+            (callables.as_slice(), &callee.kind, piped_count)
+            && binding.declared.is_none()
+            && (!binding.implicit || binding.predeclared)
+        {
+            let enters = enters_past_checks(signature, arguments);
+            if enters {
+                // It enters past the callee's entry checks, as a full `recur`
+                // does, so it checks here each argument not proven to pass.
+                for (index, (parameter, actual)) in
+                    signature.parameters.iter().zip(&actuals).enumerate()
+                {
+                    environment.record_boundary_check(
+                        &expression.span,
+                        actual,
+                        &parameter.value_type,
+                        CheckPlace::Parameter {
+                            name: parameter.label.clone().unwrap_or_default(),
+                            index,
+                            inferred: parameter.inferred,
+                        },
+                    );
+                }
+            }
+            environment.record_proven_call(expression.span.clone(), enters);
+        }
         check_generic_result(
             &callables,
             most_specific[0],
@@ -5676,6 +5709,22 @@ fn check_call(
         );
         Ok(most_specific[0].result.clone())
     })
+}
+
+/// Whether a call of `signature` with `arguments` may enter past the
+/// callee's entry checks, checking where it is the arguments the checker
+/// cannot prove: each parameter given, positionally. A generic callee,
+/// whose checks depend on its type arguments, is left to make them.
+fn enters_past_checks(signature: &CallableSignature, arguments: &[CallArgument]) -> bool {
+    signature.generic_arity == 0
+        && arguments.len() == signature.parameters.len()
+        && arguments
+            .iter()
+            .all(|argument| matches!(argument, CallArgument::Positional(_)))
+        && signature
+            .parameters
+            .iter()
+            .all(|parameter| !parameter.variadic)
 }
 
 /// Records a check of a generic call's result where its callee cannot
@@ -7143,6 +7192,29 @@ mod tests {
     }
 
     #[test]
+    fn a_call_checks_its_unproven_arguments_where_it_is() {
+        // `f(1, m.k)` proves `1` and not `m.k`: the call checks `m.k`
+        // against `str`, at line 3, before it enters past `f`'s own checks.
+        let checks = recorded_checks(
+            "val f = fn(n:num, s:str):str { s }\n\
+             val g = fn(m:map) {\n\
+               f(1, m.k)\n\
+             }\n",
+        );
+        assert!(checks.contains(&(
+            3,
+            CheckPlace::Parameter {
+                name: "s".into(),
+                index: 1,
+                inferred: false,
+            },
+            "str".to_string(),
+        )));
+        assert!(!checks.iter().any(|(line, place, _)| *line == 3
+            && matches!(place, CheckPlace::Parameter { index: 0, .. })));
+    }
+
+    #[test]
     fn a_generic_call_takes_a_recursive_type() {
         // Solving `V` to a recursive type once looked for functions in it by
         // unfolding it without end.
@@ -8060,6 +8132,7 @@ mod tests {
                 value_type: Type::List(Some(Box::new(Type::Generic(0)))),
                 has_default: false,
                 variadic: false,
+                inferred: false,
             }],
             result: Type::union([Type::Generic(0), Type::Nil]),
             inferred_alternatives: Vec::new(),
@@ -8231,6 +8304,7 @@ mod tests {
                 value_type: Type::List(Some(Box::new(Type::Generic(0)))),
                 has_default: false,
                 variadic: false,
+                inferred: false,
             }],
             result: Type::union([Type::Generic(0), Type::Nil]),
             inferred_alternatives: Vec::new(),
@@ -8259,6 +8333,7 @@ mod tests {
             value_type: Type::Generic(0),
             has_default: false,
             variadic: true,
+            inferred: false,
         };
         let actual = Type::List(Some(Box::new(Type::Str)));
         let parameters = [parameter];
@@ -8284,12 +8359,14 @@ mod tests {
                 value_type: Type::Str,
                 has_default: false,
                 variadic: false,
+                inferred: false,
             },
             CallableParameter {
                 label: Some("values".into()),
                 value_type: Type::Generic(0),
                 has_default: false,
                 variadic: true,
+                inferred: false,
             },
         ];
         let actuals = [Type::List(Some(Box::new(Type::Str)))];
@@ -8319,12 +8396,14 @@ mod tests {
                 value_type: Type::Generic(0),
                 has_default: false,
                 variadic: false,
+                inferred: false,
             },
             CallableParameter {
                 label: Some("fallback".into()),
                 value_type: Type::Generic(0),
                 has_default: true,
                 variadic: false,
+                inferred: false,
             },
         ];
         let actuals = [Type::Str];
@@ -8366,12 +8445,14 @@ mod tests {
                     value_type: Type::Generic(0),
                     has_default: false,
                     variadic: false,
+                    inferred: false,
                 },
                 CallableParameter {
                     label: None,
                     value_type: Type::Generic(0),
                     has_default: false,
                     variadic: false,
+                    inferred: false,
                 },
             ],
             result: Type::Generic(0),

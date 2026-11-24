@@ -84,8 +84,16 @@ impl Drop for HotChunk {
 pub trait NativeCode: Send + Sync {
     /// Runs the chunk from its first instruction, in the active frame, whose
     /// function is `closure`, with that frame's `locals`.
-    /// Its `locals` are taken, leaving the vector empty.
-    fn run(&self, vm: &mut Vm, closure: &Value, locals: &mut Vec<Value>) -> NativeOutcome;
+    /// Its `locals` are taken, leaving the vector empty. With `past_checks`,
+    /// a call proven to pass the chunk's entry checks, it may start where
+    /// they end, as a full positional `recur` re-enters.
+    fn run(
+        &self,
+        vm: &mut Vm,
+        closure: &Value,
+        locals: &mut Vec<Value>,
+        past_checks: bool,
+    ) -> NativeOutcome;
 
     /// The tier's own type, for native code that calls this code directly.
     fn as_any(&self) -> &dyn core::any::Any;
@@ -426,7 +434,7 @@ mod tests {
     struct NoCode;
 
     impl NativeCode for NoCode {
-        fn run(&self, _: &mut Vm, _: &Value, _: &mut Vec<Value>) -> NativeOutcome {
+        fn run(&self, _: &mut Vm, _: &Value, _: &mut Vec<Value>, _: bool) -> NativeOutcome {
             unreachable!("the test runs no code")
         }
 

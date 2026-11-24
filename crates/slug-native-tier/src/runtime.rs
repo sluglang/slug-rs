@@ -212,6 +212,9 @@ pub(crate) struct Context {
     /// What the activation deferred, in order, of a function that
     /// defers; null for any other.
     deferred: *mut Vec<NativeDeferred>,
+    /// Nonzero for a call proven to pass the entry checks, which starts
+    /// where they end.
+    past_checks: u32,
 }
 
 impl Context {
@@ -246,6 +249,7 @@ pub(crate) mod offsets {
     pub(crate) const CONTEXT_RET: i32 = offset_of!(Context, ret) as i32;
     pub(crate) const CONTEXT_EXIT: i32 = offset_of!(Context, exit) as i32;
     pub(crate) const CONTEXT_DEFERRED: i32 = offset_of!(Context, deferred) as i32;
+    pub(crate) const CONTEXT_PAST_CHECKS: i32 = offset_of!(Context, past_checks) as i32;
     pub(crate) const CONTEXT_SIZE: u32 = size_of::<Context>() as u32;
     pub(crate) const ROOT_BASE: i32 = offset_of!(Root, base) as i32;
     pub(crate) const RECORD_GLOBALS: i32 = offset_of!(CallRecord, globals) as i32;
@@ -444,6 +448,7 @@ impl Compiled {
         closure: *const Value,
         root: *mut Root,
         arguments: *mut Value,
+        past_checks: bool,
     ) -> Result<Value, Exited> {
         // SAFETY: as the caller promises.
         let mut cells = unsafe { self.fresh_cells(arguments) };
@@ -475,6 +480,7 @@ impl Compiled {
             attention,
             ret: ret.as_mut_ptr(),
             exit: std::ptr::null_mut(),
+            past_checks: u32::from(past_checks),
         };
         // SAFETY: `entry` is finalized code with this signature (see
         // `Compiled::new`). It returns `RETURNED` only after writing `ret`,
@@ -495,7 +501,13 @@ impl Compiled {
 }
 
 impl NativeCode for Compiled {
-    fn run(&self, vm: &mut Vm, closure: &Value, locals: &mut Vec<Value>) -> NativeOutcome {
+    fn run(
+        &self,
+        vm: &mut Vm,
+        closure: &Value,
+        locals: &mut Vec<Value>,
+        past_checks: bool,
+    ) -> NativeOutcome {
         // The code takes the arguments; the other locals are the frame's
         // unset `nil`s, which it does not need.
         locals.truncate(self.arity);
@@ -518,6 +530,7 @@ impl NativeCode for Compiled {
                 std::ptr::from_ref(closure),
                 &raw mut root,
                 locals.as_mut_ptr(),
+                past_checks,
             );
             locals.set_len(0);
             outcome
@@ -577,6 +590,7 @@ pub(crate) extern "C" fn native_call(
     arguments: *mut Value,
     moved: u64,
     out: *mut Value,
+    past_checks: u32,
 ) -> u32 {
     // SAFETY: generated code passes its own context, null or an
     // initialized callee, `count` initialized values it gives up, and a
@@ -662,7 +676,9 @@ pub(crate) extern "C" fn native_call(
         } else {
             return declined(arguments_slice);
         };
-        let outcome = compiled.enter(context.vm, &raw const closure, root, arguments);
+        // Only a call that gives every parameter starts past the checks.
+        let past_checks = past_checks != 0 && count == compiled.arity;
+        let outcome = compiled.enter(context.vm, &raw const closure, root, arguments, past_checks);
         match outcome {
             Ok(value) => {
                 out.write(value);
@@ -1288,7 +1304,7 @@ pub(crate) extern "C" fn native_cleanup(context: *mut Context, scope: u32) -> u3
             deferred.pop();
             stats::count(&stats::ACTIONS);
             let arguments = std::ptr::NonNull::<Value>::dangling().as_ptr();
-            match compiled.enter(context.vm, &raw const closure, root, arguments) {
+            match compiled.enter(context.vm, &raw const closure, root, arguments, false) {
                 Ok(value) => drop(value),
                 Err(exited) => {
                     (*root).frames.push(exited.into_frame(closure));
