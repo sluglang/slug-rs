@@ -197,12 +197,17 @@ export val close = fn(file:File):nil {
 }
 
 /**
+ * What `stat` finds at a path.
+ */
+export type Stat = {kind: str, size: num, modifiedMs: num}
+
+/**
  * What is at `path`, without following a final symbolic link, or nil when
  * nothing is there: `kind` is "file", "directory", "link", or "other", `size`
  * is in bytes, and `modifiedMs` is milliseconds since the Unix epoch, as
  * `slug.time.nowMs` gives.
  */
-export val stat = fn(path:str):map|nil {
+export val stat = fn(path:str):Stat|nil {
     val reply = replies()
     match wait(statRaw(path, reply), reply) {
         [0, kind, size, modified] => {kind: kind, size: size, modifiedMs: modified}

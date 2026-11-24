@@ -3437,6 +3437,30 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
 }
 
 #[test]
+fn a_nil_case_covers_nil() {
+    let path = fixture_path("nil-covers-nil");
+    fs::write(
+        &path,
+        "val f = fn(v:num|nil):num {\n\
+           match v {\n\
+             nil => 0\n\
+             n:num => n\n\
+           }\n\
+         }\n\
+         println(f(3), f(nil))\n",
+    )
+    .expect("write nil covers nil");
+    let output = slug().arg(&path).output().expect("run nil covers nil");
+    fs::remove_file(&path).expect("remove nil covers nil");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "3 0\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn a_call_that_only_throws_narrows_what_follows_it() {
     let path = fixture_path("never-narrows");
     fs::write(

@@ -66,7 +66,7 @@ val bindValue = fn(statement:Statement, index:num, value):num {
     }
 }
 
-val bindAll = fn(statement:Statement, parameters:list, index:num) {
+val bindAll = fn(statement:Statement, parameters:list, index:num):nil {
     match parameters {
         [] => nil
         [value, ...rest] => {
@@ -79,7 +79,7 @@ val bindAll = fn(statement:Statement, parameters:list, index:num) {
     }
 }
 
-val columnValue = fn(statement:Statement, column:num) {
+val columnValue = fn(statement:Statement, column:num):num|str|bytes|nil {
     match columnTypeRaw(statement, column) {
         1 => columnIntRaw(statement, column)
         2 => columnFloatRaw(statement, column)
@@ -89,7 +89,12 @@ val columnValue = fn(statement:Statement, column:num) {
     }
 }
 
-val row = fn(statement:Statement, column:num, count:num, values:map):map {
+val row = fn(
+    statement:Statement,
+    column:num,
+    count:num,
+    values:map<str, num|str|bytes|nil>,
+):map<str, num|str|bytes|nil> {
     if (column == count) {
         values
     } else {
@@ -98,7 +103,10 @@ val row = fn(statement:Statement, column:num, count:num, values:map):map {
     }
 }
 
-val rows = fn(statement:Statement, collected:list):list {
+val rows = fn(
+    statement:Statement,
+    collected:list<map<str, num|str|bytes|nil>>,
+):list<map<str, num|str|bytes|nil>> {
     val status = stepRaw(statement)
     if (status == SQLITE_DONE) {
         collected

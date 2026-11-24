@@ -696,6 +696,24 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   was solved to a recursive type, as `keys(table)` on a `map<str, Toml>`,
   overflowed the stack, since looking for functions in the type unfolded it
   without end.
+  Then the small clutches and `slug.net.http`. `slug.io.fs` exports `Stat`,
+  what `stat` returns; `slug.db.sqlite`'s `transaction` is generic over its
+  work's result, and its row helpers type a column's value
+  `num|str|bytes|nil`, while `query` still returns `list<map>`: rows typed
+  that precisely would make every column read narrow, which Orble does in
+  about forty places, so that is left a decision. `slug.net.http` exports
+  `Request`, what the server gives a handler and what `body`, `read`,
+  `form`, and `multipart` take, and `Options`, what `serve` takes; `form`
+  returns `map<str, str>`, as do the router's params. The router keeps its
+  request a `map`, since it adds the params with `+`, which a record type,
+  since it also describes structs, does not take (open: whether `+` should
+  take a record type known to be a map). The body source and reader stay
+  maps of functions, private to the module.
+
+  Found on the way, and fixed: a `nil` case did not count toward a match's
+  coverage when the other cases were typed, so `match v { nil => 0; n:num =>
+  n }` on a `num|nil` was "missing nil". A `nil` case on a value that cannot
+  be `nil` is now reported unreachable, as any such case is.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

@@ -52,6 +52,29 @@
  * its end.
  */
 
+/**
+ * A request as the server gives it to a handler, as the module's summary
+ * describes. A request built by hand may also give its body as `body`.
+ */
+export type Request = {
+    method: str,
+    path: str,
+    query: map<str, str>,
+    headers: map<str, str>,
+    params: map<str, str>,
+}
+
+/**
+ * What `serve` may be told, each optional, as `serve` describes.
+ */
+export type Options = {
+    idleTimeout: num|nil,
+    headerTimeout: num|nil,
+    maxHeaderBytes: num|nil,
+    maxBodyBytes: num|nil,
+    maxConnections: num|nil,
+}
+
 val tcp = import("slug.net.tcp")
 val {split, trim, lower, join, chars, ord, toInt, toBytes, fromBytes} = import("slug.string")
 val {send, recv} = import("slug.channel")
@@ -108,7 +131,7 @@ val validHeaders = fn(headers:map):bool {
     go(0)
 }
 
-val contains = fn(values:list, value):bool {
+val contains = fn(values:list, value:any|nil):bool {
     val go = fn(i:num):bool { if (i == len(values)) { false } else if (values[i] == value) { true } else { recur(i + 1) } }
     go(0)
 }
@@ -154,7 +177,7 @@ val utf8 = fn(data:bytes):str {
 // section is being read, its deadline applies: `startHead` starts it and
 // `endHead` cancels it. Reading the next request waits at most `idleTimeout`
 // for its first bytes, and a body waits as long for each piece.
-val reader = fn(connection:tcp.Connection, options:map):map {
+val reader = fn(connection:tcp.Connection, options:Options):map {
     val idleTimeout = options.idleTimeout ?? 5000
     val headerTimeout = options.headerTimeout ?? 5000
     var buffer = 0x""
@@ -340,7 +363,7 @@ val contentLength = fn(value:str|nil):num {
 
 // Joins `pieces` into one, halving and joining each half, so each byte is
 // copied about log2(n) times for n pieces rather than n times.
-val joinBytes = fn(pieces:list):bytes {
+val joinBytes = fn(pieces:list<bytes>):bytes {
     val count = len(pieces)
     if (count == 0) { return 0x"" }
     if (count == 1) { return pieces[0] }
@@ -454,9 +477,9 @@ val bodySource = fn(connection:tcp.Connection, input:map, headers:map, length:nu
 // The decoded parameters of `text`, a query string or form body: `+` is a
 // space, a parameter without `=` is "", empty parameters are skipped, and
 // when a name repeats the last value wins.
-val parseParameters = fn(text:str):map {
+val parseParameters = fn(text:str):map<str, str> {
     val parameters = split(text, "&")
-    val readParameters = fn(i:num, out:map):map {
+    val readParameters = fn(i:num, out:map<str, str>):map<str, str> {
         if (i == len(parameters)) { return out }
         if (parameters[i] == "") { return recur(i + 1, out) }
         val pair = split(parameters[i], "=")
@@ -467,7 +490,7 @@ val parseParameters = fn(text:str):map {
 }
 
 // The target's decoded path and its query parameters.
-val parseTarget = fn(target:str):[str, map] {
+val parseTarget = fn(target:str):[str, map<str, str>] {
     val parts = split(target, "?")
     val query = if (len(parts) > 1) { join(parts[1:], "?") } else { "" }
     [decode(parts[0]), parseParameters(query)]
@@ -476,7 +499,7 @@ val parseTarget = fn(target:str):[str, map] {
 // Reads one request's head: the request map, with its body left to read
 // through `body`, `read`, or `multipart`, and whether the connection closes
 // after its response.
-val readRequest = fn(connection:tcp.Connection, input:map, options:map):[map, bool] {
+val readRequest = fn(connection:tcp.Connection, input:map, options:Options):[Request, bool] {
     val maxHeaderBytes = options.maxHeaderBytes ?? 8192
     input.startHead()
     val head = readHead(input, maxHeaderBytes)
@@ -533,7 +556,7 @@ val reason = fn(status:num):str {
 // A handler's result as a response map, or a `500` when it is not a valid
 // response: among others, one with a header whose name is not a token or
 // whose value holds a line break.
-val normalize = fn(response):map {
+val normalize = fn(response:any|nil):map {
     val valid = match response {
         _:str => true
         {status: status} => match status {
@@ -658,7 +681,7 @@ val streamed = fn(connection:tcp.Connection, result:map, channel:chan, head:bool
 
 // Calls `handler`; an `http.reject` throw is answered with its status, and
 // any other throw with `500`.
-val invoke = fn(handler:fn, request:map) {
+val invoke = fn(handler:fn, request:Request):any|nil {
     defer onerror(error) {
         return match error {
             {type: "http.reject", data: data} => {status: data.status}
@@ -674,7 +697,7 @@ val invoke = fn(handler:fn, request:map) {
 // --- Serving -----------------------------------------------------------------
 
 // Serves one connection's requests, in order, until it closes.
-val serveConnection = fn(connection:tcp.Connection, handler:fn, options:map) {
+val serveConnection = fn(connection:tcp.Connection, handler:fn, options:Options):nil {
     defer tcp.close(connection)
     defer onerror(_) { return nil }
     val input = reader(connection, options)
@@ -686,7 +709,7 @@ val serveConnection = fn(connection:tcp.Connection, handler:fn, options:map) {
 }
 
 // Reads and answers the next request: "open" to read another, or "closed".
-val handleNext = fn(connection:tcp.Connection, input:map, handler:fn, options:map):str {
+val handleNext = fn(connection:tcp.Connection, input:map, handler:fn, options:Options):str {
     defer onerror(error) {
         match error {
             {type: "http.reject", data: data} => respond(connection, {status: data.status}, false, true)
@@ -720,7 +743,7 @@ val handleNext = fn(connection:tcp.Connection, input:map, handler:fn, options:ma
  *   the limit the server accepts no more until one closes, and those that
  *   arrive meanwhile wait in the listener's queue.
  */
-export val serve = fn(listener:tcp.Listener, handler:fn, options:map = {}) {
+export val serve = fn(listener:tcp.Listener, handler:fn, options:Options = {}):nil {
     val limit = options.maxConnections
     // One token per connection being served, when they are limited: taking
     // one waits while every token is out.
@@ -732,7 +755,6 @@ export val serve = fn(listener:tcp.Listener, handler:fn, options:map = {}) {
             }
             chan(count)
         }
-        _ => throw Error {type: "http.options", msg: "maxConnections must be a positive whole number"}
     }
     val accept = fn() {
         match slots {
@@ -762,7 +784,7 @@ export val serve = fn(listener:tcp.Listener, handler:fn, options:map = {}) {
 
 // The body source of a request the server read, or nil for one made by hand,
 // as a test makes them, whose body is its `body` field.
-val sourceOf = fn(request:map):map|nil {
+val sourceOf = fn(request:Request):map|nil {
     match request.bodySource {
         source:map => source
         _ => nil
@@ -776,7 +798,7 @@ val sourceOf = fn(request:map):map|nil {
  * the body. A request made by hand, as a test makes one, gives its `body`
  * field.
  */
-export val body = fn(request:map, maxBytes:num|nil = nil):bytes {
+export val body = fn(request:Request, maxBytes:num|nil = nil):bytes {
     match sourceOf(request) {
         nil => request.body ?? 0x""
         source => source.all(maxBytes ?? source.maxBodyBytes)
@@ -800,7 +822,7 @@ export val body = fn(request:map, maxBytes:num|nil = nil):bytes {
  * }
  * ```
  */
-export val read = fn(request:map, maxBytes:num):bytes|nil {
+export val read = fn(request:Request, maxBytes:num):bytes|nil {
     match sourceOf(request) {
         nil => throw Error {type: "http.body", msg: "a request made by hand has no body to read in pieces; use body"}
         source => source.next(maxBytes)
@@ -881,7 +903,7 @@ val CLOSING = 0x"2d2d"
  * each({})
  * ```
  */
-export val multipart = fn(request:map, maxBytes:num):map {
+export val multipart = fn(request:Request, maxBytes:num):map {
     val type = request.headers["content-type"] ?? ""
     if (trim(lower(split(type, ";")[0])) != "multipart/form-data") { reject(415) }
     val boundary = match parameter(type, "boundary") {
@@ -1062,7 +1084,7 @@ export val multipart = fn(request:map, maxBytes:num):map {
  * reads the body through `body`, so the same limit applies. A body that does
  * not decode is answered with `400`.
  */
-export val form = fn(request:map):map {
+export val form = fn(request:Request):map<str, str> {
     val type = lower(request.headers["content-type"] ?? "")
     if (trim(split(type, ";")[0]) != "application/x-www-form-urlencoded") { return {} }
     parseParameters(utf8(body(request)))
@@ -1101,8 +1123,8 @@ export val mediaType = fn(name:str):str {
 // The params `pattern` matches `path` with, or nil. Segments are what lies
 // between `/`s: `:name` matches one non-empty segment, and a final `*name`
 // the remaining segments, one or more, joined with `/`.
-val matchPath = fn(pattern:list<str>, path:list<str>):map|nil {
-    val go = fn(i:num, params:map):map|nil {
+val matchPath = fn(pattern:list<str>, path:list<str>):map<str, str>|nil {
+    val go = fn(i:num, params:map<str, str>):map<str, str>|nil {
         if (i == len(pattern)) {
             return if (i == len(path)) { params } else { nil }
         }
@@ -1132,6 +1154,8 @@ val matchPath = fn(pattern:list<str>, path:list<str>):map|nil {
  */
 export val router = fn(routes:list):fn {
     val compiled = mapList(routes, fn(route) { [route[0], split(route[1], "/"), route[2]] })
+    // A map, not a `Request`: the matched params are added to it with `+`,
+    // which a record type, since it also describes structs, does not take.
     fn(request:map) {
         val path = split(request.path, "/")
         val find = fn(i:num, allowed:list<str>) {

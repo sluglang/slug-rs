@@ -3425,6 +3425,12 @@ fn check_expression_inner(
                         constraints.push(constraint.clone());
                         if is_irrefutable_pattern(&pattern.pattern) {
                             irrefutable_constraints.push(constraint.clone());
+                        } else if let Pattern::Literal(value) = &pattern.pattern
+                            && value.kind() == ValueKind::Nil
+                        {
+                            // `nil` is the only value of its type, so its
+                            // literal covers the type whole.
+                            irrefutable_constraints.push(Some(Type::Nil));
                         }
                         bind_case_pattern(
                             &pattern.pattern,

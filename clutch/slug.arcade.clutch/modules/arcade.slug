@@ -82,7 +82,7 @@ val checked = fn(status:num, what:str):nil {
 }
 
 val known = fn(key:str):str {
-    val find = fn(i) {
+    val find = fn(i:num):str {
         if (i == len(keys)) {
             fail("unknown key `" + key + "`")
         } else if (keys[i] == key) {

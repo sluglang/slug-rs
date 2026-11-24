@@ -19,6 +19,12 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- `slug.net.http` exports `Request` and `Options`, the types of a request
+  as the server gives it and of what `serve` takes; `form` returns
+  `map<str, str>`. `slug.io.fs` exports `Stat`, what `stat` returns, and
+  `slug.db.sqlite`'s `transaction` returns its work's result's type.
+- A `match` whose cases are `nil` and typed ones, such as `nil => 0` and
+  `n:num => n` on a `num|nil`, is no longer reported as missing `nil`.
 - A call to a function that only throws now narrows what follows it, as
   `throw` does: after `if (v == nil) { fail() }`, `v` is no longer `nil`, with
   no `else` needed. Code after such a call is unreachable and, as after
