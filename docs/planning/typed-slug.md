@@ -653,7 +653,10 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   Found on the way: a list literal ending an `if`'s or `match`'s branch was
   not the tuple an annotation expects (fixed), and narrowing does not
   continue after an early exit, `if (v == nil) { fail() }`, which an `else`
-  works around (open).
+  works around (closed later: a statement of type `never`, as a call to a
+  function that only throws, now ends its block as `throw` does, so the
+  facts of the `if`'s other branch hold after it; what follows it is
+  unreachable and, as after `throw`, not checked).
 
   The typed parser then ran a deep check of `Json` results at every level of
   a document, quadratic and deep enough to overflow a debug build's stack on

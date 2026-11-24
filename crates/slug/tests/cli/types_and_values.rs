@@ -3437,6 +3437,29 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
 }
 
 #[test]
+fn a_call_that_only_throws_narrows_what_follows_it() {
+    let path = fixture_path("never-narrows");
+    fs::write(
+        &path,
+        "val fail = fn(why:str) { throw why }\n\
+         val double = fn(v:num|nil):num {\n\
+           if (v == nil) { fail(\"no value\") }\n\
+           v * 2\n\
+         }\n\
+         println(double(4))\n",
+    )
+    .expect("write never narrows");
+    let output = slug().arg(&path).output().expect("run never narrows");
+    fs::remove_file(&path).expect("remove never narrows");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "8\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn a_list_literal_ending_a_branch_is_the_tuple_expected() {
     let path = fixture_path("tuple-branches");
     fs::write(

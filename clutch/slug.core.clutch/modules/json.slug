@@ -507,7 +507,8 @@ val parseNumber = fn(t:str, n:num, i:num):[num, num] {
     } else {
         numberValue(neg, t[a:intEnd] + fracDigits, exp - len(fracDigits))
     }
-    if (value == nil) { fail(i) } else { [value, end] }
+    if (value == nil) { fail(i) }
+    [value, end]
 }
 
 val hexValue = fn(c:str):num {

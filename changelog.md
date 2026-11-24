@@ -19,6 +19,10 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- A call to a function that only throws now narrows what follows it, as
+  `throw` does: after `if (v == nil) { fail() }`, `v` is no longer `nil`, with
+  no `else` needed. Code after such a call is unreachable and, as after
+  `throw`, not type-checked.
 - `slug.fmt.toml` is typed: it exports `Toml`, and `parse` returns
   `map<str, Toml>`, so a program narrows a nested table or array with
   `match` before using it. A generic call such as `keys(table)` on a map of

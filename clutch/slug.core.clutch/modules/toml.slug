@@ -241,7 +241,8 @@ export val parse = fn(text:str):map<str, Toml> {
         if (len(plain) == 0) { fail(i, "invalid integer") }
         if (len(plain) > 1 && plain[0] == "0") { fail(i, "an integer must not have a leading zero") }
         val result = toInt((if (at(i) == "-") { "-" } else { "" }) + plain)
-        if (result == nil) { fail(i, "integer is out of range") } else { [result, end] }
+        if (result == nil) { fail(i, "integer is out of range") }
+        [result, end]
     }
 
     val word = fn(i:num, spelling:str, result:bool):[bool, num] {

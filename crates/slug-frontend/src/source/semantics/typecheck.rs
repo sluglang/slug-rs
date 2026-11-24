@@ -4128,9 +4128,10 @@ fn check_expression_with_flow(
             ExprKind::Return { .. } | ExprKind::Throw { .. } | ExprKind::Recur(_) => {
                 CheckedExpression::terminates(value_type)
             }
-            ExprKind::Match { .. } if matches!(value_type, Type::Never) => {
-                CheckedExpression::terminates(value_type)
-            }
+            // Whatever never completes, as a call to a function that only
+            // throws, ends its block as `throw` does, so what it rules out
+            // stays ruled out after it.
+            _ if matches!(value_type, Type::Never) => CheckedExpression::terminates(value_type),
             _ => CheckedExpression::falls_through(value_type),
         })
     })
