@@ -22,8 +22,8 @@ val {ENTITIES, PUNCTUATION, FOLDS} = import("slug.text.markdown.data")
 
 // --- Characters --------------------------------------------------------------
 
-val setOf = fn(text:str):map {
-    val go = fn(i:num, out:map):map {
+val setOf = fn(text:str):map<str, bool> {
+    val go = fn(i:num, out:map<str, bool>):map<str, bool> {
         if (i == len(text)) { return out }
         recur(i + 1, out + {[text[i]]: true})
     }
@@ -102,7 +102,7 @@ export val entityAt = fn(s:str, pos:num) {
         val hex = s[pos + 2] == "x" || s[pos + 2] == "X"
         val start = if (hex) { pos + 3 } else { pos + 2 }
         val most = if (hex) { 6 } else { 7 }
-        val digits = fn(i:num, value:num):list {
+        val digits = fn(i:num, value:num):[num, num] {
             if (i < n && i - start < most) {
                 val d = if (hex) { hexValue(s[i]) } else if (isDigit(s[i])) { ord(s[i]) - 48 } else { -1 }
                 if (d >= 0) { return recur(i + 1, value * (if (hex) { 16 } else { 10 }) + d) }
@@ -372,7 +372,7 @@ val isHostChar = fn(c:str):bool { isAlnum(c) || (c >= FIRST_NON_ASCII && !isWhit
 // characters, and, when `needPeriod`, at least one period.
 val domainEnd = fn(s:str, start:num, needPeriod:bool):num {
     val n = len(s)
-    val go = fn(i:num, periods:num, underscoresBefore:num, underscores:num):list {
+    val go = fn(i:num, periods:num, underscoresBefore:num, underscores:num):[num, num, num] {
         if (i < n && i - start <= 253) {
             val c = s[i]
             if (c == "_") { return recur(i + 1, periods, underscoresBefore, underscores + 1) }
@@ -388,7 +388,7 @@ val domainEnd = fn(s:str, start:num, needPeriod:bool):num {
 // Where an extended autolink that runs from `start` to `end` really ends:
 // without trailing punctuation, an unmatched `)`, or an entity-like `&x;`.
 val trimAutolink = fn(s:str, start:num, end:num):num {
-    val count = fn(i:num, opening:num, closing:num):list {
+    val count = fn(i:num, opening:num, closing:num):[num, num] {
         if (i >= end) { return [opening, closing] }
         recur(i + 1, opening + (if (s[i] == "(") { 1 } else { 0 }), closing + (if (s[i] == ")") { 1 } else { 0 }))
     }
@@ -1023,7 +1023,7 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
 
     // The nodes of the list from `id`, with adjacent text joined and, outside
     // links, its extended autolinks found.
-    val build = fn(id:num, depth:num, inLink:bool):list {
+    val build = fn(id:num, depth:num, inLink:bool):list<map> {
         if (depth > maxDepth) {
             throw Error {
                 type: "markdown.limit",
@@ -1031,16 +1031,18 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
                 data: {limit: "depth", max: maxDepth},
             }
         }
-        val flush = fn(out:list, pending:str):list {
+        val flush = fn(out:list<map>, pending:str):list<map> {
             if (pending == "") { out } else if (inLink) { out :+ {type: "text", text: pending} } else { out + linkify(pending) }
         }
-        val go = fn(i:num, out:list, pending:str):list {
+        val go = fn(i:num, out:list<map>, pending:str):list<map> {
             if (i < 0) { return flush(out, pending) }
             val node = nodes[i]
             val next = nextOf[i] ?? -1
             if (node.type == "text") { return recur(next, out, pending + node.text) }
             val flushed = flush(out, pending)
-            val built = if (node.label != nil) {
+            // A map, said once here, so the list it joins stays proven and
+            // is not walked again at each `recur`.
+            val built:map = if (node.label != nil) {
                 {type: node.type, url: node.url, title: node.title, children: [{type: "text", text: node.label}]}
             } else if (CONTAINER_INLINES[node.type] == true) {
                 val kids = node.kids
@@ -1073,13 +1075,13 @@ val mayLink = fn(text:str):bool {
 }
 
 // `text` as text and the extended autolinks in it.
-val linkify = fn(text:str):list {
+val linkify = fn(text:str):list<map> {
     if (!mayLink(text)) { return [{type: "text", text: text}] }
     val data = toBytes(text)
     val starts = if (len(data) == len(text)) { candidateStarts(text, data) } else { nil }
     // Tries each position in `starts` from index `k`, or every position when
     // there is no list.
-    val go = fn(i:num, k:num, start:num, out:list):list {
+    val go = fn(i:num, k:num, start:num, out:list<map>):list<map> {
         val at = if (starts == nil) { i } else if (k < len(starts)) { starts[k] } else { len(text) }
         if (at >= len(text)) { return if (start < len(text)) { out :+ {type: "text", text: text[start:]} } else { out } }
         if (at < start) { return recur(i, k + 1, start, out) }
@@ -1095,8 +1097,8 @@ val linkify = fn(text:str):list {
 // Where an extended autolink could start in ASCII `text`, ascending: at each
 // `www.`, at the scheme before each `://`, and at the local part, or the
 // `mailto:` or `xmpp:` before it, of each `@`.
-val candidateStarts = fn(text:str, data:bytes):list {
-    val all = fn(needle:bytes, from:num, out:list):list {
+val candidateStarts = fn(text:str, data:bytes):list<num> {
+    val all = fn(needle:bytes, from:num, out:list<num>):list<num> {
         val at = if (from < len(data)) { bytes.find(data, needle, from) } else { nil }
         if (at == nil) { out } else { recur(needle, at + 1, out :+ at) }
     }
@@ -1112,12 +1114,12 @@ val candidateStarts = fn(text:str, data:bytes):list {
         }
     }
     val localStart = fn(i:num):num { if (i > 0 && isLocalChar(text[i - 1])) { recur(i - 1) } else { i } }
-    val schemes = fn(found:list, i:num, out:list):list {
+    val schemes = fn(found:list<num>, i:num, out:list<num>):list<num> {
         if (i >= len(found)) { return out }
         val at = schemeStart(found[i])
         recur(found, i + 1, if (at >= 0) { out :+ at } else { out })
     }
-    val emails = fn(found:list, i:num, out:list):list {
+    val emails = fn(found:list<num>, i:num, out:list<num>):list<num> {
         if (i >= len(found)) { return out }
         val local = localStart(found[i])
         val prefixed = if (local >= 7 && text[local - 7:local] == "mailto:") {
@@ -1133,8 +1135,8 @@ val candidateStarts = fn(text:str, data:bytes):list {
 }
 
 // Two ascending lists of numbers as one.
-val merge = fn(a:list, b:list):list {
-    val go = fn(i:num, j:num, out:list):list {
+val merge = fn(a:list<num>, b:list<num>):list<num> {
+    val go = fn(i:num, j:num, out:list<num>):list<num> {
         if (i >= len(a)) { return out + b[j:] }
         if (j >= len(b)) { return out + a[i:] }
         if (a[i] <= b[j]) { recur(i + 1, j, out :+ a[i]) } else { recur(i, j + 1, out :+ b[j]) }
@@ -1144,8 +1146,8 @@ val merge = fn(a:list, b:list):list {
 
 // --- Helpers -----------------------------------------------------------------
 
-val splitLines = fn(text:str):list {
-    val go = fn(i:num, start:num, out:list):list {
+val splitLines = fn(text:str):list<str> {
+    val go = fn(i:num, start:num, out:list<str>):list<str> {
         if (i >= len(text)) { return out :+ text[start:] }
         if (text[i] == "\n") { return recur(i + 1, i + 1, out :+ text[start:i]) }
         recur(i + 1, start, out)

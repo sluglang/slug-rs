@@ -25,6 +25,7 @@
   passed from helper to helper is no longer walked again by each. A failed
   check still names the parameter, as the entry check did. `crawl-pages`
   and `crawl-crowd` run 12% faster.
+- `slug.text.markdown`'s helpers are typed, with the same output and speed.
 - `slug.text.mustache` is typed: `render` takes a template as `str|map`, its
   data as `any|nil`, and its partials as `map<str, str>`.
 - `slug.net.http` exports `Request` and `Options`, the types of a request

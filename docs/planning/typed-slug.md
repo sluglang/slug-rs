@@ -748,6 +748,17 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   and 1% without, on `crawl-pages`.
   - [ ] Check an append's new element, not the whole list: `out :+ x` with
     `out` proven `list<T>` and `x` unknown could check `x` alone.
+
+  Then `slug.text.markdown`: its row cells, split text, and lines are
+  `list<str>`, a block's children `list<num>`, its autolink starts
+  `list<num>`, its built nodes `list<map>`, its character sets `map<str,
+  bool>`, and its digit and count scans small tuples. Its options stay a
+  `map`: the module checks them itself and throws the `markdown.options`
+  errors its tests expect, which a typed parameter would replace with a
+  check failure. The one quadratic risk found was the pattern above again,
+  `flushed :+ built` with `built` possibly an unknown node, fixed with
+  `val built:map`. The suite and a 3000-paragraph document render in the
+  same time, with the same output, as untyped.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

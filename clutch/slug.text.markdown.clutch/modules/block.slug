@@ -80,11 +80,11 @@ val chopClosingHashes = fn(text:str):str {
 
 // The cells of a table row: split at each `|` that no backslash escapes,
 // without a leading or trailing pipe, trimmed, with `\|` made `|`.
-val splitRow = fn(text:str):list {
+val splitRow = fn(text:str):list<str> {
     val row = trim(text)
     val n = len(row)
     val start = if (n > 0 && row[0] == "|") { 1 } else { 0 }
-    val go = fn(i:num, cellStart:num, cells:list):list {
+    val go = fn(i:num, cellStart:num, cells:list<str>):list<str> {
         if (i >= n) {
             val last = row[cellStart:]
             return if (trim(last) == "" && cellStart > start) { cells } else { cells :+ last }
@@ -95,16 +95,16 @@ val splitRow = fn(text:str):list {
         recur(i + 1, cellStart, cells)
     }
     val cells = go(start, start, [])
-    val clean = fn(i:num, out:list):list {
+    val clean = fn(i:num, out:list<str>):list<str> {
         if (i >= len(cells)) { return out }
         recur(i + 1, out :+ join(splitOn(trim(cells[i]), "\\|"), "|"))
     }
     clean(0, [])
 }
 
-val splitOn = fn(text:str, separator:str):list {
+val splitOn = fn(text:str, separator:str):list<str> {
     val width = len(separator)
-    val go = fn(i:num, start:num, out:list):list {
+    val go = fn(i:num, start:num, out:list<str>):list<str> {
         if (i + width > len(text)) { return out :+ text[start:] }
         if (text[i:i + width] == separator) { return recur(i + width, i + width, out :+ text[start:i]) }
         recur(i + 1, start, out)
@@ -116,10 +116,10 @@ val splitOn = fn(text:str, separator:str):list {
 // one: cells of `-`s with optional colons at either end, and a `|`.
 val PIPE = toBytes("|")
 
-val delimiterRow = fn(text:str) {
+val delimiterRow = fn(text:str):list<str>|nil {
     if (bytes.find(toBytes(text), PIPE) == nil) { return nil }
     val cells = splitRow(text)
-    val go = fn(i:num, out:list) {
+    val go = fn(i:num, out:list<str>):list<str>|nil {
         if (i >= len(cells)) { return out }
         val cell = cells[i]
         val n = len(cell)
@@ -178,8 +178,8 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         lastChild = lastChild + {[parent]: child}
     }
 
-    val children = fn(id:num):list {
-        val go = fn(child, out:list):list {
+    val children = fn(id:num):list<num> {
+        val go = fn(child:num|nil, out:list<num>):list<num> {
             if (child == nil) { out } else { recur(nextSibling[child], out :+ child) }
         }
         go(firstChild[id], [])
@@ -423,7 +423,7 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
             return [1, {ordered: false, bullet: c, delimiter: "", start: 1}]
         }
         if (!isDigit(c)) { return nil }
-        val digits = fn(i:num, value:num):list {
+        val digits = fn(i:num, value:num):[num, num] {
             if (i - firstNonspace < 9 && isDigit(charAt(i))) { recur(i + 1, value * 10 + digitValue(charAt(i))) } else { [i, value] }
         }
         val [end, start] = digits(firstNonspace, 0)
@@ -693,7 +693,7 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         if (kind == "thematic") { return {type: kind} }
         if (kind == "table") { return {type: kind, aligns: b.aligns, head: b.head, rows: b.rows} }
         val kids = children(id)
-        val go = fn(i:num, out:list):list { if (i >= len(kids)) { out } else { recur(i + 1, out :+ build(kids[i])) } }
+        val go = fn(i:num, out:list<map>):list<map> { if (i >= len(kids)) { out } else { recur(i + 1, out :+ build(kids[i])) } }
         if (kind == "list") {
             return {type: kind, ordered: b.ordered, start: b.start, tight: b.tight, children: go(0, [])}
         }
