@@ -75,7 +75,7 @@ export val territoryOf = fn(cx:num, cy:num, depth:num):str {
     "" + floorDiv(cx, REGION) + "," + floorDiv(cy, REGION) + "," + bandOf(depth)
 }
 
-val parse = fn(key:str):list { map(string.split(key, ","), fn(t) { string.toInt(t) ?? 0 }) }
+val parse = fn(key:str):list<num> { map(string.split(key, ","), fn(t) { string.toInt(t) ?? 0 }) }
 
 // ---------------------------------------------------------------------------
 // The calendar.

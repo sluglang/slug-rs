@@ -329,7 +329,9 @@ error. `==` and `!=` compare strings by content.
 
 `+` concatenates two lists or two byte values into a new value of the same
 collection type, and merges two maps into a new unordered map. In a map merge,
-right-hand values overwrite matching left-hand keys. `map - key` returns a new
+right-hand values overwrite matching left-hand keys. A struct merged with a map,
+`struct + {k: v}`, is a copy of the struct with the map's string keys' fields
+replaced, as `copy` makes; a key the struct lacks is a runtime error. `map - key` returns a new
 map without that key, leaving the map unchanged when the key is absent. It also concatenates
 a string with any value, converting the right operand to its display form. The
 directional collection operators also

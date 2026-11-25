@@ -22,7 +22,7 @@ val math = import("slug.math")
 val string = import("slug.string")
 val {map, filter, reduce, range, all} = import("slug.std")
 
-val parse = fn(key:str):list { map(string.split(key, ","), fn(t) { string.toInt(t) ?? 0 }) }
+val parse = fn(key:str):list<num> { map(string.split(key, ","), fn(t) { string.toInt(t) ?? 0 }) }
 
 val capital = fn(text:str):str { string.upper(text[:1]) + text[1:] }
 

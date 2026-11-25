@@ -19,6 +19,11 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- `+` merges into a record type: `empire + {wars: wars}`, for `empire` of a
+  record type, sets fields as `copy` does, so a typed program keeps its map
+  records' idiom. Each key must be a field the type lists. At runtime,
+  `struct + {k: v}` is now a copy of the struct with those fields replaced,
+  where it was an error.
 - A call that names its function and gives every parameter positionally
   checks the arguments the checker cannot prove where it is, and enters past
   the function's entry checks, as a full `recur` does: a proven list or map

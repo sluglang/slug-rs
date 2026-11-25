@@ -19,6 +19,17 @@ val math = import("slug.math")
 val {filter, reduce} = import("slug.std")
 val string = import("slug.string")
 
+/**
+ * How many monsters of each kind a chunk holds, by name.
+ */
+export type Counts = map<str, num>
+
+/**
+ * What a visit leaves: the chunk's new counts, the name of the monster
+ * leaving it, if one is, and whether some loot turns up.
+ */
+export type Visit = {counts: Counts, leaving: str|nil, loot: bool}
+
 // Chances, in percent, at each visit.
 val BREED = 8
 val DIE_EACH = 2
@@ -40,7 +51,7 @@ export val capacity = fn(depth:num):num {
  * The monsters in `monsters` (with `kind`, an index into the monster table)
  * as counts by name.
  */
-export val tally = fn(monsters:list):map {
+export val tally = fn(monsters:list):Counts {
     reduce(monsters, {}, fn(acc, m) {
         val name = bestiary.monsters[m.kind].name
         acc + {[name]: (acc[name] ?? 0) + 1}
@@ -50,7 +61,7 @@ export val tally = fn(monsters:list):map {
 /**
  * How many monsters `counts` holds in all.
  */
-export val total = fn(counts:map):num { reduce(keys(counts), 0, fn(sum, k) { sum + counts[k] }) }
+export val total = fn(counts:Counts):num { reduce(keys(counts), 0, fn(sum, k) { sum + (counts[k] ?? 0) }) }
 
 val levelOf = fn(name:str):num {
     val found = filter(bestiary.monsters, fn(m) { m.name == name })
@@ -62,16 +73,16 @@ val solitary = fn(name:str):bool {
     len(filter(bestiary.monsters, fn(m) { m.name == name && len(filter(m.flags, fn(f) { f == "solitary" })) > 0 })) > 0
 }
 
-val set = fn(counts:map, name:str, n:num):map {
+val set = fn(counts:Counts, name:str, n:num):Counts {
     if (n <= 0) { counts - name } else { counts + {[name]: n} }
 }
 
 // One of the monsters in `counts`, each equally likely.
-val anyOne = fn(counts:map):str {
+val anyOne = fn(counts:Counts):str {
     val names = string.sort(keys(counts))
     val r = rng.below(total(counts))
     val go = fn(i:num, seen:num):str {
-        val next = seen + counts[names[i]]
+        val next = seen + (counts[names[i]] ?? 0)
         if (r < next) { names[i] } else { recur(i + 1, next) }
     }
     go(0, 0)
@@ -88,9 +99,9 @@ val anyOne = fn(counts:map):str {
  * leaving (gone from the counts already) or nil, and whether some loot
  * turns up.
  */
-export val visit = fn(counts:map, habitat:list, cap:num):map {
+export val visit = fn(counts:Counts, habitat:list<str>, cap:num):Visit {
     val home = fn(name:str):bool { len(filter(habitat, fn(h) { h == name })) > 0 }
-    val each = fn(names:list, i:num, now:map):map {
+    val each = fn(names:list<str>, i:num, now:Counts):Counts {
         if (i == len(names)) { return now }
         val name = names[i]
         val n = now[name] ?? 0
@@ -102,11 +113,11 @@ export val visit = fn(counts:map, habitat:list, cap:num):map {
     }
     val lived = each(string.sort(keys(counts)), 0, counts)
     // The crowded lose their weakest first.
-    val thin = fn(now:map):map {
+    val thin = fn(now:Counts):Counts {
         if (total(now) <= cap) { return now }
         val names = string.sort(keys(now))
         val weakest = reduce(names, names[0], fn(w, name) { if (levelOf(name) < levelOf(w)) { name } else { w } })
-        recur(set(now, weakest, now[weakest] - 1))
+        recur(set(now, weakest, (now[weakest] ?? 0) - 1))
     }
     val crowded = thin(lived)
     val arrived = if (total(crowded) == 0 && len(habitat) > 0 && rng.below(100) < WANDER_IN) {
@@ -116,7 +127,7 @@ export val visit = fn(counts:map, habitat:list, cap:num):map {
     }
     val leaving = if (total(arrived) > 0 && rng.below(100) < LEAVE) { anyOne(arrived) } else { nil }
     val final = match leaving {
-        name: str => set(arrived, name, arrived[name] - 1)
+        name: str => set(arrived, name, (arrived[name] ?? 0) - 1)
         _ => arrived
     }
     {counts: final, leaving: leaving, loot: rng.below(100) < LOOT}
@@ -126,10 +137,10 @@ export val visit = fn(counts:map, habitat:list, cap:num):map {
  * The monsters a chunk no one has seen yet starts with, as counts: on the
  * surface up to two, below from two to five, of the kinds in `habitat`.
  */
-export val initial = fn(depth:num, habitat:list):map {
+export val initial = fn(depth:num, habitat:list<str>):Counts {
     if (len(habitat) == 0) { return {} }
     val n = if (depth == 0) { rng.below(3) } else { 2 + rng.below(4) }
-    val go = fn(i:num, acc:map):map {
+    val go = fn(i:num, acc:Counts):Counts {
         if (i == n) { return acc }
         val name = habitat[rng.below(len(habitat))]
         recur(i + 1, acc + {[name]: (acc[name] ?? 0) + 1})

@@ -94,6 +94,24 @@ pub(super) fn add(left: Value, right: Value) -> Result<Value, (RuntimeErrorKind,
                 .into_shared(),
         )),
         (Value::Map(left), Value::Map(right)) => Ok(Value::Map(left.merge(&right))),
+        // A struct merged with a map of its field names is a copy with those
+        // fields replaced, as `copy` makes: a value of a record type may be a
+        // map or a struct, and `+` updates either.
+        (Value::Struct(value), Value::Map(fields)) => {
+            let mut names = Vec::with_capacity(fields.len());
+            let mut replacements = Vec::with_capacity(fields.len());
+            for (key, replacement) in fields.iter() {
+                let Value::Str(name) = key else {
+                    return Err((
+                        RuntimeErrorKind::Type,
+                        format!("cannot merge a struct with a {} key", key.type_name()),
+                    ));
+                };
+                names.push(name.as_ref().to_owned());
+                replacements.push(replacement.clone());
+            }
+            value.copy_fields(&names, &replacements).map(Value::Struct)
+        }
         (a, b) => {
             let (a, b) = numbers(a, b).map_err(|message| (RuntimeErrorKind::Type, message))?;
             finite_float(a + b).map_err(|message| (RuntimeErrorKind::Type, message))

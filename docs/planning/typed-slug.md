@@ -262,6 +262,8 @@ require.
   what is and is not checked.
 - [x] [No dynamic source type](../decisions/2026-11-22-no-dynamic-source-type.md).
 - [x] [Structural record types](../decisions/2026-11-22-structural-record-types.md).
+- [x] [Merging into a record type](../decisions/2026-11-24-record-merge.md):
+  `r + {k: v}` sets listed fields, as `copy` does; `struct + map` copies.
 - [x] [Payload-bearing and generic enum variants](../decisions/2026-11-22-payload-enum-variants.md),
   superseding named closed variants.
 - [x] [Recursive type aliases](../decisions/2026-11-22-recursive-type-aliases.md).

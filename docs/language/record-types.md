@@ -92,6 +92,22 @@ expected {name: str}, got {name: num}: field `name` is num, but must be str
 expected {name: str}, got map<str, str>: field `name` may be missing, which reads `nil`, but must be str
 ```
 
+## Merging
+
+`r + {k: v, ...}`, for `r` of a record type and a map literal of constant
+keys, sets fields, as `copy` does, whether `r` is a map or a struct: each key
+must be a field the type lists, and the result has the record type with each
+set field of its new value's type. So `empire + {wars: wars}` keeps an
+`Empire` an `Empire`. A key the type does not list is reported:
+
+```text
+`+` sets fields of {n: num}, which has no field `other`; a record merge sets only the fields its type lists
+```
+
+A merge with computed keys, `r + {[k]: v}`, and `r - k` are not allowed on a
+record type, since a struct cannot gain or lose a field. See the
+[decision](../decisions/2026-11-24-record-merge.md).
+
 ## Match constraints
 
 A record type is a runtime-checkable match constraint when its field types

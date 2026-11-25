@@ -4287,6 +4287,9 @@ fn add_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, Sour
     if matches!(left, Type::Str) {
         return Ok(Type::Str);
     }
+    if let Some(merged) = record_merge(left, right, span)? {
+        return Ok(merged);
+    }
     // Merging two map literals gives the right one's value at a shared key.
     if let (
         Type::Record {
@@ -4341,6 +4344,46 @@ fn add_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, Sour
         })),
         _ => invalid_operation("+", left, right, span),
     }
+}
+
+/// `record + {k: v, ...}`, for a record type, which may describe a map or a
+/// struct: it sets fields, as `copy` does, so each key must be one the type
+/// lists, and the result is the record type with each set field of its new
+/// value's type. `None` when `left` is no record type or `right` no literal
+/// of constant keys.
+fn record_merge(left: &Type, right: &Type, span: &SourceSpan) -> Result<Option<Type>, SourceError> {
+    let record = left.unfolded();
+    let (
+        Type::Record { fields, map: false },
+        Type::Record {
+            fields: set,
+            map: true,
+        },
+    ) = (&record, right)
+    else {
+        return Ok(None);
+    };
+    if let Some((name, _)) = set
+        .iter()
+        .find(|(name, _)| record.record_field(name).is_none())
+    {
+        return Err(SourceError::semantic(
+            SourceErrorCode::TypeMismatch,
+            format!(
+                "`+` sets fields of {left}, which has no field `{name}`; a record merge sets \
+                 only the fields its type lists"
+            ),
+            span.clone(),
+        ));
+    }
+    let merged = fields
+        .iter()
+        .map(|(name, value)| {
+            let value = right.record_field(name).unwrap_or(value).clone();
+            (name.clone(), value)
+        })
+        .collect();
+    Ok(Some(Type::record(merged, false)))
 }
 
 fn subtract_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, SourceError> {

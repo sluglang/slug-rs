@@ -3437,6 +3437,46 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
 }
 
 #[test]
+fn a_record_merge_sets_listed_fields_of_a_map_or_a_struct() {
+    let run = |source: &str| {
+        let path = fixture_path("record-merge");
+        fs::write(&path, source).expect("write record merge");
+        let output = slug().arg(&path).output().expect("run record merge");
+        fs::remove_file(&path).expect("remove record merge");
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // A map and a struct of the record type are each updated, keeping it.
+    let (stdout, stderr) = run("type E = {n: num, name: str}\n\
+         val bump = fn(e:E):E { e + {n: e.n + 1} }\n\
+         val P = struct { n: num, name: str, extra: bool }\n\
+         println(bump({n: 1, name: \"map\"}), bump(P { n: 1, name: \"struct\", extra: true }))\n");
+    assert_eq!(
+        stdout,
+        "{\"n\": 2, \"name\": \"map\"} struct {\"n\": 2, \"name\": \"struct\", \"extra\": true}\n",
+        "{stderr}"
+    );
+    // A key the type does not list could be a field a struct lacks.
+    let (_, stderr) = run("type E = {n: num}\nval f = fn(e:E) { e + {other: 1} }\n");
+    assert!(
+        stderr.contains(
+            "which has no field `other`; a record merge sets only the fields its type lists"
+        ),
+        "{stderr}"
+    );
+    // A struct's merge is checked against its schema, as `copy` is.
+    let (_, stderr) = run(
+        "val P = struct { n: num }\nval dyn = fn(x) { x }\nprintln(dyn(P { n: 1 }) + {n: \"s\"})\n",
+    );
+    assert!(
+        stderr.contains("expected num, got str: the field `n`"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_call_checks_what_it_cannot_prove_and_enters_past_the_checks() {
     // `add`'s calls in `go` are proven and enter past its entry check, a
     // walk of `out`; the call in `bad` checks its unproven argument where it

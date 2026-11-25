@@ -61,7 +61,7 @@ val fmix = fn(h:num):num {
  * coordinates; negative integers count modulo 2^32. Lists that differ give
  * unrelated seeds, even when they differ by one.
  */
-export val mix = fn(values:list):num {
+export val mix = fn(values:list<num>):num {
     val go = fn(i:num, h:num):num {
         if (i == len(values)) { h } else { recur(i + 1, fmix(h ^ fmix(values[i] & MASK))) }
     }
