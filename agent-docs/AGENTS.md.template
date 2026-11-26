@@ -1,0 +1,55 @@
+# Application instructions
+
+This project is written in Slug. Before writing Slug, read
+`slug-lang/README.md`, `slug-lang/getting-started.md`, and
+`slug-lang/language.md`. Consult `slug-lang/library.md` for library discovery,
+`slug-lang/api-reference.md` for core signatures, and `slug-lang/api-desktop.md`
+for optional desktop APIs. Verify unfamiliar APIs against the installed module
+sources.
+Use `slug-lang/troubleshooting.md` to diagnose setup, source, runtime, and test
+failures before changing the environment.
+
+## Project details
+
+Fill in these details when adopting this template:
+
+- Purpose and expected behavior:
+- Supported Slug revision and runtime location:
+- Required clutches and platform dependencies:
+- Source modules and their responsibilities:
+- Run command:
+- Test command:
+- Required configuration and sample values:
+
+For the conventional layout, start with `"$SLUG_HOME/target/release/slug" src/main.slug` and
+`"$SLUG_HOME/target/release/slug" tests/all.slug`; replace these if this application uses other entries.
+
+## Working rules
+
+- Use `$SLUG_HOME/target/release/slug` for all Slug commands. Do not download,
+  clone, install, build, rebuild, or substitute a Slug runtime or stage native
+  clutches without explicit user confirmation. If the configured installation
+  is missing or unusable, report the issue and ask how to proceed; do not fall
+  back to `PATH` or a debug build.
+- Inspect existing modules and tests before making changes.
+- Use supported Slug syntax and verified library signatures. Check the
+  implementation support matrix linked from `slug-lang/README.md` before
+  depending on an unfamiliar language feature.
+- Keep application logic in importable modules under `src/`. Export the
+  intended public surface and keep entrypoint input/output small.
+- Prefer `val`; use `var` for deliberate reassignment. Collection operations
+  produce new values, so retain their results.
+- Use `each`, collection transformations, or tail-position `recur` for
+  repetition. Use `defer` for resource cleanup and rethrow errors that a
+  handler only observes.
+- Give public functions useful type annotations; narrow nilable or union
+  values before using them. An annotation does not convert a value.
+- Add focused tests for changed behavior and run the project's documented
+  checks. Use `@test` for ordinary zero-argument test functions and
+  `@testWith(...)` for input/result examples beside functions; ensure the
+  test runner executes both tags. Report the exact commands and any checks
+  you could not run.
+- If a required capability is unavailable, explain the gap and choose an
+  explicit alternative within the task's scope. Do not invent APIs.
+- Keep project-specific guidance here or in project docs outside `slug-lang/`.
+  Update `slug-lang/` as an upstream package.

@@ -1,0 +1,22 @@
+val fs = import("slug.io.fs")
+
+val countFileLines = fn(path:str):num {
+    val file = fs.openRead(path)
+    defer { fs.close(file) }
+    val go = fn(total:num):num {
+        match fs.readLine(file) {
+            nil => total
+            _ => recur(total + 1)
+        }
+    }
+    go(0)
+}
+
+val main = fn() {
+    val path = cfg("example.lines.path", "assets/lines.txt")
+    val count = match path {
+        filePath:str => countFileLines(filePath)
+        _ => throw "example.lines.path must be a string"
+    }
+    println(count)
+}

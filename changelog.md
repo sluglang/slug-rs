@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added a draft copyable Slug application agent package under `agent-docs/`,
+  with an `AGENTS.md` template, language guidance, hand-maintained core and
+  desktop API references, runnable examples for entrypoints, modules, `@test`
+  and `@testWith` tests, configuration, and file cleanup, plus troubleshooting
+  tables. Agents use the existing
+  `$SLUG_HOME/target/release/slug`; runtime downloads, builds, substitutions,
+  and native clutch staging require explicit user confirmation.
+
 - `slug.fmt.json`'s `parse` and `parseStrict` return the new `Json` type,
   `nil|bool|num|str|list<Json>|map<str, Json>`, exported from the module.
   Code that uses a parsed document as a map or list must narrow it first,

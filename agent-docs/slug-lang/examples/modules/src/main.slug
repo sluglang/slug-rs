@@ -1,0 +1,5 @@
+val greeting = import("app.greeting")
+
+val main = fn() {
+    println(greeting.greet("Slug"))
+}

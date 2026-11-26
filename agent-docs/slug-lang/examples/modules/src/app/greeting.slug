@@ -1,0 +1,4 @@
+@testWith(["Slug"], "Hello, Slug!", [""], "Hello, !")
+export val greet = fn(name:str):str {
+    "Hello, $name!"
+}

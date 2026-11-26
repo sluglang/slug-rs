@@ -1,0 +1,8 @@
+val test = import("slug.test")
+val greeting = import("app.greeting")
+
+@test
+export val greetingTest = fn() {
+    test.assertEqual(greeting.greet("Slug"), "Hello, Slug!")
+    test.assertEqual(greeting.greet(""), "Hello, !")
+}

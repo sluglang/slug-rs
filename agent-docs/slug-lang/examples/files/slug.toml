@@ -1,0 +1,3 @@
+[example.lines]
+# Relative to the shell's working directory, not this configuration file.
+path = "assets/lines.txt"

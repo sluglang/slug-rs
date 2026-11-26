@@ -1,0 +1,5 @@
+package: 0.1.0-draft
+implementation-repository: https://github.com/sluglang/slug-rs
+implementation-baseline: 5f4d718984b4ce0d7b1bb509f10c9db581c7bd12
+prepared: 2026-11-25
+status: Draft; baseline identifies HEAD, not a released compatibility guarantee.
