@@ -4,7 +4,9 @@ This is a hand-maintained snapshot of common application APIs, read from the
 reference implementation's public declarations. See [VERSION](VERSION) for the
 source baseline, [desktop APIs](api-desktop.md) for files, networking, databases,
 and text rendering, and [library discovery](library.md) for other modules.
-Game, arcade, GPIO, and Markdown parser internals are outside this reference.
+The application runner below is an addition to that baseline; installations
+need `lib/slug/test/runner.slug` to use it. Game, arcade, GPIO, and Markdown
+parser internals are outside this reference.
 No generation or synchronization automation is included.
 
 Use the existing `$SLUG_HOME/target/release/slug`. Compare unfamiliar APIs with
@@ -237,6 +239,29 @@ value into `{threw: true, value}` or returns `{threw: false, value}`.
 no examples. Validate that shape in a runner. `check` and `runTest` return
 failure records instead of throwing; turn those into a failing test-process
 exit. Tags alone do not run tests. See [test wiring](getting-started.md#test-functions-with-test).
+
+## Application runner — `slug.test.runner`
+
+Installed source: `$SLUG_HOME/lib/slug/test/runner.slug`.
+
+```text
+run = fn(modules:list<str>, discover:fn<list, str>, verbose:bool = false):num
+```
+
+Pass module names and an application-defined callback
+`fn(name:str):list { describe(name) }`. Defining it in the test entry preserves
+relative resolution of sibling test files. Only exported declarations are
+discovered by default. The runner executes `@test` and `@testWith` tags,
+continues after failures, and reports totals. Assertion failures and wrong
+results count as failures; unexpected throws count as errors, including
+`throw nil`. Discovery failures, malformed tags, and non-function tagged
+values are errors too. Setup/tag errors do not count as executed tests.
+
+Module names run once in supplied order, declarations in metadata order, and
+examples in tag order. `verbose` prints passing tests as well as failures.
+The result is 0 for success and 1 for any failure/error or no tests; return it
+from the application's `main`. No filesystem scanning or legacy argument
+parser is involved. The separate `slug test` tool still runs clutch suites.
 
 ## Channels — `slug.channel`
 

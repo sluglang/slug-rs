@@ -23,6 +23,7 @@ details unless explicitly exported.
 | Strings and bytes | `slug.string`, `slug.bytes` | `clutch/slug.core.clutch/modules/string.slug`, `bytes.slug` |
 | JSON and TOML | `slug.fmt.json`, `slug.fmt.toml` | `clutch/slug.core.clutch/modules/json.slug`, `toml.slug` |
 | Assertions | `slug.test` | `clutch/slug.core.clutch/modules/test.slug` |
+| Application test runner | `slug.test.runner` | `lib/slug/test/runner.slug` |
 | Time and random values | `slug.time`, `slug.random` | `clutch/slug.core.clutch/modules/time.slug`, `random.slug` |
 | Input and signals | `slug.io.stdin`, `slug.os.signal` | `clutch/slug.core.clutch/modules/stdin.slug`, `signal.slug` |
 | Channels and tasks | `slug.channel` | `lib/slug/channel.slug` |

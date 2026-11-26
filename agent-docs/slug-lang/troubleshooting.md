@@ -45,7 +45,7 @@ cannot support the task, report what is missing and ask how to proceed.
 
 | Symptom | What to check | Next step |
 |---|---|---|
-| `@test` or `@testWith` never runs | Tags are metadata; imports alone do not execute tests. Check which modules and declarations the test entry discovers. | Wire `describe`, `test.runTest`, and `test.check` into the application test entry, as in the [module example](examples/README.md). |
+| `@test` or `@testWith` never runs | Tags are metadata; imports alone do not execute tests. Check which modules and declarations the test entry discovers. | Use `slug.test.runner` with an application-defined discovery callback, as in the [module example](examples/README.md). |
 | A tagged test is absent from `describe` | By default, only exported declarations are returned. | Export the intended test functions and inspect the correct test module. Do not add unexported-inspection permission just to work around discovery. |
 | A `@test` function fails without throwing | Check whether its final expression returns `false`. | Make the boolean expectation explicit with an assertion. A `@test` must take zero arguments and pass without throwing or returning `false`. |
 | A `@testWith` example is skipped or fails unexpectedly | Check complete argument-list/result pairs, positional argument order, and the expected return value. | Use `[]` for zero arguments and keep every pair complete. `test.examples` produces no examples for an odd tag argument count; validate tag shape rather than counting that as a pass. |

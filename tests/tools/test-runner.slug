@@ -1,0 +1,51 @@
+// Regression checks intentionally run failing suites and assert their statuses.
+val runner = import("slug.test.runner")
+val test = import("slug.test")
+
+var continued = 0
+var discoveries = 0
+
+val declaration = fn(name:str, value:any|nil, tag:str, arguments:list):map {
+    {name: name, value: value, tags: [{name: tag, arguments: arguments}]}
+}
+
+val discover = fn(name:str):list {
+    discoveries = discoveries + 1
+    match name {
+        "passing" => [
+            declaration("unit", fn() { true }, "test", []),
+            declaration("identity", fn(value:any|nil) { value }, "testWith", [[7], 7, [false], false]),
+        ]
+        "mixed" => [
+            declaration("false", fn() { false }, "test", []),
+            declaration("assertion", fn() { test.assertEqual(1, 2) }, "test", []),
+            declaration("nilThrow", fn() { throw nil }, "test", []),
+            declaration("error", fn() { throw "unexpected" }, "test", []),
+            declaration("example", fn() { 1 }, "testWith", [[], 2]),
+            declaration("afterFailures", fn() { continued = continued + 1; nil }, "test", []),
+        ]
+        "malformed" => [
+            declaration("notCallable", 1, "test", []),
+            declaration("tagArguments", fn() { true }, "test", [1]),
+            declaration("emptyPairs", fn() { true }, "testWith", []),
+            declaration("oddPairs", fn() { true }, "testWith", [[]]),
+            declaration("notAList", fn() { true }, "testWith", [1, true]),
+            declaration("requiresArgument", fn(value:any|nil) { value }, "test", []),
+        ]
+        "broken" => throw "discovery failed"
+        "empty" => []
+        _ => throw "unknown regression module"
+    }
+}
+
+val main = fn() {
+    test.assertEqual(runner.run(["passing", "passing"], discover, true), 0)
+    test.assertEqual(discoveries, 1, "duplicate module names must not run twice")
+    test.assertEqual(runner.run(["mixed", "passing"], discover), 1)
+    test.assertEqual(continued, 1, "a failure must not stop later tests")
+    test.assertEqual(runner.run(["malformed", "passing"], discover), 1)
+    test.assertEqual(runner.run(["broken", "passing"], discover), 1)
+    test.assertEqual(runner.run(["empty"], discover), 1)
+    test.assertEqual(runner.run([], discover), 1)
+    println("runner regression checks passed")
+}

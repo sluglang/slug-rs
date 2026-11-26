@@ -5,6 +5,42 @@ import that module from a test program, and run many assertions in one
 `slug` run. Each test then costs a function call rather than a process, and
 one run reports every failing test.
 
+## Use the installed application runner
+
+`lib/slug/test/runner.slug` supplies `slug.test.runner`. Tag ordinary
+zero-argument test functions with `@test` and input/result examples with
+`@testWith([arguments...], expected, ...)`. Export declarations that the test
+entry should discover, then put this entry in `tests/all.slug`:
+
+```slug
+val runner = import("slug.test.runner")
+
+val main = fn():num {
+    runner.run(["app.logic", "checks"], fn(name:str):list { describe(name) })
+}
+```
+
+Here `app.logic` names `src/app/logic.slug`, and `checks` names
+`tests/checks.slug`. Define the discovery callback in the application entry
+so relative module names resolve there rather than beside the installed
+runner. Only exported declarations are described by default. No directory
+scan or unexported-inspection permission is required.
+
+Run with `"$SLUG_HOME/target/release/slug" tests/all.slug`. The runner executes
+both tags, continues after failures, and prints separate pass, failure, and
+unexpected-error counts. Each example counts as a test. Discovery and tag
+errors are reported without counting as executed tests. Empty suites and
+malformed tags fail. Duplicate module names run once. Passing `true` as the
+third argument also prints passing tests.
+
+Return the runner's 0/1 result from `main` so failures become a failing process
+exit. Module initialization failures are caught when discovery occurs in the
+callback, allowing other named modules to run. Tests execute in one process
+and share module state; the runner does not reset that state between tests.
+
+The separate installed `slug test` tool remains the runner for clutch suites.
+The manual patterns below explain how assertions and custom runners work.
+
 ## Keep the logic in a module
 
 The entry program handles only input and output: options, files, the
@@ -48,7 +84,7 @@ export val commands = fn(game:map, keys:list):map {
 
 ## Write the tests as a program
 
-`slug.test` (see `slug-docs/library/core/test.slug`) has `assertEqual`,
+`slug.test` (see [its source](../../clutch/slug.core.clutch/modules/test.slug)) has `assertEqual`,
 `assertTrue`, `assertThrows`, and the rest; a failed assertion throws an
 error holding the expected and actual values. A test program imports the
 module, builds the states it needs (a new game, or a snapshot parsed from

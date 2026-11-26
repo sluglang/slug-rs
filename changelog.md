@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added the installed `slug.test.runner` application runner for `@test` and
+  `@testWith`: it continues after failures, reports failures and errors with
+  totals, rejects empty suites and malformed tags, and returns a process status
+  for the application test entry. The clutch `slug test` tool is unchanged.
+
 - Added a draft copyable Slug application agent package under `agent-docs/`,
   with an `AGENTS.md` template, language guidance, hand-maintained core and
   desktop API references, runnable examples for entrypoints, modules, `@test`

@@ -90,12 +90,25 @@ export val greetingTest = fn() {
 ```
 
 The [module example](examples/README.md) puts these functions in
-`tests/checks.slug`. Its entry program discovers their tags with
-`describe("checks")` and runs each tagged function with
-`test.runTest(declaration.value)`. `runTest` returns `nil` on success or a
-failure record; the entry program asserts success so a failure exits nonzero.
-Exporting the tests makes them discoverable without permission to inspect
-unexported declarations.
+`tests/checks.slug`. Use the installed `slug.test.runner` from a small test
+entry, such as `tests/all.slug`:
+
+```slug
+val runner = import("slug.test.runner")
+
+val main = fn():num {
+    runner.run(["app.greeting", "checks"], fn(name:str):list { describe(name) })
+}
+```
+
+Keep the discovery callback in the application entry: `describe` resolves
+module names from the callback's defining module, so `checks` can resolve to
+`tests/checks.slug`. Export tests for discovery without unexported-inspection
+permission. The runner continues after failures, reports assertion failures
+and unexpected errors separately, prints totals, and returns 0 or 1. Return
+its status from `main`; ignoring it can make a failing suite exit successfully.
+Pass `true` as the third argument to also print passing tests. Empty suites
+and malformed tags fail. There is no directory scan: list the modules to test.
 
 ### Examples beside functions with `@testWith`
 
@@ -112,14 +125,10 @@ calls the function with each argument list and compares its result with the
 expected value. A thrown error also fails that example.
 
 Both `@test` and `@testWith` are metadata: importing a module or running its
-source does not execute tagged tests automatically. For input/result examples, use
-`describe("app.greeting")` to find exported declarations and their tags,
-`test.examples(tag)` to read the pairs, and
-`test.check(declaration.value, example.arguments, example.expected)` to execute
-each example. `check` returns `nil` on success or a failure record; the test
-program must turn a failure into a failing exit status. The
-[module example](examples/README.md) includes this wiring alongside ordinary
-assertions. No unexported-inspection permission is needed for exported functions.
+source does not execute tagged tests automatically. The installed runner above
+discovers and runs both. If writing custom tooling, `test.examples` reads
+argument/result pairs and `test.check` executes one; `check` returns `nil` or
+a failure record rather than failing the process itself.
 
 For installed clutch suites, the `slug test` runner discovers `@testWith`
 examples and zero-argument `@test` functions. A `@test` function passes when

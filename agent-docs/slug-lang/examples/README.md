@@ -23,13 +23,15 @@ Expected output: `Hello, Slug!`.
 "$SLUG_HOME/target/release/slug" modules/tests/all.slug
 ```
 
-Expected output: `Hello, Slug!`, then `all tests passed` from the test program.
+Expected output: `Hello, Slug!`, then
+`Tests run: 3, Passed: 3, Failures: 0, Errors: 0` from the test program.
 The greeting function carries `@testWith` input/result pairs, and
 `modules/tests/checks.slug` contains an ordinary `@test` function with
-assertions. The test entry discovers exported declarations with `describe`,
-runs `@test` functions with `test.runTest`, and runs `@testWith` examples with
-`test.examples` and `test.check`. The first failure stops the run. Both tags
-need this runner wiring; imports alone do not execute them.
+assertions. The test entry imports the installed `slug.test.runner` and supplies
+a discovery callback using `describe`. It runs all tests even after failures,
+prints totals, and returns a failing exit status for failures, errors, malformed
+tags, or an empty suite. Both tags need runner wiring; imports alone do not
+execute them. The installation must contain `lib/slug/test/runner.slug`.
 
 ## Configuration and file cleanup
 

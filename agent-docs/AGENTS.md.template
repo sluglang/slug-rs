@@ -47,7 +47,8 @@ For the conventional layout, start with `"$SLUG_HOME/target/release/slug" src/ma
 - Add focused tests for changed behavior and run the project's documented
   checks. Use `@test` for ordinary zero-argument test functions and
   `@testWith(...)` for input/result examples beside functions; ensure the
-  test runner executes both tags. Report the exact commands and any checks
+  test entry uses the installed `slug.test.runner` and returns its status.
+  Report the exact commands and any checks
   you could not run.
 - If a required capability is unavailable, explain the gap and choose an
   explicit alternative within the task's scope. Do not invent APIs.

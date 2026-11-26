@@ -1,0 +1,132 @@
+/**
+ * Application test runner for @test and @testWith declarations.
+ *
+ * Import slug.test.runner from an application test entry. Pass module names
+ * and a discovery callback defined in that entry, so describe resolves test
+ * modules relative to the application rather than this installed library.
+ */
+
+val test = import("slug.test")
+val {each} = import("slug.std")
+
+val Outcome = struct {
+    kind:str,
+    msg:str = "",
+    expected:any|nil = nil,
+    actual:any|nil = nil,
+    error:any|nil = nil,
+}
+
+val invoke = fn(work:fn, arguments:list, expected:any|nil, example:bool):struct<Outcome> {
+    val result = test.attempt(fn() { work(...arguments) })
+    if (result.threw) {
+        match result.value {
+            {type: "test.failure", msg: message, data: {expected: wanted, actual: found}} => {
+                Outcome {kind: "fail", msg: "$message", expected: wanted, actual: found}
+            }
+            error => Outcome {kind: "error", msg: "test threw", error: error}
+        }
+    } else if (example && result.value != expected) {
+        Outcome {kind: "fail", msg: "wrong result", expected: expected, actual: result.value}
+    } else if (!example && result.value == false) {
+        Outcome {kind: "fail", msg: "returned false", expected: true, actual: false}
+    } else {
+        Outcome {kind: "pass"}
+    }
+}
+
+/**
+ * Runs all tagged declarations in the named modules, continuing after failures.
+ *
+ * discover(name) returns describe(name)'s declarations. Only exported tests
+ * are visible by default. Names run once, in supplied order; declarations and
+ * examples run in metadata order. verbose also prints passing tests.
+ *
+ * Prints failures, unexpected errors, and totals. Returns 0 on success or 1
+ * for a failed test, a discovery/tag error, or a suite with no tests. Return
+ * this value from main to make it the process exit status.
+ */
+export val run = fn(modules:list<str>, discover:fn<list, str>, verbose:bool = false):num {
+    var passed = 0
+    var failed = 0
+    var errors = 0
+    var executed = 0
+    var seen:map<str, bool> = {}
+
+    val report = fn(label:str, outcome:struct<Outcome>, arguments:list|nil, ran:bool):nil {
+        if (ran) { executed = executed + 1 }
+        if (outcome.kind == "pass") {
+            passed = passed + 1
+            if (verbose) { println("PASS $label") }
+        } else {
+            if (outcome.kind == "fail") {
+                failed = failed + 1
+                println("FAIL $label: ${outcome.msg}")
+                if (arguments != nil) { println("  arguments: $arguments") }
+                println("  expected:  ${outcome.expected}")
+                println("  actual:    ${outcome.actual}")
+            } else {
+                errors = errors + 1
+                println("ERROR $label: ${outcome.msg}")
+                if (arguments != nil) { println("  arguments: $arguments") }
+                if (outcome.error != nil || outcome.msg == "test threw") {
+                    println("  error:     ${outcome.error}")
+                }
+            }
+        }
+        nil
+    }
+
+    val runDeclaration = fn(moduleName:str, declaration:map):nil {
+        val label = moduleName + "." + declaration.name
+        each(declaration.tags, fn(tag) {
+            if (tag.name != "test" && tag.name != "testWith") { return nil }
+            match declaration.value {
+                work:fn => {
+                    if (tag.name == "test") {
+                        if (len(tag.arguments) != 0) {
+                            report(label, Outcome {kind: "error", msg: "@test takes no tag arguments"}, nil, false)
+                        } else {
+                            report(label, invoke(work, [], nil, false), nil, true)
+                        }
+                    } else if (len(tag.arguments) == 0 || len(tag.arguments) % 2 != 0) {
+                        report(label, Outcome {kind: "error", msg: "@testWith needs argument-list/result pairs"}, nil, false)
+                    } else {
+                        val examples = test.examples(tag)
+                        val go = fn(i:num):nil {
+                            if (i < len(examples)) {
+                                val example = examples[i]
+                                val exampleLabel = label + ", example ${i + 1}"
+                                match example.arguments {
+                                    arguments:list => report(exampleLabel, invoke(work, arguments, example.expected, true), arguments, true)
+                                    invalid => report(exampleLabel, Outcome {kind: "error", msg: "example arguments must be a list", error: invalid}, nil, false)
+                                }
+                                recur(i + 1)
+                            }
+                        }
+                        go(0)
+                    }
+                }
+                _ => report(label, Outcome {kind: "error", msg: "test tag requires a function"}, nil, false)
+            }
+            nil
+        })
+    }
+
+    each(modules, fn(moduleName:str) {
+        if (seen[moduleName] == true) { return nil }
+        seen = seen + {[moduleName]: true}
+        val discovery = test.attempt(fn() { discover(moduleName) })
+        if (discovery.threw) {
+            report(moduleName, Outcome {kind: "error", msg: "cannot discover module", error: discovery.value}, nil, false)
+        } else {
+            each(discovery.value, fn(declaration) { runDeclaration(moduleName, declaration) })
+        }
+        nil
+    })
+    if (executed == 0 && errors == 0) {
+        report("suite", Outcome {kind: "error", msg: "no tests discovered"}, nil, false)
+    }
+    println("Tests run: $executed, Passed: $passed, Failures: $failed, Errors: $errors")
+    if (failed > 0 || errors > 0) { 1 } else { 0 }
+}

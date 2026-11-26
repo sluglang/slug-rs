@@ -1,21 +1,5 @@
-val test = import("slug.test")
-val {each} = import("slug.std")
+val runner = import("slug.test.runner")
 
-val main = fn() {
-    each(["app.greeting", "checks"], fn(moduleName) {
-        each(describe(moduleName), fn(declaration) {
-            each(declaration.tags, fn(tag) {
-                if (tag.name == "test") {
-                    val failure = test.runTest(declaration.value)
-                    test.assertEqual(failure, nil, "tagged test failed")
-                } else if (tag.name == "testWith") {
-                    each(test.examples(tag), fn(example) {
-                        val failure = test.check(declaration.value, example.arguments, example.expected)
-                        test.assertEqual(failure, nil, "tagged example failed")
-                    })
-                }
-            })
-        })
-    })
-    println("all tests passed")
+val main = fn():num {
+    runner.run(["app.greeting", "checks"], fn(name:str):list { describe(name) })
 }
