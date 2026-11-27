@@ -3437,6 +3437,35 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
 }
 
 #[test]
+fn an_alias_names_an_imported_type_and_a_checked_var_stays_proven() {
+    // An alias may name an imported module's type; a `var` assigned an
+    // unproven value is checked there, and of its type after.
+    let path = fixture_path("alias-import");
+    fs::write(
+        &path,
+        "val test = import(\"slug.test\")\n\
+         type Outcome = {failure: test.Failure|nil, n: num}\n\
+         var current:Outcome = {failure: nil, n: 0}\n\
+         val dyn = fn(x) { x }\n\
+         val bump = fn() {\n\
+           current = dyn({failure: nil, n: current.n + 1})\n\
+           current = current copy {n: current.n + 1}\n\
+         }\n\
+         bump()\n\
+         println(current.n)\n",
+    )
+    .expect("write alias import");
+    let output = slug().arg(&path).output().expect("run alias import");
+    fs::remove_file(&path).expect("remove alias import");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "2\n",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn a_record_merge_sets_listed_fields_of_a_map_or_a_struct() {
     let run = |source: &str| {
         let path = fixture_path("record-merge");

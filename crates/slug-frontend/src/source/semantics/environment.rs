@@ -100,6 +100,21 @@ pub(super) fn foreign_resource_signature(
     )
 }
 
+/// A binding's function, as far as a call entering past its checks cares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum FunctionKind {
+    /// Anything else: a value, or a function as its declaration gives it.
+    #[default]
+    Ordinary,
+    /// A function declared later in its block or module, by the signature
+    /// its annotations give, every parameter annotated: a call before the
+    /// declaration calls what that signature describes.
+    Predeclared,
+    /// A `foreign` function, which the host calls and whose arguments it
+    /// checks itself, answering with its own errors.
+    Foreign,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct SemanticBinding {
     pub(super) value_type: Type,
@@ -123,10 +138,9 @@ pub(super) struct SemanticBinding {
     /// An implicit builtin, such as `close`, which a declaration of the same
     /// name replaces rather than overloads, as it does at runtime.
     pub(super) implicit: bool,
-    /// A function declared later in its block or module, by the signature
-    /// its annotations give, every parameter annotated: a call before the
-    /// declaration calls what that signature describes.
-    pub(super) predeclared: bool,
+    /// What kind of function, if any, the binding is, as a proven call
+    /// needs to know.
+    pub(super) function_kind: FunctionKind,
     /// For an immutable binding, the narrowed types of string-keyed members a
     /// nil test established on this path, such as `r.error` after
     /// `r.error != nil`. The binding never changes, so neither do they.
@@ -199,7 +213,7 @@ impl SemanticBinding {
             declared: None,
             nil_start: None,
             implicit: false,
-            predeclared: false,
+            function_kind: FunctionKind::Ordinary,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -219,7 +233,7 @@ impl SemanticBinding {
             declared: None,
             nil_start: None,
             implicit: false,
-            predeclared: false,
+            function_kind: FunctionKind::Ordinary,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -243,7 +257,7 @@ impl SemanticBinding {
             declared: None,
             nil_start: None,
             implicit: false,
-            predeclared: false,
+            function_kind: FunctionKind::Ordinary,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -640,7 +654,8 @@ impl Environment {
                 fields: fields
                     .iter()
                     .map(|(name, field)| (name.clone(), part(field)))
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 map: *map,
             },
             other => other.clone(),

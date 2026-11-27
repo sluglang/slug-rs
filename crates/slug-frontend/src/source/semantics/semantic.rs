@@ -159,8 +159,10 @@ pub(super) enum Type {
     /// field's type, whatever other keys or fields it has. Fields are sorted
     /// by name; build one with [`Type::record`]. With `map`, the type of a
     /// map literal: a map whose keys are exactly these strings.
+    /// The fields are shared, so a large record type, as a program's state,
+    /// clones in constant time.
     Record {
-        fields: Vec<(String, Type)>,
+        fields: std::rc::Rc<Vec<(String, Type)>>,
         map: bool,
     },
     Generic(usize),
@@ -417,7 +419,8 @@ fn replace_recursion(body: &Type, name: &str, replacement: &Type) -> Type {
             fields: fields
                 .iter()
                 .map(|(field, value)| (field.clone(), recur(value)))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             map: *map,
         },
         Type::Struct(identity, arguments) => {
@@ -834,7 +837,10 @@ impl Type {
     /// A record type of these fields, sorted by name.
     pub(super) fn record(mut fields: Vec<(String, Self)>, map: bool) -> Self {
         fields.sort_by(|(left, _), (right, _)| left.cmp(right));
-        Self::Record { fields, map }
+        Self::Record {
+            fields: std::rc::Rc::new(fields),
+            map,
+        }
     }
 
     /// A map literal's record type as the map type it also is, of string keys
@@ -970,10 +976,11 @@ impl Type {
                 Self::Tuple(elements.into_iter().map(Self::widen_unknown).collect())
             }
             Self::Record { fields, map } => Self::Record {
-                fields: fields
+                fields: std::rc::Rc::unwrap_or_clone(fields)
                     .into_iter()
                     .map(|(name, value)| (name, value.widen_unknown()))
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 map,
             },
             Self::Union(members) => Self::union(members.into_iter().map(Self::widen_unknown)),
@@ -1837,15 +1844,18 @@ pub(super) fn resolve_schema_references(
 
 /// A record type of `fields`, each with its type resolved by `resolve`.
 fn map_record_fields(
-    fields: Vec<(String, Type)>,
+    fields: std::rc::Rc<Vec<(String, Type)>>,
     map: bool,
     resolve: impl Fn(Type) -> Result<Type, SourceError>,
 ) -> Result<Type, SourceError> {
-    fields
+    std::rc::Rc::unwrap_or_clone(fields)
         .into_iter()
         .map(|(name, value)| Ok((name, resolve(value)?)))
         .collect::<Result<Vec<_>, _>>()
-        .map(|fields| Type::Record { fields, map })
+        .map(|fields| Type::Record {
+            fields: fields.into(),
+            map,
+        })
 }
 
 fn resolve_name(name: &str, type_parameters: &[String]) -> Type {
@@ -2068,7 +2078,8 @@ pub(super) fn substitute(value_type: &Type, substitutions: &HashMap<usize, Type>
             fields: fields
                 .iter()
                 .map(|(name, value)| (name.clone(), substitute(value, substitutions)))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             map: *map,
         },
         Type::Struct(identity, arguments) => Type::Struct(

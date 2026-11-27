@@ -85,7 +85,7 @@ val draw = fn(xs:list, weigh:fn):map|nil {
  * Sootfang Warren in the summer of year 53, after holding out six times
  * since the autumn of year 46. They say its cellars were never emptied."
  */
-export val legend = fn(seed:num, e:map, event:map):str {
+export val legend = fn(seed:num, e:empire.Empire, event:map):str {
     val when = empire.whenOf(event)
     val name = event.name ?? "A settlement"
     val by = empire.factionName(e, event.by)
@@ -109,7 +109,7 @@ export val legend = fn(seed:num, e:map, event:map):str {
  * News heard at `here`: one of the chronicle's events, the nearer and the
  * later the likelier, as "They say the Hollow Host took the land ...".
  */
-export val news = fn(seed:num, e:map, here:str):str|nil {
+export val news = fn(seed:num, e:empire.Empire, here:str):str|nil {
     match heard(seed, e, here) {
         h: str => "They say " + h
         _ => nil
@@ -117,7 +117,7 @@ export val news = fn(seed:num, e:map, here:str):str|nil {
 }
 
 // One of the chronicle's events heard at `here`, as a clause.
-val heard = fn(seed:num, e:map, here:str):str|nil {
+val heard = fn(seed:num, e:empire.Empire, here:str):str|nil {
     match draw(e.chronicle, fn(event) { newsWeight(event, here, e.step) }) {
         event: map => empire.clause(seed, e, event)
         _ => nil
@@ -128,7 +128,7 @@ val heard = fn(seed:num, e:map, here:str):str|nil {
  * A legend told at `here`: one of the annals' great events, the nearer the
  * likelier.
  */
-export val legendNear = fn(seed:num, e:map, here:str):str|nil {
+export val legendNear = fn(seed:num, e:empire.Empire, here:str):str|nil {
     match draw(e.annals ?? [], fn(event) { legendWeight(event, here) }) {
         event: map => legend(seed, e, event)
         _ => nil
@@ -139,13 +139,14 @@ export val legendNear = fn(seed:num, e:map, here:str):str|nil {
  * What an innkeeper at `here` has heard: a legend a third of the time,
  * otherwise news, or whichever there is.
  */
-export val rumour = fn(seed:num, e:map, here:str):str|nil {
+export val rumour = fn(seed:num, e:empire.Empire, here:str):str|nil {
     val old = if (rng.below(3) == 0) { legendNear(seed, e, here) } else { nil }
     old ?? news(seed, e, here) ?? legendNear(seed, e, here)
 }
 
 // Whether faction `f` is of a people from below.
-val fromBelow = fn(f:map):bool {
+val fromBelow = fn(f:empire.Faction|nil):bool {
+    if (f == nil) { return false }
     match empire.PEOPLES[f.people] {
         p: map => p.side == "below"
         _ => false
@@ -156,19 +157,19 @@ val fromBelow = fn(f:map):bool {
  * What a guard at `here` fears: the nearest land, within three, that a
  * faction from below holds.
  */
-export val threat = fn(seed:num, e:map, here:str):str|nil {
-    val near = filter(keys(e.holds), fn(k) { distance(k, here) <= 3 && fromBelow(e.factions[e.holds[k]]) })
+export val threat = fn(seed:num, e:empire.Empire, here:str):str|nil {
+    val near = filter(keys(e.holds), fn(k) { distance(k, here) <= 3 && fromBelow(empire.holder(e, k)) })
     if (len(near) == 0) { return nil }
     val k = reduce(near, near[0], fn(best, k) { if (distance(k, here) < distance(best, here)) { k } else { best } })
     val [kx, ky, _] = parse(k)
     val [hx, hy, _] = parse(here)
-    capital(e.factions[e.holds[k]].name) + " hold the land " + empire.placeName(seed, k) + ". "
+    capital(empire.factionName(e, e.holds[k])) + " hold the land " + empire.placeName(seed, k) + ". "
         + (if (kx == hx && ky == hy) { "They're right under our feet." } else { "That's where the trouble comes from." })
 }
 
 // The sieges in the annals of the settlement standing in `here`, if one
 // does.
-val siegesOf = fn(e:map, here:str):list {
+val siegesOf = fn(e:empire.Empire, here:str):list {
     match e.fixed[here] {
         name: str => filter(e.annals ?? [], fn(a) { a.kind == "siege" && a.name == name && !a.fell })
         _ => []
@@ -180,7 +181,7 @@ val siegesOf = fn(e:map, here:str):list {
  * walls: one of the sieges it held against, as "Our walls held against
  * the Gnash Pack twice, back in the spring of year 5."
  */
-export val ownWalls = fn(seed:num, e:map, here:str):str|nil {
+export val ownWalls = fn(seed:num, e:empire.Empire, here:str):str|nil {
     val sieges = siegesOf(e, here)
     if (len(sieges) == 0) { return nil }
     val s = sieges[rng.below(len(sieges))]
@@ -191,7 +192,7 @@ export val ownWalls = fn(seed:num, e:map, here:str):str|nil {
  * What a guard at `here` says of their holder's war, if it is in one: "We're
  * at war with the Gnash Pack, since the summer of year 30."
  */
-export val war = fn(seed:num, e:map, here:str):str|nil {
+export val war = fn(seed:num, e:empire.Empire, here:str):str|nil {
     match e.holds[here] {
         i: num => match empire.enemyOf(e, i) {
             foe: num => {
@@ -213,7 +214,7 @@ export val war = fn(seed:num, e:map, here:str):str|nil {
  * Edda Thorne of the Silver Concord of Ashmere rules us, and taxes us
  * hard."; nil where no leader holds it.
  */
-export val ruler = fn(seed:num, e:map, here:str):str|nil {
+export val ruler = fn(seed:num, e:empire.Empire, here:str):str|nil {
     match e.holds[here] {
         i: num => match empire.leaderOf(e, i) {
             l: str => {
@@ -232,7 +233,7 @@ export val ruler = fn(seed:num, e:map, here:str):str|nil {
  * Why a captain at `here` posts bounties: one of the factions from below
  * holding land under their region.
  */
-export val bountyReason = fn(seed:num, e:map, here:str):str|nil {
+export val bountyReason = fn(seed:num, e:empire.Empire, here:str):str|nil {
     val [rx, ry, _] = parse(here)
     val under = filter(map([1, 2, 3], fn(b) { "" + rx + "," + ry + "," + b }), fn(k) {
         match e.holds[k] {
@@ -242,7 +243,7 @@ export val bountyReason = fn(seed:num, e:map, here:str):str|nil {
     })
     if (len(under) == 0) { return nil }
     val k = under[rng.below(len(under))]
-    capital(e.factions[e.holds[k]].name) + " hold the land " + empire.placeName(seed, k)
+    capital(empire.factionName(e, e.holds[k])) + " hold the land " + empire.placeName(seed, k)
         + (match empire.leaderOf(e, e.holds[k]) {
             l: str => ", under " + l
             _ => ""
@@ -255,7 +256,7 @@ export val bountyReason = fn(seed:num, e:map, here:str):str|nil {
  * latest fight while it counts as at war, or its greed or generosity; nil
  * when prices are as usual. Draws nothing from the generator, so menus can show it.
  */
-export val prices = fn(seed:num, e:map, here:str):str|nil {
+export val prices = fn(seed:num, e:empire.Empire, here:str):str|nil {
     match e.holds[here] {
         i: num => {
             val f = e.factions[i]
@@ -294,7 +295,7 @@ export val epitaph = fn(grave:map):str {
  * annals, newest first, as "Mara, level 4, killed by the troll in the
  * depths under the Ashmoor, in the summer of year 102."
  */
-export val fallen = fn(seed:num, e:map, n:num):list {
+export val fallen = fn(seed:num, e:empire.Empire, n:num):list {
     val deaths = filter(e.annals ?? [], fn(a) { a.kind == "death" })
     val newest = map(range(math.min(n, len(deaths))), fn(k) { deaths[len(deaths) - 1 - k] })
     map(newest, fn(d) {
@@ -315,13 +316,13 @@ export val FIELD = 5
 /**
  * Whether territory `key` is a battlefield.
  */
-export val battlefield = fn(e:map, key:str):bool { empire.landOf(e, key).battles >= FIELD }
+export val battlefield = fn(e:empire.Empire, key:str):bool { empire.landOf(e, key).battles >= FIELD }
 
 /**
  * What remains of the battles in territory `key`: "Old bones and broken
  * blades lie here, where the Gnash Pack fought the Stonebrow Clan."
  */
-export val remains = fn(e:map, key:str):str {
+export val remains = fn(e:empire.Empire, key:str):str {
     match empire.landOf(e, key).fought {
         [i, j] => "Old bones and broken blades lie here, where " + empire.factionName(e, i) + " fought " + empire.factionName(e, j) + "."
         _ => "Old bones and broken blades lie here."
@@ -332,7 +333,7 @@ export val remains = fn(e:map, key:str):str {
  * How long the holder of territory `key` has held it: "since the autumn of
  * year 34", "for as long as anyone remembers", or nil if no one holds it.
  */
-export val heldSince = fn(e:map, key:str):str|nil {
+export val heldSince = fn(e:empire.Empire, key:str):str|nil {
     if (e.holds[key] == nil) { return nil }
     match empire.landOf(e, key).since {
         step: num => "since " + empire.dateOf(step)
@@ -346,7 +347,7 @@ export val heldSince = fn(e:map, key:str):str|nil {
  * of year 34.", and, if it has changed hands more than once, how often, and
  * if it is a battlefield, that it is.
  */
-export val arriving = fn(seed:num, e:map, key:str):str {
+export val arriving = fn(seed:num, e:empire.Empire, key:str):str {
     val where = empire.placeName(seed, key)
     val held = match empire.holder(e, key) {
         f: map => ", held by " + f.name + " " + (heldSince(e, key) ?? "")
@@ -363,7 +364,7 @@ export val arriving = fn(seed:num, e:map, key:str):str {
  * to it, if anything: for a ruin (`ruin` true), who sacked it and when;
  * for one standing, the sieges its walls held.
  */
-export val settlementPast = fn(e:map, name:str, ruin:bool):str|nil {
+export val settlementPast = fn(e:empire.Empire, name:str, ruin:bool):str|nil {
     val sieges = filter(e.annals ?? [], fn(a) { a.kind == "siege" && a.name == name })
     if (len(sieges) == 0) { return nil }
     val last = sieges[len(sieges) - 1]
@@ -387,7 +388,7 @@ export val settlementPast = fn(e:map, name:str, ruin:bool):str|nil {
  * captains the bounties, traders and quartermasters prices, townsfolk
  * their ruler, their walls or news.
  */
-export val talk = fn(role:str, seed:num, e:map, here:str):str|nil {
+export val talk = fn(role:str, seed:num, e:empire.Empire, here:str):str|nil {
     match role {
         "innkeeper" => rumour(seed, e, here)
         "guard" => war(seed, e, here) ?? (if (rng.below(2) == 0) { ownWalls(seed, e, here) ?? threat(seed, e, here) } else { threat(seed, e, here) ?? ownWalls(seed, e, here) })

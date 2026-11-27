@@ -761,6 +761,39 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   `flushed :+ built` with `built` possibly an unknown node, fixed with
   `val built:map`. The suite and a 3000-paragraph document render in the
   same time, with the same output, as untyped.
+  Then Crawl, by module. `region` exports `Counts` and `Visit`; `empire`
+  exports `Empire`, `Faction`, `Traits`, `Leader`, `War`, and `Land`, with
+  events left maps, a shape for each kind, and narrow record types for what
+  some callers need, `Factions` to tell an event, `Held` to find a holder,
+  and `Territories` for a land's record, which an `Empire` and the tests'
+  stubs both are; `lore` takes `empire.Empire`; and `game` declares its
+  `World`, with `empire: empire.Empire`, starting from an empty one, so
+  `world.empire` is a proven `Empire` and the stubs the engine passed for a
+  missing empire became `empire.create(0, 0, [])`. The record merge decision
+  kept the empire's code as it was but for one computed-key merge.
+
+  Typed, it first ran up to 10% slower, which took finding four things:
+  - [x] A `var` assigned an unproven value, which is checked, kept the
+    value's unproven type for the code after it, so a following `world =
+    world copy {...}` was checked again, deeply, every tick. It takes the
+    declared type after the check.
+  - [x] A call through an imported module's member, `empire.habitatAt(...)`,
+    did not enter past the checks, as a call of a name does. It now does;
+    a `foreign` function's calls never do, since the host checks its own
+    arguments and answers with its own codes.
+  - [x] An alias could not name an imported module's type, `{c:
+    region.Counts}`: imports are now bound before aliases resolve.
+  - [x] The checker cloned record types whole, so a program whose state is
+    a large record type, as `Empire`, compiled a third slower (109 to 145
+    ms for `crawl-ticks`, which compiles each run, and was the whole of
+    that benchmark's slowdown). Record fields are shared, `Rc`, now.
+  - [ ] A closure's parameters typed from a generic's signature, as
+    `reduce(xs, empire, fn(e, x) { ... })`, are not proven, so its calls
+    check the empire on each element; the season's loops became `recur`s.
+  - [ ] `m[k]` is `V|nil` even where `k` came from `keys(m)`, which Crawl
+    met six times.
+
+  With those, typed Crawl runs within 2% of untyped, the rest compile time.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

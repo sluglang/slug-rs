@@ -42,6 +42,16 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- Crawl's region, empire, lore, and world state are typed: `region` exports
+  `Counts` and `Visit`, `empire` exports `Empire`, `Faction`, `War`, `Land`,
+  and narrower `Factions`, `Held`, and `Territories`, and `game` exports
+  `World`. `rng.within` returns its body's type.
+- A call of an imported module's function, as `empire.holder(e, k)`, enters
+  past its checks as a call of a name does; a `foreign` function's never
+  does. A `var` assigned a value the checker cannot prove is checked there
+  and of its declared type after, so later updates are not checked again. A
+  type alias may name an imported module's type. Large record types compile
+  faster: their fields are shared rather than copied.
 - `+` merges into a record type: `empire + {wars: wars}`, for `empire` of a
   record type, sets fields as `copy` does, so a typed program keeps its map
   records' idiom. Each key must be a field the type lists. At runtime,

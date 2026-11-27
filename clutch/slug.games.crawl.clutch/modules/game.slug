@@ -40,6 +40,9 @@ val level = import("slug.games.crawl.level")
 val town = import("slug.games.crawl.town")
 val region = import("slug.games.crawl.region")
 val empire = import("slug.games.crawl.empire")
+
+// The empire of a world without one yet: no factions, holdings, or lands.
+val NO_EMPIRE = empire.create(0, 0, [])
 val lore = import("slug.games.crawl.lore")
 val string = import("slug.string")
 val math = import("slug.math")
@@ -115,7 +118,29 @@ val ITEM_COMMANDS = {
     d: ItemCommand {verb: "Drop", kind: nil, nothing: "You have nothing to drop.", wrong: ""},
 }
 
-var world = {}
+/**
+ * What every player shares: the world's seed and turn, its item colours and
+ * scroll titles, how often its regions and empires move, its size in chunks,
+ * its towns and forts, its empires, and the deepest depth anyone has reached.
+ */
+export type World = {
+    seed: num,
+    turn: num,
+    colours: list<str>,
+    titles: list<str>,
+    regionEvery: num,
+    empireEvery: num,
+    size: num,
+    settlements: list<map>,
+    empire: empire.Empire,
+    deepest: num|nil,
+}
+
+// The world before a game starts or is loaded.
+var world:World = {
+    seed: 0, turn: 0, colours: [], titles: [], regionEvery: 20, empireEvery: 6000, size: 0,
+    settlements: [], empire: NO_EMPIRE, deepest: nil,
+}
 var levels = {}
 var players = {}
 
@@ -1138,7 +1163,7 @@ val neighbours = fn(cx:num, cy:num, depth:num):list {
 // The monster kinds that belong in chunk (cx, cy) on `depth`: those of its
 // depth, as the faction holding the land has it (see `empire.habitatAt`).
 val habitatOf = fn(cx:num, cy:num, depth:num):list {
-    empire.habitatAt(world.empire ?? {holds: {}, factions: []}, empire.territoryOf(cx, cy, depth), level.habitat(depth))
+    empire.habitatAt(world.empire, empire.territoryOf(cx, cy, depth), level.habitat(depth))
 }
 
 // Whether monsters can live in chunk (cx, cy) on `depth`: anywhere but a
@@ -1352,7 +1377,7 @@ val enter = fn(cx:num, cy:num, depth:num, place:fn) {
     if (arriving) { strewRemains() }
     // Coming into new land, where it is and who holds it, in a world of
     // factions.
-    val e = world.empire ?? {factions: []}
+    val e = world.empire
     val factions = len(e.factions) > 0
     if (arriving && factions && to != from) { say(lore.arriving(world.seed, e, to)) }
     match lv.place {
@@ -1593,17 +1618,18 @@ export val newGame = fn(seed:num, options:map = {}) {
     rng.seed(seed)
     val colours = rng.shuffle(data.colours)
     val titles = rng.shuffle(data.titles)
+    val size = options.size ?? SIZE
+    val settlements = town.place(seed, size)
     world = {
         seed: seed, turn: 0, colours: colours, titles: titles,
         regionEvery: options.regionEvery ?? REGION_EVERY, empireEvery: options.empireEvery ?? EMPIRE_EVERY,
-        size: options.size ?? SIZE,
+        size: size, settlements: settlements, deepest: nil,
+        empire: rng.within(rng.mix([seed, 60]), fn() { empire.create(seed, size, settlements) }),
     }
-    world = world + {settlements: town.place(seed, world.size)}
-    world = world + {empire: rng.within(rng.mix([seed, 60]), fn() { empire.create(seed, world.size, world.settlements) })}
     // History: the empires run for `options.history` years before anyone
     // comes, and the settlements that fell are ruins.
     val seasons = 4 * (options.history ?? 0)
-    val past = fn(e:map):map {
+    val past = fn(e:empire.Empire):empire.Empire {
         if (e.step >= seasons) { return e }
         recur(rng.within(rng.mix([seed, 61, e.step]), fn() { empire.step(e, seed, true) }))
     }
@@ -1735,10 +1761,10 @@ val counted = fn(name:str) {
 }
 
 // Whether this world keeps a history: it has factions.
-val chronicled = fn():bool { len((world.empire ?? {factions: []}).factions) > 0 }
+val chronicled = fn():bool { len(world.empire.factions) > 0 }
 
 // The current step of the empire layer: the season.
-val season = fn():num { (world.empire ?? {step: 0}).step }
+val season = fn():num { world.empire.step }
 
 // The world with a player's death or deed `event` recorded in its history,
 // where it is in the acting player's land.
@@ -2504,7 +2530,7 @@ val territoryHere = fn():str { empire.territoryOf(player.cx, player.cy, player.d
 
 // What things cost here and what dealers pay, as the faction holding the
 // land has it (see `empire.priceFactor`).
-val factorHere = fn():num { empire.priceFactor(world.empire ?? {holds: {}}, territoryHere()) }
+val factorHere = fn():num { empire.priceFactor(world.empire, territoryHere()) }
 val buyPrice = fn(item:map):num { math.max(1, math.div(town.price(item) * factorHere(), 100)) }
 val sellPrice = fn(item:map):num { math.max(1, math.div(town.offer(item) * 100, factorHere())) }
 val innPrice = fn(base:num):num { math.max(1, math.div(base * factorHere(), 100)) }
@@ -2512,17 +2538,14 @@ val innPrice = fn(base:num):num { math.max(1, math.div(base * factorHere(), 100)
 // Something a character in `role` says of the world near the acting
 // player (see `slug.games.crawl.lore`), or nil.
 val tellHere = fn(role:str):str|nil {
-    match world.empire {
-        e: map => lore.talk(role, world.seed, e, territoryHere())
-        _ => nil
-    }
+    lore.talk(role, world.seed, world.empire, territoryHere())
 }
 
 // The bounties posted for the region the acting player is in, and what
 // they are owed under them: `{bounties, gold, kills}`.
 val bountiesHere = fn():map {
     val [rx, ry, _] = string.split(territoryHere(), ",")
-    val posted = empire.bounties(world.empire ?? {holds: {}, factions: []}, string.toInt(rx) ?? 0, string.toInt(ry) ?? 0)
+    val posted = empire.bounties(world.empire, string.toInt(rx) ?? 0, string.toInt(ry) ?? 0)
     val kills = player.kills ?? {}
     val owed = reduce(posted, {gold: 0, kills: 0}, fn(acc, b) {
         val n = kills[rx + "," + ry + "|" + b.kind] ?? 0
@@ -2577,7 +2600,7 @@ val characterMenu = fn(c:map, page:str):map {
             }
             // A dealer says why prices are as they are, if they are not as usual.
             val prices = if (c.role == "trader" || c.role == "quartermaster") {
-                lore.prices(world.seed, world.empire ?? {holds: {}}, territoryHere())
+                lore.prices(world.seed, world.empire, territoryHere())
             } else { nil }
             val greeting = if (c.role == "guard" || c.role == "townsperson") { name + "." }
                 else if (c.role == "captain") { name + ": \"" + posted + "\"" }
@@ -2677,10 +2700,7 @@ val deal = fn(c:map, act:list) {
             say(c.name + " says: \"" + (told ?? lines[rng.below(len(lines))]) + "\"")
         }
         ["fallen"] => {
-            val roll = match world.empire {
-                e: map => lore.fallen(world.seed, e, 3)
-                _ => []
-            }
+            val roll = lore.fallen(world.seed, world.empire, 3)
             if (len(roll) == 0) { say(c.name + " says: \"No one has fallen yet. May it stay that way.\"") } else {
                 say(c.name + " says: \"We remember them here:\"")
                 map(roll, fn(line) { say(line) })
@@ -3175,7 +3195,7 @@ export val view = fn(id:str, left:num, top:num, cols:num, rows:num):list {
  * "Spring, year 76" in the middle of it.
  */
 export val date = fn():map {
-    val step = (world.empire ?? {step: 0}).step
+    val step = world.empire.step
     val every = world.empireEvery ?? EMPIRE_EVERY
     val part = ["early", "mid", "late"][math.min(2, math.div(3 * (world.turn % every), every))]
     val season = empire.seasonOf(step)
@@ -3193,12 +3213,12 @@ export val land = fn(id:str):map {
     lookAs(id, fn() {
         val t = territoryHere()
         {
-            holder: match empire.holder(world.empire ?? {holds: {}}, t) {
+            holder: match empire.holder(world.empire, t) {
                 f: map => f.name
                 _ => nil
             },
             place: empire.placeName(world.seed, t),
-            since: lore.heldSince(world.empire ?? {holds: {}}, t),
+            since: lore.heldSince(world.empire, t),
         }
     })
 }

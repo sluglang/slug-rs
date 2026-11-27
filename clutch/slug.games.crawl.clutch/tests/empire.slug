@@ -5,17 +5,17 @@ val rng = import("slug.games.crawl.rng")
 val {assertEqual, assertTrue} = import("slug.test")
 val {filter, map, range, reduce, all, any} = import("slug.std")
 
-val created = fn(seed:num):map {
+val created = fn(seed:num):empire.Empire {
     rng.within(rng.mix([seed, 60]), fn() { empire.create(seed, 32, town.place(seed, 32)) })
 }
 
 // `n` steps of `e` for the world with seed `seed`.
-val steps = fn(e:map, seed:num, n:num):map {
+val steps = fn(e:empire.Empire, seed:num, n:num):empire.Empire {
     if (n == 0) { return e }
     recur(rng.within(rng.mix([seed, 61, e.step]), fn() { empire.step(e, seed) }), seed, n - 1)
 }
 
-val heldBy = fn(e:map, i:num):list { filter(keys(e.holds), fn(k) { e.holds[k] == i }) }
+val heldBy = fn(e:empire.Empire, i:num):list { filter(keys(e.holds), fn(k) { e.holds[k] == i }) }
 
 @test
 val territoriesAreRegionsAtABandOfDepths = fn() {
@@ -34,7 +34,10 @@ val aNewWorldHasEightFactionsAndTheHumansHoldTheSettlements = fn() {
     val places = town.place(1, 32)
     assertTrue(all(places, fn(s) {
         val k = empire.territoryOf(s.cx, s.cy, 0)
-        e.fixed[k] == s.name && e.factions[e.holds[k]].people == "humans"
+        match e.holds[k] {
+            i: num => e.fixed[k] == s.name && e.factions[i].people == "humans"
+            _ => false
+        }
     }))
     assertEqual(created(1), e)
 }
@@ -198,7 +201,7 @@ val factionsGoToWarAndMakePeace = fn() {
     val sides = reduce(e.wars ?? [], [], fn(acc, w) { acc + [w.by, w.against] })
     assertTrue(all(range(len(sides)), fn(k) { len(filter(sides, fn(x) { x == sides[k] })) == 1 }))
     // Wars mean fighting: land changes hands.
-    assertTrue(any(keys(e.lands), fn(k) { e.lands[k].changes > 0 }))
+    assertTrue(any(keys(e.lands), fn(k) { (e.lands[k] ?? {}).changes > 0 }))
     assertEqual(steps(created(2), 2, 150), e)
 }
 

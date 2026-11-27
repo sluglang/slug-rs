@@ -37,7 +37,7 @@ export val setState = fn(s:num):nil {
  * Runs `body` with every draw from a generator seeded with `s`, then
  * carries on the sequence from before; returns what `body` returns.
  */
-export val within = fn(s:num, body:fn) {
+export val within = fn<T>(s:num, body:fn<T>):T {
     val saved = scoped
     scoped = random.generator(s)
     defer { scoped = saved }

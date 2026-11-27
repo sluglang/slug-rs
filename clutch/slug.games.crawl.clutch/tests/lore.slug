@@ -9,14 +9,25 @@ val {filter, map, range, all, any} = import("slug.std")
 
 val SEED = 7
 
+// A faction of the small empire below: of `people`, at home on `home`,
+// with greed `greedy`, last fighting at step `lastFight`, and otherwise as a
+// new world's.
+val faction = fn(name:str, people:str, home:num, greedy:num, lastFight:num):empire.Faction {
+    {
+        name: name, people: people, home: home, wealth: 20, strength: 30, lastFight: lastFight,
+        traits: {bold: 0, aggressive: 0, orderly: 0, greedy: greedy}, leader: nil, brokenAt: nil,
+    }
+}
+
 // A small empire: orcs under Elmby and at war with its humans, dwarfs far
 // off, and news near and far.
-val world = {
+val world:empire.Empire = {
     factions: [
-        {name: "the Redaxe Horde", people: "orcs", traits: {greedy: 0}, lastFight: 40},
-        {name: "the Iron Compact of Elmby", people: "humans", traits: {greedy: 1}, lastFight: 40},
-        {name: "the Stonebeard Clan", people: "dwarfs", traits: {greedy: -1}, lastFight: -100},
+        faction("the Redaxe Horde", "orcs", 2, 0, 40),
+        faction("the Iron Compact of Elmby", "humans", 0, 1, 40),
+        faction("the Stonebeard Clan", "dwarfs", 1, -1, -100),
     ],
+    start: "1,1,0", fallen: [], regions: 3, kills: {}, wars: nil, sieges: nil,
     holds: {"1,1,0": 1, "1,1,1": 0, "2,1,1": 0, "5,5,0": 2, "7,7,0": 0},
     fixed: {"1,1,0": "Elmby"},
     lands: {"2,1,1": {since: 40, changes: 3}, "7,7,0": {since: 30, changes: 1}},

@@ -134,8 +134,8 @@ val aHunterWhoThinsAFactionsRanksIsRemembered = fn() {
     // Land a faction from below holds, and a kind of its people.
     val held = filter(keys(e0.holds), fn(k) { e0.factions[e0.holds[k]].people == "orcs" })[0]
     val i = e0.holds[held]
-    val kills = fn(n:num, who:str):map { reduce(range(n), e0, fn(e, _) { empire.killed(e, held, "orc", who) }) }
-    val after = fn(e:map):list {
+    val kills = fn(n:num, who:str):empire.Empire { reduce(range(n), e0, fn(e, _) { empire.killed(e, held, "orc", who) }) }
+    val after = fn(e:empire.Empire):list {
         val stepped = rng.within(5, fn() { empire.step(e, w.seed) })
         filter(stepped.annals, fn(a) { a.kind == "deed" })
     }

@@ -1972,6 +1972,21 @@ fn analyze_expressions(
             declare_enum(&mut environment, expression, module_name);
         }
     }
+    // A module's imports are bound before its type aliases resolve, so an
+    // alias may name an imported module's type, as `{c: region.Counts}`.
+    for expression in expressions {
+        if let ExprKind::Declare {
+            pattern: Pattern::Binding(name),
+            value,
+            ..
+        } = &expression.kind
+            && let ExprKind::Call { callee, .. } = &value.kind
+            && matches!(&callee.kind, ExprKind::Name(callee) if callee == "import")
+            && let Some(binding) = expression_binding(value, &environment)
+        {
+            environment.declare(name.clone(), binding);
+        }
+    }
     resolve_type_aliases(expressions, &mut environment, &resource_names, &enum_names)?;
     declare_enum_payloads(expressions, &mut environment)?;
     for expression in expressions {
@@ -2041,7 +2056,7 @@ fn exported_schemas(
                 }
             }
             Type::Record { fields, .. } => {
-                for (_, value) in fields {
+                for (_, value) in fields.iter() {
                     collect(value, identities);
                 }
             }
@@ -2311,13 +2326,13 @@ fn expand_alias_body(
                     .transpose()?,
             ),
             Type::Tuple(elements) => Type::Tuple(inside_all(elements, path)?),
-            Type::Record { fields, map } => Type::Record {
-                fields: fields
+            Type::Record { fields, map } => Type::record(
+                std::rc::Rc::unwrap_or_clone(fields)
                     .into_iter()
                     .map(|(name, value)| Ok::<_, SourceError>((name, inside(value, path)?)))
                     .collect::<Result<Vec<_>, _>>()?,
                 map,
-            },
+            ),
             Type::Struct(identity, arguments) => {
                 Type::Struct(identity, inside_all(arguments, path)?)
             }
@@ -2971,6 +2986,9 @@ fn check_expression_inner(
                     CheckPlace::ForeignResult,
                 );
                 environment.declare_callable(name.clone(), callable, &expression.span)?;
+                if let Some(binding) = environment.lookup_mut(name) {
+                    binding.function_kind = super::environment::FunctionKind::Foreign;
+                }
                 for parameter in &signature.parameters {
                     if let Some(default) = &parameter.default {
                         let actual =
@@ -3275,7 +3293,16 @@ fn check_expression_inner(
                 }
                 if let Some(binding) = environment.lookup_mut(name) {
                     binding.callables.clear();
-                    if !matches!(actual, Type::Unknown) {
+                    // A value not proven to be of the declared type is checked
+                    // as it is assigned, and so is of it from then on.
+                    let checked = binding
+                        .declared
+                        .as_ref()
+                        .filter(|declared| !actual.is_proven_assignable_to(declared))
+                        .cloned();
+                    if let Some(declared) = checked {
+                        binding.value_type = declared;
+                    } else if !matches!(actual, Type::Unknown) {
                         binding.value_type = actual.clone();
                     }
                 }
@@ -3941,9 +3968,12 @@ fn predeclare_functions(values: &[Expr], environment: &mut Environment) {
                 .map(|signature| {
                     let mut binding = SemanticBinding::callable(signature);
                     binding.implicit = true;
-                    binding.predeclared = parameters
+                    if parameters
                         .iter()
-                        .all(|parameter| parameter.annotation.is_some());
+                        .all(|parameter| parameter.annotation.is_some())
+                    {
+                        binding.function_kind = super::environment::FunctionKind::Predeclared;
+                    }
                     binding
                 });
             environment.declare(
@@ -4800,7 +4830,8 @@ fn runtime_constraint(constraint: &Type, environment: &Environment) -> Type {
             fields: fields
                 .iter()
                 .map(|(name, field)| (name.clone(), runtime_constraint(field, environment)))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             map: *map,
         },
         other => other.clone(),
@@ -5716,10 +5747,12 @@ fn check_call(
             environment
                 .record_selected_call(expression.span.clone(), most_specific[0].identity.clone());
         }
-        if let ([signature], ExprKind::Name(_), 0) =
-            (callables.as_slice(), &callee.kind, piped_count)
+        if let ([signature], 0) = (callables.as_slice(), piped_count)
+            && names_function(callee, environment)
             && binding.declared.is_none()
-            && (!binding.implicit || binding.predeclared)
+            && binding.function_kind != super::environment::FunctionKind::Foreign
+            && (!binding.implicit
+                || binding.function_kind == super::environment::FunctionKind::Predeclared)
         {
             let enters = enters_past_checks(signature, arguments);
             if enters {
@@ -5752,6 +5785,22 @@ fn check_call(
         );
         Ok(most_specific[0].result.clone())
     })
+}
+
+/// Whether `callee` names its function directly, so a call knows which it
+/// calls: a name, or an imported module's member, as `empire.holder`, whose
+/// exports are fixed when it is imported.
+fn names_function(callee: &Expr, environment: &Environment) -> bool {
+    match &callee.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Index { collection, index } => {
+            matches!(&index.kind, ExprKind::Value(Value::Str(_)))
+                && matches!(&collection.kind, ExprKind::Name(_))
+                && expression_binding(collection, environment)
+                    .is_some_and(|module| module.module_binding)
+        }
+        _ => false,
+    }
 }
 
 /// Whether a call of `signature` with `arguments` may enter past the
@@ -6339,7 +6388,7 @@ fn infer(
         && let Type::Record { .. } = actual
     {
         // A field that does not conform is reported with the whole record.
-        for (name, expected) in expected_fields {
+        for (name, expected) in expected_fields.iter() {
             if let Some(actual) = actual.record_field(name) {
                 let _ = infer(expected, actual, substitutions, span);
             }
@@ -7232,6 +7281,27 @@ mod tests {
                 (3, parameter("out", 1), "list<num>".into()),
             ]
         );
+    }
+
+    #[test]
+    fn a_checked_assignment_leaves_the_var_of_its_declared_type() {
+        // The first assignment is checked; the copy after it is proven, so
+        // only one check is made.
+        let checks = recorded_checks(
+            "type W = {n: num, s: list<str>}\n\
+             var w:W = {n: 0, s: [\"a\"]}\n\
+             val dyn = fn(x) { x }\n\
+             val tick = fn() {\n\
+               w = w copy {s: dyn([\"x\"])}\n\
+               w = w copy {n: w.n + 1}\n\
+             }\n",
+        );
+        let assignments = checks
+            .iter()
+            .filter(|(_, place, _)| matches!(place, CheckPlace::Assignment(_)))
+            .map(|(line, _, _)| *line)
+            .collect::<Vec<_>>();
+        assert_eq!(assignments, vec![5]);
     }
 
     #[test]
