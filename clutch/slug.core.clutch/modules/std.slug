@@ -2,6 +2,19 @@ export val get = fn<K, V>(m:map<K, V>, k:K):V|nil {
     m[k]
 }
 
+/**
+ * returns true when `m` has key `k`, even when its value is `nil`.
+ * Uses normal map key equality; an invalid map key follows the checked
+ * runtime type-error path, as indexing does.
+ */
+@testWith([{name: nil}, "name"], true, [{name: nil}, "age"], false)
+export val hasKey = fn<K, V>(m:map<K, V>, k:K):bool {
+    match m {
+        {[k]: _} => true
+        _ => false
+    }
+}
+
 export val put = fn<K, V>(m:map<K, V>, k:K, v:V):map<K, V> {
     m + {[k]: v}
 }
@@ -137,6 +150,38 @@ export val contains = fn(xs:list, v:any|nil):bool {
 		if (i == len(xs)) { false } else if (xs[i] == v) { true } else { recur(i + 1) }
 	}
 	go(0)
+}
+
+// Take from the left on a tie so equivalent elements never cross. Indices
+// avoid slicing on each comparison, and merging recurs in tail position.
+val mergeSorted = fn<T>(left:list<T>, right:list<T>, less:fn<bool, T, T>, i:num, j:num, out:list<T>):list<T> {
+    if (i == len(left)) {
+        out + right[j:]
+    } else if (j == len(right)) {
+        out + left[i:]
+    } else if (less(right[j], left[i])) {
+        recur(left, right, less, i, j + 1, out :+ right[j])
+    } else {
+        recur(left, right, less, i + 1, j, out :+ left[i])
+    }
+}
+
+/**
+ * returns a stable sorted copy of `xs`, keeping its element type. `xs` is
+ * unchanged. `less(a, b)` says whether `a` comes before `b`; for ascending
+ * numbers use `fn(a, b) { a < b }`.
+ *
+ * `less` must define a strict weak ordering: it is false for equal values,
+ * the ordering is transitive, and equivalence (neither value comes before
+ * the other) is transitive. Equivalent elements retain their input order.
+ * Inconsistent comparators are not detected; their output order is unspecified.
+ * Callback errors propagate. Empty and singleton lists do not call `less`.
+ */
+export val sort = fn<T>(xs:list<T>, less:fn<bool, T, T>):list<T> {
+    val n = len(xs)
+    if (n < 2) { return xs }
+    val middle = int(n / 2)
+    mergeSorted(sort(xs[:middle], less), sort(xs[middle:], less), less, 0, 0, [])
 }
 
 /**

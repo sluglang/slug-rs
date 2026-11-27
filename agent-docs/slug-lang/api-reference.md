@@ -71,6 +71,7 @@ The runtime also supplies these operations, described in the
 
 ```text
 get = fn<K, V>(m:map<K, V>, k:K):V|nil
+hasKey = fn<K, V>(m:map<K, V>, k:K):bool
 put = fn<K, V>(m:map<K, V>, k:K, v:V):map<K, V>
 remove = fn<K, V>(m:map<K, V>, k:any|nil):map<K, V>
 map = fn<T, U>(vs:list<T>, f:fn<U, T>, acc:list<U> = []):list<U>
@@ -81,6 +82,7 @@ flatMap = fn<T>(vs:list<T>, f:fn<any|nil, T>):list
 compact = fn<T>(xs:list<T|nil>, acc:list<T> = []):list<T>
 find = fn<T>(xs:list<T>, f:fn<bool, T>):T|nil
 contains = fn(xs:list, v:any|nil):bool
+sort = fn<T>(xs:list<T>, less:fn<bool, T, T>):list<T>
 any = fn<T>(xs:list<T>, f:fn<bool, T>):bool
 all = fn<T>(xs:list<T>, f:fn<bool, T>):bool
 range = fn(start:num, end:num):list<num>
@@ -93,6 +95,14 @@ discards them. `reduce` calls `f(accumulator, element)` in list order. `flatMap`
 concatenates returned lists and treats a scalar as one element. `compact`
 removes `nil`. `find` returns the first matching element or `nil`.
 `any([], predicate)` is false; `all([], predicate)` is true.
+`hasKey(m, k)` tests key presence, including keys whose value is `nil`, using
+normal map key equality. Invalid keys fail as they do for map indexing.
+`sort(xs, less)` preserves the element type and returns a stable sorted copy.
+`less(a, b)` is true when `a` comes before `b`; use `fn(a, b) { a < b }` for
+ascending order. It must define a strict weak ordering; elements for which
+neither comes before the other keep their original order. Inconsistent
+comparators are not detected and have unspecified output order. Callback errors
+propagate; empty and singleton lists do not call the comparator.
 `range(end)` starts at zero; both ranges exclude `end` and are empty if the
 end is no greater than the start. Use integer bounds for ranges and `times`.
 

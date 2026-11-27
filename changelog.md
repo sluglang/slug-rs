@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `slug.std` adds `hasKey(m, k)` to distinguish missing map keys from keys
+  holding `nil`, and `sort(xs, less)` for stable sorting with a boolean
+  comparator. Sorting preserves the input and its element type.
+
 - Added the installed `slug.test.runner` application runner for `@test` and
   `@testWith`: it continues after failures, reports failures and errors with
   totals, rejects empty suites and malformed tags, and returns a process status

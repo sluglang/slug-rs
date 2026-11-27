@@ -1,4 +1,4 @@
-val {map, range, times, any, all, contains, Result, or, orElse, orThrow} = import("slug.std")
+val {map, range, times, any, all, contains, hasKey, sort, Result, or, orElse, orThrow} = import("slug.std")
 val {assertEqual, assertThrows} = import("slug.test")
 
 @test
@@ -30,6 +30,75 @@ val anyAndAllStopEarly = fn() {
 val containsComparesByValue = fn() {
     assertEqual(contains([{a: 1}, "x"], {a: 1}), true)
     assertEqual(contains([1, 2], "1"), false)
+}
+
+@test
+val hasKeyDistinguishesAbsentFromNil = fn() {
+    val fields:map<str, any|nil> = {null: nil, flag: false, zero: 0, text: "", items: [], object: {}}
+    assertEqual(hasKey({}, "missing"), false)
+    assertEqual(hasKey(fields, "missing"), false)
+    assertEqual(all(keys(fields), fn(key) { hasKey(fields, key) }), true)
+    assertEqual(hasKey(fields - "null", "null"), false)
+    assertEqual(hasKey(fields, "null"), true)
+}
+
+@test
+val hasKeyUsesMapKeyEquality = fn() {
+    val entries:map<any, str|nil> = {[1]: nil, [true]: "bool", [0x"01"]: "bytes", [[1, 2]]: "list"}
+    assertEqual(hasKey(entries, 1.0), true)
+    assertEqual(hasKey(entries, "1"), false)
+    assertEqual(hasKey(entries, true), true)
+    assertEqual(hasKey(entries, false), false)
+    assertEqual(hasKey(entries, 0x"01"), true)
+    assertEqual(hasKey(entries, [1, 2]), true)
+    assertEqual(hasKey(entries, [2, 1]), false)
+}
+
+@test
+val sortOrdersWithoutChangingItsInput = fn() {
+    val input:list<num> = [3, 1, 2, 1, -4]
+    val ascending:list<num> = sort(input, fn(a, b) { a < b })
+    assertEqual(ascending, [-4, 1, 1, 2, 3])
+    assertEqual(sort(input, fn(a, b) { a > b }), [3, 2, 1, 1, -4])
+    assertEqual(input, [3, 1, 2, 1, -4])
+    val words:list<str> = sort(["pear", "Apple", "fig", "apple"], fn(a, b) { a < b })
+    assertEqual(words, ["Apple", "apple", "fig", "pear"])
+}
+
+type Item = {rank: num, id: num}
+
+@test
+val sortKeepsEquivalentRecordsInOrder = fn() {
+    val input:list<Item> = map(range(9), fn(i) { {rank: i % 2, id: i} })
+    val ordered:list<Item> = sort(input, fn(a, b) { a.rank < b.rank })
+    assertEqual(map(ordered, fn(item) { item.id }), [0, 2, 4, 6, 8, 1, 3, 5, 7])
+    assertEqual(sort(input, fn(a, b) { false }), input)
+}
+
+@test
+val sortHandlesNilElements = fn() {
+    val input:list<num|nil> = [2, nil, 1, nil]
+    val ordered:list<num|nil> = sort(input, fn(a, b) {
+        if (a == nil) { b != nil } else if (b == nil) { false } else { a < b }
+    })
+    assertEqual(ordered, [nil, nil, 1, 2])
+}
+
+@test
+val sortSkipsUnnecessaryCallbacksAndPropagatesErrors = fn() {
+    val fail = fn(a:num, b:num):bool { throw Error {type: "test.sort", msg: "comparator failed"} }
+    assertEqual(sort([], fail), [])
+    assertEqual(sort([1], fail), [1])
+    assertThrows(fn() { sort([2, 1], fail) }, "test.sort")
+}
+
+@test
+val sortBoundsComparisonsAcrossManyRuns = fn() {
+    var calls = 0
+    val input = map(range(257), fn(i) { 256 - i })
+    val ordered = sort(input, fn(a, b) { calls = calls + 1; a < b })
+    assertEqual(ordered, range(257))
+    assertEqual(calls <= 257 * 9, true)
 }
 
 val parsed:Result<num, str> = Result.Ok { value: 3 }
