@@ -22,7 +22,8 @@
  * is, escaped, with no Markdown read inside it. Code spans and code blocks
  * are always escaped text.
  *
- * The output uses only `p`, `h1`–`h6`, `blockquote`, `ul`, `ol` (`start`),
+ * The output uses only `p`, `h1`–`h6` (`id` only when assigned in a typed
+ * tree), `blockquote`, `ul`, `ol` (`start`),
  * `li`, `pre`, `code` (`class="language-…"` on a fenced block's), `hr`,
  * `br`, `em`, `strong`, `del`, `a` (`href`, `title`, `rel`), `img` (`src`,
  * `alt`, `title`), `table`, `thead`, `tbody`, `tr`, `th` and `td` (`align`).
@@ -62,12 +63,19 @@
  *
  * Rendering reads nothing but its arguments: no files, network, or clock.
  * The source is not changed; the HTML is a view of it.
+ *
+ * `parse` returns a fully parsed typed `Document`; `transform` replaces nodes
+ * post-order, `render` safely renders constructed or transformed trees, and
+ * `toText` extracts decoded text. `Node` is a payload enum. `Document`,
+ * `Position`, and `Span` are record types with matching struct constructors.
+ * See docs/reference/markdown-documents.md for fields, provenance, and limits.
  */
 
 val {join, split, toBytes, lower, chr} = import("slug.string")
 val bytes = import("slug.bytes")
 val {parseBlocks} = import("slug.text.markdown.block")
 val {parseInlines, isAlpha, isAlnum} = import("slug.text.markdown.inline")
+val {map} = import("slug.std")
 
 // --- Options -----------------------------------------------------------------
 
@@ -263,12 +271,19 @@ val firstWord = fn(text:str):str {
     text[:go(0)]
 }
 
-val render = fn(document:map, refs:map, o:map):str {
+val renderHtml = fn(document:map, refs:map, o:map, maxOutputBytes:num|nil = nil):str {
     var out = []
     var atLineStart = true
+    var outputBytes = 0
 
     val emit = fn(text:str) {
         if (text != "") {
+            if (maxOutputBytes != nil) {
+                outputBytes = outputBytes + len(toBytes(text))
+                if (outputBytes > maxOutputBytes) {
+                    throw Error {type: "markdown.limit", msg: "rendered HTML exceeds output limit", data: {limit: "outputBytes", max: maxOutputBytes}}
+                }
+            }
             out = out :+ text
             atLineStart = text[len(text) - 1] == "\n"
         }
@@ -319,12 +334,12 @@ val render = fn(document:map, refs:map, o:map):str {
         each(0)
     }
 
-    val renderCells = fn(cells:list, columns:list, tag:str) {
+    val renderCells = fn(cells:list, columns:list, tag:str, parsed:bool = false) {
         val each = fn(i:num) {
             if (i < len(columns)) {
                 val align = columns[i]
                 emit(if (align == "") { "<$tag>" } else { "<$tag align=\"$align\">" })
-                if (i < len(cells)) { renderInlines(inlines(cells[i]), false) }
+                if (i < len(cells)) { renderInlines(if (parsed) { cells[i] } else { inlines(cells[i]) }, false) }
                 emit("</$tag>\n")
                 recur(i + 1)
             }
@@ -341,17 +356,17 @@ val render = fn(document:map, refs:map, o:map):str {
             val kind = block.type
             if (kind == "paragraph") {
                 if (tight) {
-                    renderInlines(inlines(block.text), false)
+                    renderInlines(block.inlines ?? inlines(block.text), false)
                 } else {
                     cr()
                     emit("<p>")
-                    renderInlines(inlines(block.text), false)
+                    renderInlines(block.inlines ?? inlines(block.text), false)
                     emit("</p>\n")
                 }
             } else if (kind == "heading") {
                 cr()
-                emit("<h${block.level}>")
-                renderInlines(inlines(block.text), false)
+                emit("<h${block.level}" + (if (block.id == nil) { "" } else { " id=\"" + escape(block.id) + "\"" }) + ">")
+                renderInlines(block.inlines ?? inlines(block.text), false)
                 emit("</h${block.level}>\n")
             } else if (kind == "blockquote") {
                 cr()
@@ -382,13 +397,13 @@ val render = fn(document:map, refs:map, o:map):str {
             } else if (kind == "table") {
                 cr()
                 emit("<table>\n<thead>\n")
-                renderCells(block.head, block.aligns, "th")
+                renderCells(block.head, block.aligns, "th", block.parsedCells == true)
                 emit("</thead>\n")
                 if (len(block.rows) > 0) {
                     emit("<tbody>\n")
                     val rows = fn(j:num) {
                         if (j < len(block.rows)) {
-                            renderCells(block.rows[j], block.aligns, "td")
+                            renderCells(block.rows[j], block.aligns, "td", block.parsedCells == true)
                             recur(j + 1)
                         }
                     }
@@ -432,5 +447,416 @@ export val toHtml = fn(source:str, options:map = {}):str {
         }
     }
     val parsed = parseBlocks(normalize(source), o.maxDepth)
-    render(parsed.document, parsed.refs, o)
+    renderHtml(parsed.document, parsed.refs, o)
+}
+
+/**
+ * Renders a typed document; validates structure, provenance, and budgets.
+ */
+export val render = fn(document:Document, options:map = {}):str {
+    val o = documentSettings(options, true)
+    val defaults:map = {links: DEFAULTS.links, images: DEFAULTS.images, rel: DEFAULTS.rel, maxDepth: o.maxDepth, maxBytes: o.maxBytes}
+    val policy = checkOptions((defaults + options) - "maxNodes" - "maxOutputBytes")
+    renderHtml(lowerDocument(document, o), {}, policy, o.maxOutputBytes)
+}
+
+// --- Typed documents ----------------------------------------------------------
+
+export type Position = {offset:num, line:num, column:num}
+export type Span = {start:Position, end:Position}
+export type Document = {children:list<Node>, span:Span|nil}
+
+export val Position = struct {offset:num, line:num, column:num}
+export val Span = struct {start:Position, end:Position}
+
+export enum Node {
+    Text {text:str, span:Span|nil = nil}
+    CodeSpan {text:str, span:Span|nil = nil}
+    RawHtml {text:str, span:Span|nil = nil}
+    SoftBreak {span:Span|nil = nil}
+    HardBreak {span:Span|nil = nil}
+    ThematicBreak {span:Span|nil = nil}
+    Emphasis {children:list<Node>, span:Span|nil = nil}
+    Strong {children:list<Node>, span:Span|nil = nil}
+    Strikethrough {children:list<Node>, span:Span|nil = nil}
+    Link {url:str, children:list<Node>, title:str = "", definition:Span|nil = nil, span:Span|nil = nil}
+    Image {url:str, children:list<Node>, title:str = "", definition:Span|nil = nil, span:Span|nil = nil}
+    Paragraph {children:list<Node>, span:Span|nil = nil}
+    Heading {level:num, children:list<Node>, id:str|nil = nil, span:Span|nil = nil}
+    CodeBlock {text:str, info:str = "", span:Span|nil = nil}
+    BlockQuote {children:list<Node>, span:Span|nil = nil}
+    Item {children:list<Node>, span:Span|nil = nil}
+    List {children:list<Node>, ordered:bool = false, start:num = 1, tight:bool = false, span:Span|nil = nil}
+    Table {aligns:list<str>, head:list<list<Node>>, rows:list<list<list<Node>>>, span:Span|nil = nil}
+}
+
+export val Document = struct {children:list<Node>, span:Span|nil = nil}
+
+val fail = fn(message:str) { throw Error {type: "markdown.document", msg: message} }
+val limit = fn(kind:str, max:num) {
+    throw Error {type: "markdown.limit", msg: "document exceeds $kind limit $max", data: {limit: kind, max: max}}
+}
+val whole = fn(n:num):bool { n >= 0 && n <= 9223372036854775807 && int(n) == n }
+
+// Shared by the public wrappers. Policy options are validated by markdown's
+// renderer; these are the independent source/tree/output budgets.
+val documentSettings = fn(options:map, rendering:bool = false):map {
+    val defaults:map = {maxBytes: 65536, maxDepth: 32, maxNodes: 65536}
+    val allowed = if (rendering) { defaults + {maxOutputBytes: 1048576, links: [], images: [], rel: ""} } else { defaults }
+    val names = keys(options)
+    val each = fn(i:num) {
+        if (i < len(names)) {
+            val name = names[i]
+            if (allowed[name] == nil) { throw Error {type: "markdown.options", msg: "unknown option `$name`"} }
+            if (name != "links" && name != "images" && name != "rel") {
+                val valid = match options[name] { n:num => whole(n) && n > 0; _ => false }
+                if (!valid) { throw Error {type: "markdown.options", msg: "`$name` must be a positive integer"} }
+            }
+            recur(i + 1)
+        }
+    }
+    each(0)
+    (if (rendering) { defaults + {maxOutputBytes: 1048576} } else { defaults }) + options
+}
+
+val checkSpan = fn(span:Span|nil) {
+    if (span == nil) { return nil }
+    val a = span.start
+    val b = span.end
+    val valid = fn(p:Position):bool { whole(p.offset) && whole(p.line) && p.line > 0 && whole(p.column) && p.column > 0 }
+    if (!valid(a) || !valid(b) || b.offset < a.offset || b.line < a.line
+        || (a.line == b.line && b.column - a.column != b.offset - a.offset)
+        || (a.offset == b.offset && (a.line != b.line || a.column != b.column))) {
+        fail("invalid source span")
+    }
+}
+
+// Normalize while keeping a boundary position for every normalized scalar.
+// The synthetic final newline maps to EOF, not beyond the original source.
+val sourceMap = fn(source:str):map {
+    val go = fn(i:num, line:num, column:num, text:list<str>, positions:list):map {
+        val position = Position {offset: i, line: line, column: column}
+        if (i >= len(source)) {
+            val trailing = len(text) > 0 && text[len(text) - 1] == "\n"
+            {text: join(if (trailing) { text } else { text :+ "\n" }, ""), positions: if (trailing) { positions :+ position } else { positions + [position, position] }}
+        } else {
+            val c = source[i]
+            if (c == "\r") {
+                val step = if (i + 1 < len(source) && source[i + 1] == "\n") { 2 } else { 1 }
+                recur(i + step, line + 1, 1, text :+ "\n", positions :+ position)
+            } else if (c == "\n") {
+                recur(i + 1, line + 1, 1, text :+ c, positions :+ position)
+            } else {
+                recur(i + 1, line, column + 1, text :+ (if (c == "\0") { "�" } else { c }), positions :+ position)
+            }
+        }
+    }
+    go(0, 1, 1, [], [])
+}
+
+/**
+ * Parses a complete typed document with original-source spans and resolved
+ * references, under source-byte, nesting, and node limits.
+ */
+export val parse = fn(source:str, options:map = {}):Document {
+    val o = documentSettings(options)
+    if (len(source) > o.maxBytes || len(toBytes(source)) > o.maxBytes) { limit("bytes", o.maxBytes) }
+    val normalized = sourceMap(source)
+    val parsed = parseBlocks(normalized.text, o.maxDepth, true)
+    var count = 0
+    val tick = fn() { count = count + 1; if (count > o.maxNodes) { limit("nodes", o.maxNodes) } }
+    val spanAt = fn(start:num, end:num):Span { Span {start: normalized.positions[start], end: normalized.positions[end]} }
+    val location = fn(raw:map):Span|nil {
+        if (raw.sourceStart == nil || raw.sourceEnd == nil) { nil } else { spanAt(raw.sourceStart, raw.sourceEnd) }
+    }
+    val inlineNodes = fn(text:str, positions:list):list<Node> {
+        fromInlines(parseInlines(text, parsed.refs, o.maxDepth, positions))
+    }
+    val fromInlines = fn(raw:list):list<Node> {
+        val go = fn(i:num, out:list<Node>):list<Node> {
+            if (i >= len(raw)) { return out }
+            tick()
+            val n = raw[i]
+            val span = location(n)
+            val node:Node = if (n.type == "text") { Node.Text {text: n.text, span: span} }
+                else if (n.type == "html") { Node.RawHtml {text: n.text, span: span} }
+                else if (n.type == "code") { Node.CodeSpan {text: n.text, span: span} }
+                else if (n.type == "softbreak") { Node.SoftBreak {span: span} }
+                else if (n.type == "hardbreak") { Node.HardBreak {span: span} }
+                else if (n.type == "emph") { Node.Emphasis {children: fromInlines(n.children), span: span} }
+                else if (n.type == "strong") { Node.Strong {children: fromInlines(n.children), span: span} }
+                else if (n.type == "del") { Node.Strikethrough {children: fromInlines(n.children), span: span} }
+                else {
+                    val definition = if (n.definitionStart == nil) { nil } else { spanAt(n.definitionStart, n.definitionEnd) }
+                    if (n.type == "link") { Node.Link {url: n.url, title: n.title, children: fromInlines(n.children), span: span, definition: definition} }
+                    else { Node.Image {url: n.url, title: n.title, children: fromInlines(n.children), span: span, definition: definition} }
+                }
+            recur(i + 1, out :+ node)
+        }
+        go(0, [])
+    }
+    val cells = fn(texts:list, positions:list, width:num):list<list<Node>> {
+        val go = fn(i:num, out:list<list<Node>>):list<list<Node>> {
+            if (i >= width) { return out }
+            tick()
+            val cell = if (i < len(texts)) { inlineNodes(texts[i], positions[i]) } else { [] }
+            recur(i + 1, out :+ cell)
+        }
+        go(0, [])
+    }
+    val blocks = fn(raw:list):list<Node> {
+        val go = fn(i:num, out:list<Node>):list<Node> {
+            if (i >= len(raw)) { return out }
+            tick()
+            val n = raw[i]
+            val span = location(n)
+            val node:Node = if (n.type == "paragraph") { Node.Paragraph {children: inlineNodes(n.text, n.positions), span: span} }
+                else if (n.type == "heading") { Node.Heading {level: n.level, children: inlineNodes(n.text, n.positions), span: span} }
+                else if (n.type == "code") { Node.CodeBlock {info: n.info, text: n.text, span: span} }
+                else if (n.type == "thematic") { Node.ThematicBreak {span: span} }
+                else if (n.type == "blockquote") { Node.BlockQuote {children: blocks(n.children), span: span} }
+                else if (n.type == "item") { Node.Item {children: blocks(n.children), span: span} }
+                else if (n.type == "list") { Node.List {ordered: n.ordered, start: n.start, tight: n.tight, children: blocks(n.children), span: span} }
+                else {
+                    val rows = fn(j:num, out:list<list<list<Node>>>):list<list<list<Node>>> {
+                        if (j >= len(n.rows)) { return out }
+                        tick()
+                        recur(j + 1, out :+ cells(n.rows[j], n.rowPositions[j], len(n.aligns)))
+                    }
+                    Node.Table {aligns: n.aligns, head: cells(n.head, n.headPositions, len(n.aligns)), rows: rows(0, []), span: span}
+                }
+            recur(i + 1, out :+ node)
+        }
+        go(0, [])
+    }
+    Document {children: blocks(parsed.document.children), span: Span {start: normalized.positions[0], end: normalized.positions[len(normalized.positions) - 1]}}
+}
+
+// Validate categories and budgets while lowering into the renderer's private
+// maps. Nominal enums alone cannot prevent an inline block or out-of-range h7.
+val lowerDocument = fn(document:Document, o:map):map {
+    var count = 0
+    var size = 0
+    val tick = fn() { count = count + 1; if (count > o.maxNodes) { limit("nodes", o.maxNodes) } }
+    val text = fn(value:str):str {
+        if (len(value) > o.maxBytes - size) { limit("bytes", o.maxBytes) }
+        size = size + len(toBytes(value))
+        if (size > o.maxBytes) { limit("bytes", o.maxBytes) }
+        value
+    }
+    val sequence = fn(nodes:list<Node>, category:str, blocks:num, inlines:num):list<map> {
+        val go = fn(i:num, out:list<map>):list<map> {
+            if (i >= len(nodes)) { out } else { recur(i + 1, out :+ node(nodes[i], category, blocks, inlines)) }
+        }
+        go(0, [])
+    }
+    val node = fn(value:Node, category:str, blocks:num, inlines:num):map {
+        tick()
+        if (blocks > o.maxDepth || inlines > o.maxDepth) { limit("depth", o.maxDepth) }
+        val raw:map = match value {
+            n:Node.Text => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                checkSpan(n.span)
+                {type: "text", text: text(n.text)}
+            }
+            n:Node.CodeSpan => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                checkSpan(n.span)
+                {type: "code", text: text(n.text)}
+            }
+            n:Node.RawHtml => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                checkSpan(n.span)
+                {type: "html", text: text(n.text)}
+            }
+            n:Node.SoftBreak => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                checkSpan(n.span)
+                {type: "softbreak"}
+            }
+            n:Node.HardBreak => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                checkSpan(n.span)
+                {type: "hardbreak"}
+            }
+            n:Node.Emphasis => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                if (inlines + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                {type: "emph", children: sequence(n.children, "inline", blocks, inlines + 1)}
+            }
+            n:Node.Strong => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                if (inlines + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                {type: "strong", children: sequence(n.children, "inline", blocks, inlines + 1)}
+            }
+            n:Node.Strikethrough => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                if (inlines + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                {type: "del", children: sequence(n.children, "inline", blocks, inlines + 1)}
+            }
+            n:Node.Link => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                if (inlines + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                checkSpan(n.definition)
+                {type: "link", children: sequence(n.children, "inline", blocks, inlines + 1), url: text(n.url), title: text(n.title)}
+            }
+            n:Node.Image => {
+                if (category != "inline") { fail("inline node in a block sequence") }
+                if (inlines + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                checkSpan(n.definition)
+                {type: "image", children: sequence(n.children, "inline", blocks, inlines + 1), url: text(n.url), title: text(n.title)}
+            }
+            n:Node.Paragraph => {
+                if (category != "block") { fail("block node in the wrong sequence") }
+                checkSpan(n.span)
+                {type: "paragraph", inlines: sequence(n.children, "inline", blocks, 0)}
+            }
+            n:Node.Heading => {
+                if (category != "block") { fail("block node in the wrong sequence") }
+                checkSpan(n.span)
+                if (!whole(n.level) || n.level < 1 || n.level > 6) { fail("heading level must be from 1 through 6") }
+                if (n.id != nil) {
+                    if (n.id == "") { fail("heading ID must not be empty") }
+                    val valid = fn(i:num):bool { if (i >= len(n.id)) { true } else if (n.id[i] <= " " || n.id[i] == "\x7f") { false } else { recur(i + 1) } }
+                    if (!valid(0)) { fail("heading ID contains whitespace or a control character") }
+                    text(n.id)
+                }
+                {type: "heading", inlines: sequence(n.children, "inline", blocks, 0), level: n.level, id: n.id}
+            }
+            n:Node.CodeBlock => {
+                if (category != "block") { fail("block node in the wrong sequence") }
+                checkSpan(n.span)
+                {type: "code", text: text(n.text), info: text(n.info)}
+            }
+            n:Node.ThematicBreak => {
+                if (category != "block") { fail("block node in the wrong sequence") }
+                checkSpan(n.span)
+                {type: "thematic"}
+            }
+            n:Node.BlockQuote => {
+                if (category != "block") { fail("block node in the wrong sequence") }
+                if (blocks + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                {type: "blockquote", children: sequence(n.children, "block", blocks + 1, 0)}
+            }
+            n:Node.Item => {
+                if (category != "item") { fail("block node in the wrong sequence") }
+                if (blocks + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                {type: "item", children: sequence(n.children, "block", blocks + 1, 0)}
+            }
+            n:Node.List => {
+                if (category != "block") { fail("block node in the wrong sequence") }
+                if (blocks + 1 > o.maxDepth) { limit("depth", o.maxDepth) }
+                checkSpan(n.span)
+                if (!whole(n.start) || n.start > 999999999) { fail("list start must be an integer from 0 through 999999999") }
+                {type: "list", children: sequence(n.children, "item", blocks + 1, 0), ordered: n.ordered, start: n.start, tight: n.tight}
+            }
+            n:Node.Table => {
+                if (category != "block") { fail("table in a non-block sequence") }
+                checkSpan(n.span)
+                val width = len(n.aligns)
+                if (width < 1) { fail("table must have a column") }
+                if (width > o.maxNodes - count) { limit("nodes", o.maxNodes) }
+                val aligns = map(n.aligns, fn(align:str):str {
+                    if (align != "" && align != "left" && align != "center" && align != "right") { fail("invalid table alignment") }
+                    text(align)
+                })
+                val cells = fn(row:list<list<Node>>):list {
+                    if (len(row) != width) { fail("table row width does not match its columns") }
+                    map(row, fn(cell:list<Node>):list { tick(); sequence(cell, "inline", blocks, 0) })
+                }
+                {type: "table", aligns: aligns, head: cells(n.head), rows: map(n.rows, fn(row:list<list<Node>>):list { tick(); cells(row) }), parsedCells: true}
+            }
+        }
+        raw
+    }
+    checkSpan(document.span)
+    {children: sequence(document.children, "block", 0, 0)}
+}
+
+/**
+ * Replaces each original node once, children first. Validates the input and
+ * result; replacement children are not visited and callback errors propagate.
+ */
+export val transform = fn(document:Document, rewrite:fn<Node, Node>, options:map = {}):Document {
+    val o = documentSettings(options)
+    lowerDocument(document, o)
+    val visit = fn(node:Node):Node {
+        val updated:Node = match node {
+            n:Node.Emphasis => n copy {children: map(n.children, visit)}
+            n:Node.Strong => n copy {children: map(n.children, visit)}
+            n:Node.Strikethrough => n copy {children: map(n.children, visit)}
+            n:Node.Link => n copy {children: map(n.children, visit)}
+            n:Node.Image => n copy {children: map(n.children, visit)}
+            n:Node.Paragraph => n copy {children: map(n.children, visit)}
+            n:Node.Heading => n copy {children: map(n.children, visit)}
+            n:Node.BlockQuote => n copy {children: map(n.children, visit)}
+            n:Node.Item => n copy {children: map(n.children, visit)}
+            n:Node.List => n copy {children: map(n.children, visit)}
+            n:Node.Table => n copy {
+                head: map(n.head, fn(cell:list<Node>):list<Node> { map(cell, visit) }),
+                rows: map(n.rows, fn(row:list<list<Node>>):list<list<Node>> { map(row, fn(cell:list<Node>):list<Node> { map(cell, visit) }) }),
+            }
+            _ => node
+        }
+        rewrite(updated)
+    }
+    val result = document copy {children: map(document.children, visit)}
+    lowerDocument(result, o)
+    result
+}
+
+/**
+ * Extracts decoded text, code, and image descriptions, with newlines between
+ * blocks and tabs between table cells. Does not add URLs or HTML escapes.
+ */
+export val toText = fn(document:Document, options:map = {}):str {
+    val o = documentSettings(options)
+    val raw = lowerDocument(document, o)
+    var output:list<str> = []
+    var size = 0
+    val emit = fn(text:str) {
+        size = size + len(toBytes(text))
+        if (size > o.maxBytes) { limit("bytes", o.maxBytes) }
+        output = output :+ text
+    }
+    val inline = fn(nodes:list) {
+        val go = fn(i:num) {
+            if (i >= len(nodes)) { return nil }
+            val n = nodes[i]
+            if (n.type == "text" || n.type == "html" || n.type == "code") { emit(n.text) }
+            else if (n.type == "softbreak" || n.type == "hardbreak") { emit("\n") }
+            else { inline(n.children) }
+            recur(i + 1)
+        }
+        go(0)
+    }
+    val blocks = fn(nodes:list) {
+        val go = fn(i:num) {
+            if (i >= len(nodes)) { return nil }
+            if (i > 0) { emit("\n") }
+            val n = nodes[i]
+            if (n.type == "paragraph" || n.type == "heading") { inline(n.inlines) }
+            else if (n.type == "code") { emit(n.text) }
+            else if (n.type == "table") {
+                val row = fn(cells:list) {
+                    val each = fn(j:num) { if (j < len(cells)) { if (j > 0) { emit("\t") }; inline(cells[j]); recur(j + 1) } }
+                    each(0)
+                }
+                row(n.head)
+                val rows = fn(j:num) { if (j < len(n.rows)) { emit("\n"); row(n.rows[j]); recur(j + 1) } }
+                rows(0)
+            } else if (n.type != "thematic") { blocks(n.children) }
+            recur(i + 1)
+        }
+        go(0)
+    }
+    blocks(raw.children)
+    join(output, "")
 }

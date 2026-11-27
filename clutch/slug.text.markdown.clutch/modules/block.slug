@@ -112,6 +112,38 @@ val splitOn = fn(text:str, separator:str):list<str> {
     go(0, 0, [])
 }
 
+// The original positions of splitRow's decoded characters. Keep the same
+// separator/escape and trimming rules, including a missing trailing cell.
+val rowPositions = fn(text:str, positions:list):list {
+    val left = fn(i:num):num { if (i < len(text) && isSpaceOrTab(text[i])) { recur(i + 1) } else { i } }
+    val right = fn(i:num):num { if (i > 0 && isSpaceOrTab(text[i - 1])) { recur(i - 1) } else { i } }
+    val end = right(len(text))
+    val first = left(0)
+    val start = if (first < end && text[first] == "|") { first + 1 } else { first }
+    val cell = fn(from:num, to:num):list {
+        val a = left(from)
+        val b = right(to)
+        val go = fn(i:num, out:list):list {
+            if (i >= b) { return out }
+            if (i + 1 < b && text[i:i + 2] == "\\|") { return recur(i + 2, out :+ positions[i + 1]) }
+            recur(i + 1, out :+ positions[i])
+        }
+        go(a, [])
+    }
+    val go = fn(i:num, from:num, out:list):list {
+        if (i >= end) {
+            if (trim(text[from:end]) == "" && from > start) { out } else { out :+ cell(from, end) }
+        } else if (text[i] == "\\" && i + 1 < end) {
+            recur(i + 2, from, out)
+        } else if (text[i] == "|") {
+            recur(i + 1, i + 1, out :+ cell(from, i))
+        } else {
+            recur(i + 1, from, out)
+        }
+    }
+    go(start, start, [])
+}
+
 // The column alignments a delimiter row gives, or nil when `text` is not
 // one: cells of `-`s with optional colons at either end, and a `|`.
 val PIPE = toBytes("|")
@@ -142,7 +174,7 @@ val allDashes = fn(text:str):bool {
  * Parses `text`, whose lines each end in `\n`, into blocks. Throws a
  * `markdown.limit` error when containers nest more than `maxDepth` deep.
  */
-export val parseBlocks = fn(text:str, maxDepth:num):map {
+export val parseBlocks = fn(text:str, maxDepth:num, locations:bool = false):map {
     // Blocks by id, with their children as linked lists, as cmark keeps them.
     // A block joins its parent's children when it closes.
     var blocks = {}
@@ -154,6 +186,20 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
     // `count` lines from `from`, since only the innermost open block takes
     // lines.
     var texts = []
+    // Each retained line maps decoded characters to normalized source
+    // offsets, plus its original newline position. Built only on request.
+    var textPositions = []
+    var lineStart = 0
+    var line = ""
+    var lineNumber = 0
+    var offset = 0
+    var column = 0
+    var partialTab = false
+    var firstNonspace = 0
+    var firstNonspaceColumn = 0
+    var indent = 0
+    var blank = false
+
     // The open blocks, by depth; the document is at 0.
     var stack = {0: 0}
     var top = 0
@@ -162,7 +208,7 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
     val newBlock = fn(fields:map):num {
         val id = blockCount
         blockCount = id + 1
-        blocks = blocks + {[id]: fields + {lastLineBlank: false, from: len(texts), count: 0}}
+        blocks = blocks + {[id]: fields + {lastLineBlank: false, from: len(texts), count: 0, sourceStart: fields.sourceStart ?? (lineStart + offset), sourceEnd: lineStart + len(line)}}
         id
     }
     newBlock({type: "document"})
@@ -190,6 +236,21 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         texts[b.from:b.from + b.count]
     }
 
+    val positions = fn(id:num):list {
+        val b = block(id)
+        val go = fn(i:num, out:list):list {
+            if (i >= b.from + b.count) { out } else { recur(i + 1, out + textPositions[i]) }
+        }
+        if (locations) { go(b.from, []) } else { [] }
+    }
+
+    val touch = fn(depth:num) {
+        if (depth >= 0) {
+            set(at(depth), {sourceEnd: lineStart + len(line)})
+            recur(depth - 1)
+        }
+    }
+
     // Whether a block or its last descendant list or item ended on a blank
     // line.
     val endsWithBlankLine = fn(id:num):bool {
@@ -207,12 +268,17 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         val b = block(id)
         val kind = b.type
         if (kind == "paragraph") {
-            val [rest, found] = parseReferences(join(lines(id), "\n") + "\n", refs)
+            val content = join(lines(id), "\n") + "\n"
+            val sourcePositions = positions(id)
+            val [rest, found] = parseReferences(content, refs, sourcePositions)
             refs = found
             if (isBlankText(rest)) { return false }
-            set(id, {text: trimEnd(rest)})
+            val kept = trimEnd(rest)
+            val consumed = len(content) - len(rest)
+            set(id, {text: kept, positions: sourcePositions[consumed:consumed + len(kept)],
+                sourceStart: if (locations && consumed > 0) { sourcePositions[consumed] } else { b.sourceStart }})
         } else if (kind == "heading") {
-            if (!b.setext) { set(id, {text: join(lines(id), "")}) }
+            if (!b.setext) { set(id, {text: join(lines(id), ""), positions: positions(id)[:len(join(lines(id), ""))]}) }
         } else if (kind == "code") {
             val content = lines(id)
             if (b.fenced) {
@@ -226,7 +292,10 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         } else if (kind == "table") {
             val rows = lines(id)
             val go = fn(i:num, out:list):list { if (i >= len(rows)) { out } else { recur(i + 1, out :+ splitRow(rows[i])) } }
-            set(id, {rows: go(0, [])})
+            val located = fn(i:num, out:list):list {
+                if (i >= len(rows)) { out } else { recur(i + 1, out :+ rowPositions(rows[i], textPositions[b.from + i])) }
+            }
+            set(id, {rows: go(0, []), rowPositions: if (locations) { located(0, []) } else { [] }})
         } else if (kind == "list") {
             val items = children(id)
             val looseItem = fn(i:num):bool {
@@ -277,20 +346,11 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         val id = newBlock(fields)
         top = top + 1
         stack = stack + {[top]: id}
+        if (locations) { touch(top) }
         top
     }
 
     // --- The current line ---
-
-    var line = ""
-    var lineNumber = 0
-    var offset = 0
-    var column = 0
-    var partialTab = false
-    var firstNonspace = 0
-    var firstNonspaceColumn = 0
-    var indent = 0
-    var blank = false
 
     val charAt = fn(i:num):str { if (i < len(line)) { line[i] } else { "" } }
 
@@ -333,9 +393,19 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         recur(count - 1, columns)
     }
 
-    val addLineText = fn(depth:num, content:str) {
+    val addLineText = fn(depth:num, content:str, from:num = -1, synthetic:num = 0) {
         val id = at(depth)
         texts = texts :+ content
+        if (locations) {
+            val start = if (from < 0) { offset } else { from }
+            val go = fn(i:num, out:list):list {
+                if (i >= len(content)) { return out :+ (lineStart + len(line)) }
+                val delta = if (i < synthetic) { 0 } else { i - synthetic + (if (synthetic > 0) { 1 } else { 0 }) }
+                recur(i + 1, out :+ (lineStart + start + delta))
+            }
+            textPositions = textPositions :+ go(0, [])
+            touch(depth)
+        }
         set(id, {count: block(id).count + 1})
     }
 
@@ -343,9 +413,10 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
     // tab as the spaces left of it.
     val addLine = fn(depth:num) {
         if (partialTab) {
+            val tab = offset
             offset = offset + 1
             val spaces = " " * (4 - column % 4)
-            addLineText(depth, spaces + line[offset:])
+            addLineText(depth, spaces + line[offset:], tab, len(spaces))
         } else {
             addLineText(depth, line[offset:])
         }
@@ -442,7 +513,9 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         val paragraph = block(at(depth))
         val head = splitRow(texts[paragraph.from + paragraph.count - 1])
         if (len(head) != len(aligns)) { return nil }
-        {aligns: aligns, head: head}
+        {aligns: aligns, head: head,
+            headPositions: if (locations) { rowPositions(texts[paragraph.from + paragraph.count - 1], textPositions[paragraph.from + paragraph.count - 1]) } else { [] },
+            sourceStart: if (locations) { textPositions[paragraph.from + paragraph.count - 1][0] } else { 0 }}
     }
 
     // --- One line ---
@@ -476,6 +549,7 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         if (kind == "code") {
             if (b.fenced) {
                 if (indent <= 3 && charAt(firstNonspace) == b.fenceChar && closeFence(b.fenceChar) >= b.fenceLength) {
+                    if (locations) { touch(depth) }
                     closeTop()
                     return -1
                 }
@@ -514,17 +588,18 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
         findFirstNonspace()
         val indented = indent >= 4
         val c = charAt(firstNonspace)
+        val sourceStart = lineStart + firstNonspace
         if (!indented && STARTS[c] != true) { return depth }
         if (!indented) {
             if (c == ">") {
                 advance(firstNonspace + 1 - offset, false)
                 if (isSpaceOrTab(charAt(offset))) { advance(1, true) }
-                return recur(addChild(depth, {type: "blockquote"}), allMatched, false)
+                return recur(addChild(depth, {type: "blockquote", sourceStart: sourceStart}), allMatched, false)
             }
             val atx = atxStart()
             if (atx != nil) {
                 advance(firstNonspace + atx[0] - offset, false)
-                return addChild(depth, {type: "heading", level: atx[1], setext: false})
+                return addChild(depth, {type: "heading", level: atx[1], setext: false, sourceStart: sourceStart})
             }
             val fence = openFence()
             if (fence > 0) {
@@ -537,12 +612,17 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
                 val level = setextLevel()
                 if (level > 0) {
                     val id = at(depth)
-                    val [rest, found] = parseReferences(join(lines(id), "\n") + "\n", refs)
+                    val content = join(lines(id), "\n") + "\n"
+                    val sourcePositions = positions(id)
+                    val [rest, found] = parseReferences(content, refs, sourcePositions)
                     refs = found
                     if (isBlankText(rest)) {
                         set(id, {from: len(texts), count: 0})
                     } else {
-                        set(id, {type: "heading", level: level, setext: true, text: trimEnd(rest)})
+                        val consumed = len(content) - len(rest)
+                        set(id, {type: "heading", level: level, setext: true, text: trimEnd(rest), positions: sourcePositions[consumed:consumed + len(trimEnd(rest))],
+                            sourceStart: if (locations && consumed > 0) { sourcePositions[consumed] } else { block(id).sourceStart }})
+                        if (locations) { touch(depth) }
                         offset = len(line)
                     }
                     return depth
@@ -578,12 +658,12 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
                 } else {
                     length + width
                 }
-                val list = fields + {markerOffset: markerOffset, padding: padding}
+                val list = fields + {markerOffset: markerOffset, padding: padding, sourceStart: sourceStart}
                 val current = block(at(depth))
                 val sameList = kind == "list" && current.ordered == list.ordered && current.bullet == list.bullet
                     && current.delimiter == list.delimiter
                 val listDepth = if (sameList) { depth } else { addChild(depth, list + {type: "list"}) }
-                val item = addChild(listDepth, {type: "item", markerOffset: markerOffset, padding: padding, startLine: lineNumber})
+                val item = addChild(listDepth, {type: "item", markerOffset: markerOffset, padding: padding, startLine: lineNumber, sourceStart: sourceStart})
                 return recur(item, allMatched, false)
             }
         }
@@ -598,12 +678,12 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
                 val count = block(id).count
                 val parent = depth - 1
                 if (count > 1) {
-                    set(id, {count: count - 1})
+                    set(id, {count: count - 1, sourceEnd: if (locations) { textPositions[block(id).from + count - 2][-1] } else { 0 }})
                     closeTop()
                 } else {
                     top = top - 1
                 }
-                val opened = addChild(parent, {type: "table", aligns: table.aligns, head: table.head})
+                val opened = addChild(parent, {type: "table", aligns: table.aligns, head: table.head, headPositions: table.headPositions, sourceStart: table.sourceStart})
                 set(at(opened), {from: len(texts)})
                 offset = len(line)
                 return opened
@@ -646,7 +726,7 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
             nil
         } else if (ACCEPTS_LINES[kind] == true) {
             if (kind == "heading" && !b.setext) {
-                addLineText(depth, chopClosingHashes(line[firstNonspace:]))
+                addLineText(depth, chopClosingHashes(line[firstNonspace:]), firstNonspace)
             } else {
                 advance(firstNonspace - offset, false)
                 addLine(depth)
@@ -677,6 +757,7 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
     val each = fn(i:num) {
         if (i < len(all) - 1) {
             processLine(all[i])
+            lineStart = lineStart + len(all[i]) + 1
             recur(i + 1)
         }
     }
@@ -687,17 +768,18 @@ export val parseBlocks = fn(text:str, maxDepth:num):map {
     val build = fn(id:num):map {
         val b = block(id)
         val kind = b.type
-        if (kind == "paragraph") { return {type: kind, text: b.text} }
-        if (kind == "heading") { return {type: kind, level: b.level, text: b.text} }
-        if (kind == "code") { return {type: kind, info: b.info, text: b.text} }
-        if (kind == "thematic") { return {type: kind} }
-        if (kind == "table") { return {type: kind, aligns: b.aligns, head: b.head, rows: b.rows} }
+        val location = if (locations) { {sourceStart: b.sourceStart, sourceEnd: b.sourceEnd} } else { {} }
+        if (kind == "paragraph") { return location + {type: kind, text: b.text, positions: b.positions} }
+        if (kind == "heading") { return location + {type: kind, level: b.level, text: b.text, positions: b.positions} }
+        if (kind == "code") { return location + {type: kind, info: b.info, text: b.text} }
+        if (kind == "thematic") { return location + {type: kind} }
+        if (kind == "table") { return location + {type: kind, aligns: b.aligns, head: b.head, rows: b.rows, headPositions: b.headPositions, rowPositions: b.rowPositions} }
         val kids = children(id)
         val go = fn(i:num, out:list<map>):list<map> { if (i >= len(kids)) { out } else { recur(i + 1, out :+ build(kids[i])) } }
         if (kind == "list") {
-            return {type: kind, ordered: b.ordered, start: b.start, tight: b.tight, children: go(0, [])}
+            return location + {type: kind, ordered: b.ordered, start: b.start, tight: b.tight, children: go(0, [])}
         }
-        {type: kind, children: go(0, [])}
+        location + {type: kind, children: go(0, [])}
     }
     {document: build(0), refs: refs}
 }

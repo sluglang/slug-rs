@@ -1,0 +1,208 @@
+val md = import("slug.text.markdown")
+val {assertEqual, assertThrows, assertTrue} = import("slug.test")
+val {map, range, times} = import("slug.std")
+
+val sourceOf = fn(source:str, span:md.Span|nil):str {
+    if (span == nil) { throw Error {type: "test.failure", msg: "missing source span"} }
+    source[span.start.offset:span.end.offset]
+}
+
+val links = fn(document:md.Document):list<md.Node> {
+    var found:list<md.Node> = []
+    md.transform(document, fn(n:md.Node):md.Node {
+        match n {
+            link:md.Node.Link => { found = found :+ link }
+            image:md.Node.Image => { found = found :+ image }
+            _ => nil
+        }
+        n
+    })
+    found
+}
+
+@test
+export val rewritesTypedLinksAndHeadingIds = fn() {
+    val original = md.parse("# Hello *world*\n\n[Next][page] ![alt](pic.png)\n\n[page]: next.md \"Title\"\n")
+    val updated:md.Document = md.transform(original, fn(n:md.Node):md.Node {
+        match n {
+            h:md.Node.Heading => h copy {id: "hello"}
+            l:md.Node.Link => l copy {url: "/next/"}
+            i:md.Node.Image => i copy {url: "/assets/pic.png"}
+            _ => n
+        }
+    })
+    assertEqual(md.render(updated), "<h1 id=\"hello\">Hello <em>world</em></h1>\n<p><a href=\"/next/\" title=\"Title\">Next</a> <img src=\"/assets/pic.png\" alt=\"alt\" /></p>\n")
+    assertEqual(md.render(original), "<h1>Hello <em>world</em></h1>\n<p><a href=\"next.md\" title=\"Title\">Next</a> <img src=\"pic.png\" alt=\"alt\" /></p>\n")
+    assertEqual(md.toText(updated), "Hello world\nNext alt")
+}
+
+@test
+export val sourceSpansSurviveContainersAndCrLf = fn() {
+    val source = "# Hé\r\n\r\n> - [go][id]\r\n\r\n[id]: /a \"t\"\r\n"
+    val document = md.parse(source)
+    assertEqual(sourceOf(source, document.span), source)
+    match links(document)[0] {
+        link:md.Node.Link => {
+            assertEqual(sourceOf(source, link.span), "[go][id]")
+            assertEqual(sourceOf(source, link.definition), "[id]: /a \"t\"\r\n")
+            val start = link.span ?? {start: {offset: -1, line: -1, column: -1}, end: {offset: -1, line: -1, column: -1}}
+            assertEqual([start.start.line, start.start.column], [3, 5])
+            assertEqual(link.url, "/a")
+        }
+        _ => assertTrue(false)
+    }
+}
+
+@test
+export val tracksTablesEscapesEntitiesAndAutolinks = fn() {
+    val source = "| a\\|[b](x.md) | c |\r\n| - | - |\r\n| &amp; www.example.com | [d](y.md) |\r\n"
+    val found = links(md.parse(source))
+    val spellings = map(found, fn(n:md.Node):str {
+        match n { l:md.Node.Link => sourceOf(source, l.span); _ => "" }
+    })
+    assertEqual(spellings, ["[b](x.md)", "www.example.com", "[d](y.md)"])
+    assertEqual(md.toText(md.parse(source)), "a|b\tc\n& www.example.com\td")
+}
+
+@test
+export val tracksNestedDelimitersTabsAndBareCr = fn() {
+    val source = ">\t***é*** and `x`\r\r> [a](b)"
+    var snippets:list<str> = []
+    md.transform(md.parse(source), fn(n:md.Node):md.Node {
+        match n {
+            e:md.Node.Emphasis => { snippets = snippets :+ sourceOf(source, e.span) }
+            s:md.Node.Strong => { snippets = snippets :+ sourceOf(source, s.span) }
+            c:md.Node.CodeSpan => { snippets = snippets :+ sourceOf(source, c.span) }
+            _ => nil
+        }
+        n
+    })
+    assertEqual(snippets, ["**é**", "***é***", "`x`"])
+    match links(md.parse(source))[0] {
+        l:md.Node.Link => {
+            assertEqual(sourceOf(source, l.span), "[a](b)")
+            if (l.span != nil) { assertEqual(l.span.start.line, 3) }
+        }
+        _ => assertTrue(false)
+    }
+}
+
+@test
+export val postOrderDoesNotRevisitReplacements = fn() {
+    var seen:list<str> = []
+    val original = md.parse("one")
+    val updated = md.transform(original, fn(n:md.Node):md.Node {
+        match n {
+            t:md.Node.Text => {
+                seen = seen :+ t.text
+                md.Node.Strong {children: [md.Node.Text {text: "two"}]}
+            }
+            p:md.Node.Paragraph => { seen = seen :+ "paragraph"; p }
+            _ => n
+        }
+    })
+    assertEqual(seen, ["one", "paragraph"])
+    assertEqual(md.render(updated), "<p><strong>two</strong></p>\n")
+    assertEqual(md.toText(original), "one")
+    assertThrows(fn() { md.transform(original, fn(n:md.Node):md.Node { throw Error {type: "rewrite.failed", msg: "no"} }) }, "rewrite.failed")
+}
+
+@test
+export val codeAndHeadingProvenanceRetainsOriginalSyntax = fn() {
+    val source = "[ref]: /target\r\nHeading\r\n=======\r\n\r\n```slug extra\r\n<x>\r\n```\r\n"
+    var found:list<str> = []
+    md.transform(md.parse(source), fn(n:md.Node):md.Node {
+        match n {
+            h:md.Node.Heading => { found = found :+ sourceOf(source, h.span) }
+            c:md.Node.CodeBlock => {
+                found = found :+ sourceOf(source, c.span)
+                assertEqual(c.info, "slug extra")
+                assertEqual(c.text, "<x>\n")
+            }
+            _ => nil
+        }
+        n
+    })
+    assertEqual(found, ["Heading\r\n=======", "```slug extra\r\n<x>\r\n```"])
+}
+
+@test
+export val constructedTreesStaySafeAndNeverReparseText = fn() {
+    val document:md.Document = md.Document {children: [
+        md.Node.Heading {level: 2, id: "a\"<", children: [md.Node.Text {text: "*literal*"}]},
+        md.Node.Paragraph {children: [
+            md.Node.RawHtml {text: "<script>x</script>"},
+            md.Node.Link {url: "javascript:alert(1)", children: [md.Node.Text {text: "link"}]},
+            md.Node.Image {url: "https://remote.test/a", children: [md.Node.Text {text: "image"}]},
+        ]},
+        md.Node.CodeBlock {info: "slug extra", text: "<x>\n"},
+    ]}
+    assertEqual(md.render(document), "<h2 id=\"a&quot;&lt;\">*literal*</h2>\n<p>&lt;script&gt;x&lt;/script&gt;linkimage</p>\n<pre><code class=\"language-slug\">&lt;x&gt;\n</code></pre>\n")
+    assertEqual(md.toText(document), "*literal*\n<script>x</script>linkimage\n<x>\n")
+}
+
+@test
+export val rejectsInvalidTreeStructureAndRanges = fn() {
+    val bad:list<md.Node> = [
+        md.Node.Text {text: "inline at root"},
+        md.Node.Heading {level: 7, children: []},
+        md.Node.Heading {level: 1e100, children: []},
+        md.Node.Heading {level: 1, id: "two words", children: []},
+        md.Node.List {children: [md.Node.Paragraph {children: []}]},
+        md.Node.List {start: -1, children: []},
+        md.Node.Paragraph {children: [md.Node.CodeBlock {text: "bad"}]},
+        md.Node.Table {aligns: ["bad"], head: [[]], rows: []},
+        md.Node.Table {aligns: ["left"], head: [], rows: []},
+        md.Node.Item {children: []},
+    ]
+    val go = fn(i:num) {
+        if (i < len(bad)) {
+            val document = md.Document {children: [bad[i]]}
+            assertThrows(fn() { md.render(document) }, "markdown.document")
+            assertThrows(fn() { md.toText(document) }, "markdown.document")
+            assertThrows(fn() { md.transform(document, fn(n:md.Node):md.Node { n }) }, "markdown.document")
+            recur(i + 1)
+        }
+    }
+    go(0)
+    val malformed = md.Span {start: md.Position {offset: 2, line: 1, column: 3}, end: md.Position {offset: 1, line: 1, column: 2}}
+    assertThrows(fn() { md.render(md.Document {children: [], span: malformed}) }, "markdown.document")
+    assertThrows(fn() { md.transform(md.parse("x"), fn(n:md.Node):md.Node { md.Node.Item {children: []} }) }, "markdown.document")
+}
+
+@test
+export val treeAndOutputLimitsAreIndependent = fn() {
+    assertThrows(fn() { md.parse("é", {maxBytes: 1}) }, "markdown.limit")
+    assertThrows(fn() { md.parse("x", {maxNodes: 1}) }, "markdown.limit")
+    assertThrows(fn() { md.render(md.parse("x"), {maxNodes: 1}) }, "markdown.limit")
+    assertThrows(fn() { md.render(md.parse("&" * 20), {maxOutputBytes: 50}) }, "markdown.limit")
+    assertThrows(fn() { md.render(md.parse("***x***"), {maxDepth: 1}) }, "markdown.limit")
+    var deep:md.Node = md.Node.Paragraph {children: []}
+    times(128, fn(i) { deep = md.Node.BlockQuote {children: [deep]} })
+    assertThrows(fn() { md.render(md.Document {children: [deep]}) }, "markdown.limit")
+    val emptyNested = md.Document {children: [md.Node.BlockQuote {children: [md.Node.BlockQuote {children: []}]}]}
+    assertThrows(fn() { md.render(emptyNested, {maxDepth: 1}) }, "markdown.limit")
+    val empty = md.Document {children: map(range(5), fn(i):md.Node { md.Node.Paragraph {children: []} })}
+    assertThrows(fn() { md.toText(empty, {maxBytes: 3}) }, "markdown.limit")
+    assertThrows(fn() { md.transform(md.parse("x"), fn(n:md.Node):md.Node {
+        match n { t:md.Node.Text => t copy {text: "longer"}; _ => n }
+    }, {maxBytes: 2}) }, "markdown.limit")
+}
+
+@test
+export val optionsRejectUnknownAndInvalidBudgets = fn() {
+    val document = md.parse("")
+    val bad = [{maxNodes: 0}, {maxDepth: 1.5}, {maxNodes: 1e100}, {maxBytes: nil}, {unknown: true}]
+    val go = fn(i:num) {
+        if (i < len(bad)) {
+            assertThrows(fn() { md.parse("", bad[i]) }, "markdown.options")
+            assertThrows(fn() { md.render(document, bad[i]) }, "markdown.options")
+            assertThrows(fn() { md.toText(document, bad[i]) }, "markdown.options")
+            assertThrows(fn() { md.transform(document, fn(n:md.Node):md.Node { n }, bad[i]) }, "markdown.options")
+            recur(i + 1)
+        }
+    }
+    go(0)
+    assertThrows(fn() { md.render(document, {maxOutputBytes: 0}) }, "markdown.options")
+    assertThrows(fn() { md.render(document, {links: nil}) }, "markdown.options")
+}

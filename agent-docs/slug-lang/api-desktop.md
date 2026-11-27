@@ -236,11 +236,21 @@ malformed templates or partials throw `mustache.syntax`.
 
 ```text
 toHtml = fn(source:str, options:map = {}):str
+parse = fn(source:str, options:map = {}):Document
+transform = fn(document:Document, rewrite:fn<Node, Node>, options:map = {}):Document
+render = fn(document:Document, options:map = {}):str
+toText = fn(document:Document, options:map = {}):str
 ```
 
-See the module source for supported Markdown options and raw-HTML handling;
-conversion alone is not a promise of HTML sanitization. Parser helper modules
-are omitted from this compact reference.
+The document API exposes a typed `Node` enum and `Document`, `Position`, and
+`Span` record aliases with matching struct constructors. `transform` replaces
+one node at a time, children first. Rendering validates constructed trees and
+always escapes raw HTML and checks link/image URLs. Heading nodes accept an
+application-assigned `id`; link/image nodes expose resolved destinations and
+source provenance. See the
+[document contract](https://github.com/sluglang/slug-rs/blob/main/docs/reference/markdown-documents.md)
+for variants, source spans, and independent tree/output budgets. Internal parser
+helper modules are omitted from this compact reference.
 
 ## Runnable SQLite example
 

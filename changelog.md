@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `slug.text.markdown` adds a fully parsed typed document tree with original
+  source spans, resolved reference links, post-order transformations, safe
+  document rendering, plain-text extraction, and application-assigned heading
+  IDs. Constructed and transformed trees have structural and resource checks;
+  the existing `toHtml` API keeps its output and defaults.
+
 - `slug.std` adds `hasKey(m, k)` to distinguish missing map keys from keys
   holding `nil`, and `sort(xs, less)` for stable sorting with a boolean
   comparator. Sorting preserves the input and its element type.

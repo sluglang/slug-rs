@@ -126,6 +126,9 @@ so stage their native libraries before a program imports one:
 make stage-native-clutches
 ```
 
+Markdown supports [typed document trees](docs/reference/markdown-documents.md)
+for source-aware inspection, transformation, safe rendering, and text extraction.
+
 Staged platform libraries are local build outputs, not release artifacts. The
 clutch format is still version 0 and may change. See
 [clutches](docs/reference/clutches.md) for the provider model and [native ABI](docs/reference/native-abi.md) for the host

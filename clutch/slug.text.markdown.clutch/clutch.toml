@@ -8,4 +8,4 @@
 "slug.text.markdown.data" = { source = "modules/data.slug" }
 
 [tests]
-files = ["tests/markdown.slug", "tests/spec.slug"]
+files = ["tests/markdown.slug", "tests/spec.slug", "tests/document.slug"]

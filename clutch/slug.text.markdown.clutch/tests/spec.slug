@@ -45,7 +45,8 @@ val failures = fn(examples:list, expected:map):list {
         val deviation = expected[e.example]
         val want = if (deviation == nil) { e.html } else { deviation.html }
         val actual = markdown.toHtml(e.markdown, OPTIONS)
-        recur(i + 1, if (actual == want) { out } else { out :+ {example: e.example, section: e.section, actual: actual} })
+        val treeHtml = markdown.render(markdown.parse(e.markdown), OPTIONS)
+        recur(i + 1, if (actual == want && treeHtml == want) { out } else { out :+ {example: e.example, section: e.section, actual: actual, treeHtml: treeHtml} })
     }
     go(0, [])
 }

@@ -299,13 +299,14 @@ val referenceAt = fn(s:str, pos:num) {
  * definition of a label wins. Returns `[rest, refs]`, rest being the content
  * after them.
  */
-export val parseReferences = fn(content:str, refs:map):list {
+export val parseReferences = fn(content:str, refs:map, positions:list = []):list {
     val go = fn(pos:num, refs:map):list {
         if (pos >= len(content) || content[pos] != "[") { return [content[pos:], refs] }
         val found = referenceAt(content, pos)
         if (found == nil) { return [content[pos:], refs] }
         val [end, key, url, title] = found
-        recur(end, if (refs[key] == nil) { refs + {[key]: {url: url, title: title}} } else { refs })
+        val location = if (len(positions) > 0) { {definitionStart: positions[pos], definitionEnd: positions[end - 1] + 1} } else { {} }
+        recur(end, if (refs[key] == nil) { refs + {[key]: location + {url: url, title: title}} } else { refs })
     }
     go(0, refs)
 }
@@ -564,7 +565,7 @@ val SPECIAL_BYTES = toBytes(SPECIAL_CHARS)
  * error when emphasis, links, and strikethrough nest more than `maxDepth`
  * deep.
  */
-export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
+export val parseInlines = fn(text:str, refs:map, maxDepth:num, positions:list = []):list {
     val s = text
     val n = len(s)
     var pos = 0
@@ -581,11 +582,12 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
     var head = -1
     var tail = -1
     var nodeCount = 0
+    val locations = len(positions) > 0
 
     val append = fn(node:map):num {
         val id = nodeCount
         nodeCount = id + 1
-        nodes = nodes + {[id]: node}
+        nodes = nodes + {[id]: node + (if (locations) { {from: pos, to: pos} } else { {} })}
         prevOf = prevOf + {[id]: tail}
         nextOf = nextOf + {[id]: -1}
         if (tail >= 0) { nextOf = nextOf + {[tail]: id} } else { head = id }
@@ -691,9 +693,12 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
         }
         dropBetween(delimPrev[closer] ?? -1)
         val kind = if (strike) { "del" } else if (used == 1) { "emph" } else { "strong" }
-        wrap({type: kind}, o.node, c.node)
-        nodes = nodes + {[o.node]: {type: "text", text: o.char * (openerLength - used)}}
-        nodes = nodes + {[c.node]: {type: "text", text: c.char * (closerLength - used)}}
+        val location = if (locations) { {from: nodes[o.node].to - used, to: nodes[c.node].from + used} } else { {} }
+        wrap(location + {type: kind}, o.node, c.node)
+        val openLocation = if (locations) { {from: nodes[o.node].from, to: nodes[o.node].to - used} } else { {} }
+        val closeLocation = if (locations) { {from: nodes[c.node].from + used, to: nodes[c.node].to} } else { {} }
+        nodes = nodes + {[o.node]: openLocation + {type: "text", text: o.char * (openerLength - used)}}
+        nodes = nodes + {[c.node]: closeLocation + {type: "text", text: c.char * (closerLength - used)}}
         if (openerLength == used) {
             unlink(o.node)
             removeDelim(opener)
@@ -787,7 +792,7 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
             return nil
         }
         // An inline link: `(destination "title")`.
-        var target = nil
+        var target:map|nil = nil
         if (pos < n && s[pos] == "(") {
             val destination = scanDestination(s, skipSpacechars(s, pos + 1))
             if (destination != nil) {
@@ -826,7 +831,8 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
             }
         }
         processEmphasis(opener.delimBottom)
-        wrap({type: if (opener.image) { "image" } else { "link" }, url: target.url, title: target.title}, opener.node, -1)
+        val location = if (locations) { {from: nodes[opener.node].from, to: pos, definitionStart: target.definitionStart, definitionEnd: target.definitionEnd} } else { {} }
+        wrap(location + {type: if (opener.image) { "image" } else { "link" }, url: target.url, title: target.title}, opener.node, -1)
         unlink(opener.node)
         bracketCount = bracketCount - 1
         if (!opener.image) { noLinkOpeners = true }
@@ -1014,51 +1020,77 @@ export val parseInlines = fn(text:str, refs:map, maxDepth:num):list {
 
     val run = fn() {
         if (pos < n) {
+            val from = pos
+            val before = nodeCount
             step()
+            if (locations) {
+                val mark = fn(i:num) {
+                    if (i < nodeCount) {
+                        val node = nodes[i]
+                        if (node.to == node.from) { nodes = nodes + {[i]: node + {from: from, to: pos}} }
+                        recur(i + 1)
+                    }
+                }
+                mark(before)
+            }
             recur()
         }
     }
     run()
     processEmphasis(0)
 
-    // The nodes of the list from `id`, with adjacent text joined and, outside
-    // links, its extended autolinks found.
+    val locate = fn(node:map, from:num, to:num):map {
+        if (!locations || to <= from) { return node }
+        node + {sourceStart: positions[from], sourceEnd: positions[to - 1] + 1}
+    }
+
+    // Text merging keeps per-decoded-character provenance so autolinks in
+    // merged text still point to their source after entity/backslash decoding.
     val build = fn(id:num, depth:num, inLink:bool):list<map> {
         if (depth > maxDepth) {
-            throw Error {
-                type: "markdown.limit",
-                msg: "inline elements nest more than $maxDepth deep",
-                data: {limit: "depth", max: maxDepth},
+            throw Error {type: "markdown.limit", msg: "inline elements nest more than $maxDepth deep", data: {limit: "depth", max: maxDepth}}
+        }
+        val flush = fn(out:list<map>, pending:str, starts:list, ends:list):list<map> {
+            if (pending == "") { return out }
+            val pieces = if (inLink) { [{type: "text", text: pending, from: 0, to: len(pending)}] } else { linkify(pending, locations) }
+            val each = fn(i:num, out:list<map>):list<map> {
+                if (i >= len(pieces)) { return out }
+                val piece = pieces[i]
+                val located = if (locations) { locate(piece, starts[piece.from], ends[piece.to - 1]) } else { piece }
+                val result = if (piece.type == "link" && locations) {
+                    located + {children: [locate(piece.children[0], starts[piece.from], ends[piece.to - 1])]}
+                } else { located }
+                recur(i + 1, out :+ result)
             }
+            each(0, out)
         }
-        val flush = fn(out:list<map>, pending:str):list<map> {
-            if (pending == "") { out } else if (inLink) { out :+ {type: "text", text: pending} } else { out + linkify(pending) }
-        }
-        val go = fn(i:num, out:list<map>, pending:str):list<map> {
-            if (i < 0) { return flush(out, pending) }
+        val go = fn(i:num, out:list<map>, pending:str, starts:list, ends:list):list<map> {
+            if (i < 0) { return flush(out, pending, starts, ends) }
             val node = nodes[i]
             val next = nextOf[i] ?? -1
-            if (node.type == "text") { return recur(next, out, pending + node.text) }
-            val flushed = flush(out, pending)
-            // A map, said once here, so the list it joins stays proven and
-            // is not walked again at each `recur`.
+            if (node.type == "text") {
+                val positionsOfText = fn(j:num, starts:list, ends:list):list {
+                    if (j >= len(node.text)) { return [starts, ends] }
+                    val exact = node.to - node.from == len(node.text)
+                    recur(j + 1, starts :+ (node.from + (if (exact) { j } else { 0 })), ends :+ (if (exact) { node.from + j + 1 } else { node.to }))
+                }
+                val source = if (locations) { positionsOfText(0, starts, ends) } else { [[], []] }
+                return recur(next, out, pending + node.text, source[0], source[1])
+            }
+            val flushed = flush(out, pending, starts, ends)
             val built:map = if (node.label != nil) {
-                {type: node.type, url: node.url, title: node.title, children: [{type: "text", text: node.label}]}
+                {type: node.type, url: node.url, title: node.title, children: [if (locations) { locate({type: "text", text: node.label}, node.from, node.to) } else { {type: "text", text: node.label} }]}
             } else if (CONTAINER_INLINES[node.type] == true) {
                 val kids = node.kids
                 val linked = inLink || node.type == "link" || node.type == "image"
                 val built = if (kids == nil) { [] } else { build(kids[0], depth + 1, linked) }
                 if (node.type == "link" || node.type == "image") {
-                    {type: node.type, url: node.url, title: node.title, children: built}
-                } else {
-                    {type: node.type, children: built}
-                }
-            } else {
-                node
-            }
-            recur(next, flushed :+ built, "")
+                    {type: node.type, url: node.url, title: node.title, children: built, definitionStart: node.definitionStart, definitionEnd: node.definitionEnd}
+                } else { {type: node.type, children: built} }
+            } else { node }
+            recur(next, flushed :+ (if (locations) { locate(built, node.from, node.to) } else { built }), "", [], [])
         }
-        go(id, [], "")
+        go(id, [], "", [], [])
     }
     build(head, 0, false)
 }
@@ -1075,21 +1107,24 @@ val mayLink = fn(text:str):bool {
 }
 
 // `text` as text and the extended autolinks in it.
-val linkify = fn(text:str):list<map> {
-    if (!mayLink(text)) { return [{type: "text", text: text}] }
+val linkify = fn(text:str, locations:bool = false):list<map> {
+    val located = fn(node:map, from:num, to:num):map {
+        node + (if (locations) { {from: from, to: to} } else { {} })
+    }
+    if (!mayLink(text)) { return [located({type: "text", text: text}, 0, len(text))] }
     val data = toBytes(text)
     val starts = if (len(data) == len(text)) { candidateStarts(text, data) } else { nil }
     // Tries each position in `starts` from index `k`, or every position when
     // there is no list.
     val go = fn(i:num, k:num, start:num, out:list<map>):list<map> {
         val at = if (starts == nil) { i } else if (k < len(starts)) { starts[k] } else { len(text) }
-        if (at >= len(text)) { return if (start < len(text)) { out :+ {type: "text", text: text[start:]} } else { out } }
+        if (at >= len(text)) { return if (start < len(text)) { out :+ located({type: "text", text: text[start:]}, start, len(text)) } else { out } }
         if (at < start) { return recur(i, k + 1, start, out) }
         val found = extendedAutolinkAt(text, at)
         if (found == nil) { return recur(at + 1, k + 1, start, out) }
         val [end, url] = found
-        val before = if (start < at) { out :+ {type: "text", text: text[start:at]} } else { out }
-        recur(end, k + 1, end, before :+ {type: "link", url: url, title: "", children: [{type: "text", text: text[at:end]}]})
+        val before = if (start < at) { out :+ located({type: "text", text: text[start:at]}, start, at) } else { out }
+        recur(end, k + 1, end, before :+ located({type: "link", url: url, title: "", children: [{type: "text", text: text[at:end]}]}, at, end))
     }
     go(0, 0, 0, [])
 }

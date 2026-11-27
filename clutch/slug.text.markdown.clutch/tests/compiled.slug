@@ -5,6 +5,7 @@
 val test = import("slug.test")
 val unit = import("markdown")
 val spec = import("spec")
+val document = import("document")
 
 val run = fn(suite:str, tests:map):num {
     val names = keys(tests)
@@ -23,8 +24,8 @@ val run = fn(suite:str, tests:map):num {
 }
 
 val main = fn() {
-    val failed = run("markdown", unit) + run("spec", spec)
-    val count = len(keys(unit)) + len(keys(spec))
+    val failed = run("markdown", unit) + run("spec", spec) + run("document", document)
+    val count = len(keys(unit)) + len(keys(spec)) + len(keys(document))
     if (failed > 0) { test.fail("$failed of $count compiled tests failed") }
     println("slug.text.markdown compiled: $count passed")
 }
