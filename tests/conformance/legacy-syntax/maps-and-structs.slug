@@ -8,7 +8,7 @@ val User = struct {
     active = true,
 }
 val first = User {name: user.name, age: user.age}
-val second = first copy {active: false}
+val second = first + {active: false}
 
 println(second.name)
 println(second.active)

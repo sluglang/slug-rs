@@ -8229,7 +8229,7 @@ mod tests {
              val n:map<str, [num, num]> = m + {[k]: [1, 2]}\n",
             "val k = \"a\"\nval n:map<str, [num, num]> = {[k]: [1, 2]}\n",
             "val m:map<str, [num, num]> = {a: [1, 2]}\n",
-            "type P = {at: [num, num]|nil, n: num}\nval p:P = {n: 1}\nval q:P = p copy {at: [1, 2]}\n",
+            "type P = {at: [num, num]|nil, n: num}\nval p:P = {n: 1}\nval q:P = p + {at: [1, 2]}\n",
             // An empty literal after `??` is one of the kind before it.
             "val pick = fn():list<num>|nil { nil }\nval xs:list<num> = pick() ?? []\n",
             "val pick = fn():map<str, num>|nil { nil }\nval m:map<str, num> = pick() ?? {}\n",
@@ -8362,7 +8362,7 @@ mod tests {
                    [[h, ...t], ...] => recur(t, f(v, h), f)\n\
                  }}\n\
                  type E = {{n: num, xs: list<str>}}\n\
-                 val bump = fn(e:E, x:num):E {{ e copy {{n: e.n + x}} }}\n\
+                 val bump = fn(e:E, x:num):E {{ e + {{n: e.n + x}} }}\n\
                  val dyn = fn(x) {{ x }}\n\
                  val run = fn(e:E):E {{ fold([1, 2], {start}, fn(acc, x) {{ bump(acc, x) }}) }}\n"
             );
@@ -8393,7 +8393,7 @@ mod tests {
             let source = format!(
                 "{callee}\n\
                  type E = {{n: num, xs: list<str>}}\n\
-                 val bump = fn(e:E):E {{ e copy {{n: e.n + 1}} }}\n\
+                 val bump = fn(e:E):E {{ e + {{n: e.n + 1}} }}\n\
                  val run = fn(e:E) {{ g(e, fn(acc) {{ bump(acc) }}) }}\n"
             );
             let program = super::super::compile("test.slug", &source).expect("calls compile");
@@ -8427,8 +8427,8 @@ mod tests {
              var w:W = {n: 0, s: [\"a\"]}\n\
              val dyn = fn(x) { x }\n\
              val tick = fn() {\n\
-               w = w copy {s: dyn([\"x\"])}\n\
-               w = w copy {n: w.n + 1}\n\
+               w = w + {s: dyn([\"x\"])}\n\
+               w = w + {n: w.n + 1}\n\
              }\n",
         );
         let assignments = checks
@@ -8537,8 +8537,8 @@ mod tests {
             "val dynamic = fn(x) { x }\n\
              val Pet = struct { name: str, age }\n\
              val rex = Pet { name: dynamic(\"Rex\"), age: dynamic(3) }\n\
-             val proven = rex copy { name: \"Max\" }\n\
-             val unproven = rex copy { name: dynamic(\"Max\") }\n",
+             val proven = rex + { name: \"Max\" }\n\
+             val unproven = rex + { name: dynamic(\"Max\") }\n",
         );
         assert_eq!(
             checks,
@@ -9193,7 +9193,7 @@ mod tests {
             ),
             ("var l = []\nval f = fn(v) { l = l :+ v }\nf(1)", ListAppend),
             (
-                "var p = {hp: 1}\nval f = fn() { p = p copy {hp: 2} }\nf()",
+                "var p = {hp: 1}\nval f = fn() { p = p + {hp: 2} }\nf()",
                 StructCopy,
             ),
             (
@@ -9213,7 +9213,7 @@ mod tests {
         }
         // A copy whose last field updates the same field takes its operator in.
         let nested = opcodes(
-            "var p = {hp: 1, log: []}\nval f = fn(m) { p = p copy {hp: 2, log: p.log :+ m} }\nf(1)",
+            "var p = {hp: 1, log: []}\nval f = fn(m) { p = p + {hp: 2, log: p.log :+ m} }\nf(1)",
         );
         assert!(nested.contains(&CopyGlobalUpdate), "{nested:?}");
         assert!(

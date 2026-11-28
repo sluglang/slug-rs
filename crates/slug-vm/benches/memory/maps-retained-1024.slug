@@ -2,7 +2,7 @@ val build = fn(remaining, snapshots, value) {
     if (remaining == 0) {
         snapshots
     } else {
-        recur(remaining - 1, snapshots :+ value, value copy { item: remaining })
+        recur(remaining - 1, snapshots :+ value, value + { item: remaining })
     }
 }
 

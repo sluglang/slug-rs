@@ -203,8 +203,8 @@ fn native_collection_round_trips_preserve_pre_update_values() {
          val oldUser = identity(user)\n\
          val nextList = list :+ 3\n\
          val nextBytes = bytes :+ 4\n\
-         val nextMap = map copy {version: 2}\n\
-         val nextUser = user copy {active: false}\n\
+         val nextMap = map + {version: 2}\n\
+         val nextUser = user + {active: false}\n\
          [oldList == list, oldList == nextList, oldBytes == bytes, oldBytes == nextBytes, oldMap.version, nextMap.version, oldUser.active, nextUser.active]\n",
     )
     .expect("compile native collection round-trip source");

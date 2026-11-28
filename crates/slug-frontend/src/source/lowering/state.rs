@@ -166,7 +166,7 @@ impl State {
     /// assignment to the module-level `name` assign it as well, so that the
     /// collection it updates can change in place. A `copy` whose last field's
     /// value ends in one of the others takes that operator in too, as in
-    /// `player = player copy {memory: player.memory + entry}`. No jump may
+    /// `player = player + {memory: player.memory + entry}`. No jump may
     /// land after the instructions replaced, where the assignment's own
     /// instructions would have been.
     pub(super) fn fuse_global_update(&mut self, name: &str) -> bool {

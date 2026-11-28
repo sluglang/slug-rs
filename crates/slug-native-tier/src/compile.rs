@@ -2762,7 +2762,7 @@ mod tests {
              val step = fn(i) {\n\
                  total = total + i\n\
                  log = log :+ i\n\
-                 player = player copy { hp: player.hp + i }\n\
+                 player = player + { hp: player.hp + i }\n\
                  [i] :+ i\n\
              }\n\
              val main = fn() { println(step(1), total, log, player) }\n",

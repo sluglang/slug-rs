@@ -55,7 +55,7 @@ val newKindsTurnUpInTheDungeon = fn() {
 
 val setPlayer = fn(id:str, fields:map) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}})
 }
 
 @test
@@ -68,9 +68,9 @@ val aWraithsBlowsSapStrength = fn() {
     val lv:any|nil = s.levels[key]
     val spot = filter(range(lv.walls.left + 1, lv.walls.right), fn(x) { lv.map[10][x] == "=" && lv.map[10][x + 1] == "=" })[0]
     val wraith = {x: spot + 1, y: 10, kind: indexOf("wraith"), hp: 999, maxHp: 999, state: "awake"}
-    game.load(s copy {
-        levels: s.levels + {[key]: lv copy {monsters: [wraith], characters: []}},
-        players: s.players + {a: s.players.a copy {x: spot, y: 10, hp: 999, maxHp: 999}},
+    game.load(s + {
+        levels: s.levels + {[key]: lv + {monsters: [wraith], characters: []}},
+        players: s.players + {a: s.players.a + {x: spot, y: 10, hp: 999, maxHp: 999}},
     })
     map(range(40), fn(_) { if (!game.playerOf("a").dead) { game.command("a", "space", false) } })
     assertTrue(game.playerOf("a").str < 16)

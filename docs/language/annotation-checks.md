@@ -73,8 +73,8 @@ is made.
 | A parameter of type `T` | The argument, or the default, against `T` | On entry to the function, before its body runs |
 | A rest parameter `...name:list<T>` | The list of rest arguments | On entry |
 | A function's result annotation `:T` | The value it completes with, by reaching the end of its body or by `return` | When it returns |
-| A struct field `name:T` | The field's value against `T`, with the struct's type arguments | At construction, and at a `copy` that replaces the field |
-| A field of a struct whose schema the checker does not know, as `s { name: v }` or `p copy { name: v }` for unannotated `s` and `p` | The value's kind against the schema's annotation for the field, which the schema carries | At construction or the copy, by the schema itself |
+| A struct field `name:T` | The field's value against `T`, with the struct's type arguments | At construction, and at a `+` that sets the field |
+| A field of a struct whose schema the checker does not know, as `s { name: v }` or `p + { name: v }` for unannotated `s` and `p` | The value's kind against the schema's annotation for the field, which the schema carries | At construction or the update, by the schema itself |
 | The sources in the table above | As described there | At the source |
 
 **What the checker relied on is checked, annotated or not.** A `var`'s type
@@ -140,7 +140,7 @@ that binds the arguments, whose entry check fails naming it.
 code gives a `foreign` function's result, which is checked to be of the
 annotation's kind when it returns: a `list<str>` result is checked to be a
 list. A schema carries the kinds of its annotated fields, and checks every
-value given them, by a construction or a copy, wherever it happens.
+value given them, by a construction or a field update, wherever it happens.
 
 ## What a check covers
 

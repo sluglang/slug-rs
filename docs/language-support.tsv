@@ -9,7 +9,7 @@ Raw and triple-quoted strings with basic escapes|implemented|`crates/slug/tests/
 One-to-three-digit octal escapes|implemented|`crates/slug/tests/cli.rs`
 `$identifier` and `${expression}` interpolated strings|implemented|`crates/slug/tests/cli.rs` and `tests/conformance/legacy-syntax/string-interpolation.slug`
 Boolean and nil literals|implemented|`crates/slug/tests/cli.rs`
-Lists and maps, including persistent map merge/removal/copy and the `keys` builtin|implemented|`crates/slug/tests/cli.rs` and `crates/slug-vm/tests/vm.rs`
+Lists and maps, including persistent map merge/removal and the `keys` builtin|implemented|`crates/slug/tests/cli.rs` and `crates/slug-vm/tests/vm.rs`
 Arithmetic, string concatenation/repetition, and list/bytes concatenation (`+`, `-`, `*`, `/`, `%`)|implemented|`crates/slug/tests/cli.rs` and `crates/slug-vm/tests/vm.rs`
 Equality and comparisons|implemented|`crates/slug/tests/cli.rs` and `crates/slug-vm/tests/vm.rs`
 Lexicographic string ordering comparisons|implemented|`crates/slug/tests/cli.rs`, `crates/slug-vm/tests/vm.rs`, and `language/strings.md`

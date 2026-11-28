@@ -25,9 +25,9 @@ export val rewritesTypedLinksAndHeadingIds = fn() {
     val original = md.parse("# Hello *world*\n\n[Next][page] ![alt](pic.png)\n\n[page]: next.md \"Title\"\n")
     val updated:md.Document = md.transform(original, fn(n:md.Node):md.Node {
         match n {
-            h:md.Node.Heading => h copy {id: "hello"}
-            l:md.Node.Link => l copy {url: "/next/"}
-            i:md.Node.Image => i copy {url: "/assets/pic.png"}
+            h:md.Node.Heading => h + {id: "hello"}
+            l:md.Node.Link => l + {url: "/next/"}
+            i:md.Node.Image => i + {url: "/assets/pic.png"}
             _ => n
         }
     })
@@ -185,7 +185,7 @@ export val treeAndOutputLimitsAreIndependent = fn() {
     val empty = md.Document {children: map(range(5), fn(i):md.Node { md.Node.Paragraph {children: []} })}
     assertThrows(fn() { md.toText(empty, {maxBytes: 3}) }, "markdown.limit")
     assertThrows(fn() { md.transform(md.parse("x"), fn(n:md.Node):md.Node {
-        match n { t:md.Node.Text => t copy {text: "longer"}; _ => n }
+        match n { t:md.Node.Text => t + {text: "longer"}; _ => n }
     }, {maxBytes: 2}) }, "markdown.limit")
 }
 

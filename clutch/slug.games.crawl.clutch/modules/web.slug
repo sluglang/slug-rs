@@ -720,7 +720,7 @@ val asPlayer = fn(request:map, respond:fn):map {
             val id = newPlayer()
             val response = respond(id)
             val cookie = "crawl=" + id + "; Path=/; HttpOnly; SameSite=Strict"
-            response copy {headers: (response.headers ?? {}) + {"Set-Cookie": cookie}}
+            response + {headers: (response.headers ?? {}) + {"Set-Cookie": cookie}}
         }
     }
 }

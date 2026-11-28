@@ -67,8 +67,8 @@ of its value, and that is also its map type, `map<str, str|num>`. So a
 literal may be passed where a record type or a map type is expected. A
 literal with any other key, and the empty literal `{}`, has a map type as
 before. The checker keeps the record type through bindings, `+` of two such
-literals, which gives the right one's type at a shared key, and `copy`, which
-gives each replaced field its new type. A `var` declared from a map literal
+literals, which gives the right one's type at a shared key, and a record's
+field update, which gives each replaced field its new type. A `var` declared from a map literal
 takes its map type, since later values need not have the same keys.
 
 ## Use
@@ -95,7 +95,7 @@ expected {name: str}, got map<str, str>: field `name` may be missing, which read
 ## Merging
 
 `r + {k: v, ...}`, for `r` of a record type and a map literal of constant
-keys, sets fields, as `copy` does, whether `r` is a map or a struct: each key
+keys, sets fields, whether `r` is a map or a struct: each key
 must be a field the type lists, and the result has the record type with each
 set field of its new value's type. So `empire + {wars: wars}` keeps an
 `Empire` an `Empire`. A key the type does not list is reported:
@@ -104,9 +104,13 @@ set field of its new value's type. So `empire + {wars: wars}` keeps an
 `+` sets fields of {n: num}, which has no field `other`; a record merge sets only the fields its type lists
 ```
 
-A merge with computed keys, `r + {[k]: v}`, and `r - k` are not allowed on a
-record type, since a struct cannot gain or lose a field. See the
-[decision](../decisions/2026-11-24-record-merge.md).
+A merge whose keys are known only when it runs, with computed keys,
+`r + {[k]: v}`, or a map built at run time, `r + changes`, needs string keys.
+When it runs, a map value gains any key it lacks, and a struct value fails on
+a key its schema lacks. `r - k` is not allowed on a record type, since a
+struct cannot lose a field. See the
+[decision](../decisions/2026-11-24-record-merge.md) and its
+[revision](../decisions/2026-11-28-plus-replaces-copy.md).
 
 ## Match constraints
 

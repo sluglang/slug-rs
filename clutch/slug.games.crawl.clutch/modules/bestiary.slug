@@ -28,7 +28,7 @@ export val DEEPEST = 12
 
 // The eval's kinds that live down to its deepest, depth 8, go on to ours.
 val carried = map(data.monsters, fn(m) {
-    if (m.depths[1] == 8) { m copy {depths: [m.depths[0], DEEPEST]} } else { m }
+    if (m.depths[1] == 8) { m + {depths: [m.depths[0], DEEPEST]} } else { m }
 })
 
 /**

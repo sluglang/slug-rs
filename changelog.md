@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking:** `copy` is removed. `value copy { field: new }` is now the
+  compile error `removed_syntax`, whose fix rewrites it as
+  `value + { field: new }`, adding parentheses where `+` groups differently,
+  as `(p + { x: 1 }).x` for `p copy { x: 1 }.x`. `copy` stays reserved for
+  now. A merge whose keys are known only when it runs, `r + {[k]: v}` or
+  `r + changes`, is now allowed on a record type: a map gains a key it lacks
+  and a struct fails on one. Every `copy` in the repository's Slug sources,
+  tests and docs is rewritten.
+
 - `value + {field: v}` now sets a struct's fields wherever `copy` does, as a
   first step to removing `copy`. On a value known to be a `struct<P>`, `+` was
   rejected (``operator `+` does not accept struct<P> and {...}``); it now gets

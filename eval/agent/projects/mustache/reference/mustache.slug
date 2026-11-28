@@ -193,7 +193,7 @@ val standaloneTags = fn(line:list):list {
         recur(i + 1, if (token.type == "text") {
             out
         } else if (token.kind == ">" || token.kind == "<") {
-            out :+ (token copy {indent: indent})
+            out :+ (token + {indent: indent})
         } else {
             out :+ token
         })

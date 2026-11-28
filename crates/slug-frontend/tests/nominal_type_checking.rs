@@ -90,7 +90,7 @@ fn schema_instances_use_schema_identity_not_field_structure() {
          val Size = struct { x:num, y:num }\n\
          val point:struct<Point> = Point { x: 1, y: 2 }\n\
          val size:struct<Size> = Size { x: 3, y: 4 }\n\
-         val move = fn(value:struct<Point>):struct<Point> { value copy { x: value.x + 1 } }\n\
+         val move = fn(value:struct<Point>):struct<Point> { value + { x: value.x + 1 } }\n\
          move(point)\n\
          size.x\n",
     );

@@ -343,8 +343,8 @@ fn imported_collection_exports_remain_immutable_after_updates() {
         "val library = import(\"library\")\n\
          val list = library.list :+ 3\n\
          val bytes = library.bytes :+ 4\n\
-         val map = library.map copy {version: 2}\n\
-         val user = library.user copy {active: false}\n\
+         val map = library.map + {version: 2}\n\
+         val user = library.user + {active: false}\n\
          println(library.list, list, library.bytes, bytes, library.map.version, map.version, library.user.active, user.active)\n",
     )
     .expect("write collection import source");
@@ -1429,8 +1429,8 @@ fn a_module_variable_updated_in_place_keeps_value_semantics() {
              l = l :+ 2\n\
              l = l + [3]\n\
              s = s + \"y\" + 5\n\
-             r = r copy {y: 9}\n\
-             c = c copy {hp: c.hp - 1}\n\
+             r = r + {y: 9}\n\
+             c = c + {hp: c.hp - 1}\n\
              println(before)\n\
              println(m, l, s, r, c)\n\
              val fail = fn(update) {\n\
@@ -1439,7 +1439,7 @@ fn a_module_variable_updated_in_place_keeps_value_semantics() {
              }\n\
              fail(fn() { l = l + id(5) })\n\
              fail(fn() { m = m - id(fn() { 1 }) })\n\
-             fail(fn() { r = r copy {z: 1} })\n\
+             fail(fn() { r = r + {z: 1} })\n\
              fail(fn() { c = c + 1 })\n\
              println(m, l, r, c)\n\
          }\n",
@@ -1490,26 +1490,26 @@ fn a_module_variable_field_updated_in_place_keeps_value_semantics() {
          var p = id(P { name: \"a\", memory: {}, log: [] })\n\
          var d:map = {players: {}, levels: {\"zz\": 0}, n: 0}\n\
          val main = fn() {\n\
-             p = p copy {memory: p.memory + {k1: 1}}\n\
+             p = p + {memory: p.memory + {k1: 1}}\n\
              val keepP = p\n\
              val keepMemory = p.memory\n\
-             p = p copy {memory: p.memory + {k2: 2}}\n\
-             p = p copy {name: \"b\", log: p.log :+ \"x\"}\n\
-             p = p copy {log: p.log + [\"y\"]}\n\
+             p = p + {memory: p.memory + {k2: 2}}\n\
+             p = p + {name: \"b\", log: p.log :+ \"x\"}\n\
+             p = p + {log: p.log + [\"y\"]}\n\
              println(keepP, keepMemory, p)\n\
-             d = d copy {players: d.players + {a: true}}\n\
-             d = d copy {n: d.n + 1, levels: d.levels - \"zz\"}\n\
+             d = d + {players: d.players + {a: true}}\n\
+             d = d + {n: d.n + 1, levels: d.levels - \"zz\"}\n\
              val keepD = d\n\
-             d = d copy {levels: d.levels + {\"0,0\": 1}}\n\
+             d = d + {levels: d.levels + {\"0,0\": 1}}\n\
              println(keepD, d)\n\
              val fail = fn(update) {\n\
                  defer onerror(e) { println(e.msg) }\n\
                  update()\n\
              }\n\
-             fail(fn() { p = p copy {memory: p.memory + id(1)} })\n\
-             fail(fn() { p = p copy {name: id(nil).x, memory: p.memory + {k3: 3}} })\n\
-             fail(fn() { d = d copy {players: d.players - id(fn() { 1 })} })\n\
-             fail(fn() { p = id(P { name: \"c\", memory: {}, log: [] }) copy {memory: p.memory + {k4: 4}} })\n\
+             fail(fn() { p = p + {memory: p.memory + id(1)} })\n\
+             fail(fn() { p = p + {name: id(nil).x, memory: p.memory + {k3: 3}} })\n\
+             fail(fn() { d = d + {players: d.players - id(fn() { 1 })} })\n\
+             fail(fn() { p = id(P { name: \"c\", memory: {}, log: [] }) + {memory: p.memory + {k4: 4}} })\n\
              println(p, d)\n\
          }\n",
     )

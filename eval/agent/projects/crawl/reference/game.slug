@@ -81,11 +81,11 @@ val indexAt = fn(list:list, x:num, y:num):num {
 }
 
 val say = fn(text:str) {
-    state = state copy {messages: state.messages :+ text}
+    state = state + {messages: state.messages :+ text}
 }
 
 val setPlayer = fn(p:map) {
-    state = state copy {player: p}
+    state = state + {player: p}
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ val addToPack = fn(item:map):str|nil {
     val s = stack(0)
     if (s >= 0) {
         val e = state.pack[s]
-        state = state copy {pack: state.pack[:s] + [e copy {count: e.count + 1}] + state.pack[s + 1:]}
+        state = state + {pack: state.pack[:s] + [e + {count: e.count + 1}] + state.pack[s + 1:]}
         e.letter
     } else if (len(state.pack) >= PACK_SIZE) {
         nil
@@ -197,7 +197,7 @@ val addToPack = fn(item:map):str|nil {
             if (i == len(state.pack) || state.pack[i].letter > letter) { i } else { recur(i + 1) }
         }
         val at = place(0)
-        state = state copy {pack: state.pack[:at] + [{letter: letter, item: item, count: 1}] + state.pack[at:]}
+        state = state + {pack: state.pack[:at] + [{letter: letter, item: item, count: 1}] + state.pack[at:]}
         letter
     }
 }
@@ -208,7 +208,7 @@ val takeOne = fn(letter:str) {
     val i = packIndex(letter)
     val e = state.pack[i]
     if (e.count > 1) {
-        state = state copy {pack: state.pack[:i] + [e copy {count: e.count - 1}] + state.pack[i + 1:]}
+        state = state + {pack: state.pack[:i] + [e + {count: e.count - 1}] + state.pack[i + 1:]}
     } else {
         removeEntry(letter)
     }
@@ -216,9 +216,9 @@ val takeOne = fn(letter:str) {
 
 val removeEntry = fn(letter:str) {
     val i = packIndex(letter)
-    state = state copy {pack: state.pack[:i] + state.pack[i + 1:]}
+    state = state + {pack: state.pack[:i] + state.pack[i + 1:]}
     val p = state.player
-    setPlayer(p copy {
+    setPlayer(p + {
         weapon: if (p.weapon == letter) { nil } else { p.weapon },
         armour: if (p.armour == letter) { nil } else { p.armour },
     })
@@ -226,7 +226,7 @@ val removeEntry = fn(letter:str) {
 
 val setEntry = fn(letter:str, e:map) {
     val i = packIndex(letter)
-    state = state copy {pack: state.pack[:i] + [e] + state.pack[i + 1:]}
+    state = state + {pack: state.pack[:i] + [e] + state.pack[i + 1:]}
 }
 
 // The player's armour: the worn armour's value plus its bonus, or 0.
@@ -247,13 +247,13 @@ val pickUp = fn() {
     if (i >= 0) {
         val item = state.items[i].item
         if (item.kind == "gold") {
-            state = state copy {items: state.items[:i] + state.items[i + 1:]}
-            setPlayer(state.player copy {gold: state.player.gold + item.amount})
+            state = state + {items: state.items[:i] + state.items[i + 1:]}
+            setPlayer(state.player + {gold: state.player.gold + item.amount})
             say("You found " + item.amount + " gold pieces.")
         } else {
             match addToPack(item) {
                 letter: str => {
-                    state = state copy {items: state.items[:i] + state.items[i + 1:]}
+                    state = state + {items: state.items[:i] + state.items[i + 1:]}
                     say(packLine(state.pack[packIndex(letter)]))
                 }
                 _ => say("Your pack is full.")
@@ -337,7 +337,7 @@ val see = fn() {
         }
         around(0)
     }
-    state = state copy {memory: memory}
+    state = state + {memory: memory}
 }
 
 val enterLevel = fn(depth:num) {
@@ -345,7 +345,7 @@ val enterLevel = fn(depth:num) {
     val blank = fn(i:num, rows:list):list {
         if (i == level.HEIGHT) { rows } else { recur(i + 1, rows :+ (level.BLANK * level.WIDTH)) }
     }
-    state = state copy {
+    state = state + {
         depth: depth,
         map: lv.map,
         rooms: lv.rooms,
@@ -353,7 +353,7 @@ val enterLevel = fn(depth:num) {
         monsters: lv.monsters,
         memory: blank(0, []),
         sense: false,
-        player: state.player copy {x: lv.player.x, y: lv.player.y},
+        player: state.player + {x: lv.player.x, y: lv.player.y},
     }
     see()
 }
@@ -419,11 +419,11 @@ val kindOf = fn(m:map) { data.monsters[m.kind] }
 val hasFlag = fn(m:map, flag:str):bool { contains(kindOf(m).flags, flag) }
 
 val setMonster = fn(i:num, m:map) {
-    state = state copy {monsters: state.monsters[:i] + [m] + state.monsters[i + 1:]}
+    state = state + {monsters: state.monsters[:i] + [m] + state.monsters[i + 1:]}
 }
 
 val removeMonster = fn(i:num) {
-    state = state copy {monsters: state.monsters[:i] + state.monsters[i + 1:]}
+    state = state + {monsters: state.monsters[:i] + state.monsters[i + 1:]}
 }
 
 // An attack roll: hits when below(20) + 1 + level + bonus >= 10 + armour.
@@ -440,7 +440,7 @@ val strengthDamage = fn(str:num):num {
 }
 
 val die = fn(cause:str) {
-    state = state copy {dead: true}
+    state = state + {dead: true}
     say("You die.")
     say(cause + " on depth " + state.depth + ".")
     say("Press enter to play again.")
@@ -449,12 +449,12 @@ val die = fn(cause:str) {
 // Experience: each level from 2 needs 10, 20, 40, ... points; each level
 // gained adds roll(1, 10) to hit points and their maximum.
 val gainXp = fn(xp:num) {
-    setPlayer(state.player copy {xp: state.player.xp + xp})
+    setPlayer(state.player + {xp: state.player.xp + xp})
     val up = fn(need:num) {
         val p = state.player
         if (p.xp >= need) {
             val gain = rng.roll(1, 10)
-            setPlayer(p copy {level: p.level + 1, hp: p.hp + gain, maxHp: p.maxHp + gain})
+            setPlayer(p + {level: p.level + 1, hp: p.hp + gain, maxHp: p.maxHp + gain})
             say("Welcome to level " + (p.level + 1) + ".")
             recur(need * 2)
         }
@@ -536,7 +536,7 @@ val monsterAttack = fn(i:num):bool {
     val p = state.player
     if (hits(kind.level, 0, armourValue())) {
         val damage = rng.roll(kind.damage[0], kind.damage[1])
-        setPlayer(p copy {hp: p.hp - damage})
+        setPlayer(p + {hp: p.hp - damage})
         say("The " + kind.name + " hits you.")
         val loot = stealable()
         if (state.player.hp <= 0) {
@@ -545,7 +545,7 @@ val monsterAttack = fn(i:num):bool {
         } else if (hasFlag(m, "stealsGold") && state.player.gold > 0) {
             val take = rng.below(50 + 10 * state.depth) + 2
             val gold = state.player.gold
-            setPlayer(state.player copy {gold: if (take < gold) { gold - take } else { 0 }})
+            setPlayer(state.player + {gold: if (take < gold) { gold - take } else { 0 }})
             removeMonster(i)
             say("Your purse feels lighter.")
             false
@@ -568,12 +568,12 @@ val monsterAttack = fn(i:num):bool {
 // Returns [still on the level, distances or nil].
 val monsterAct = fn(i:num, dist:map|nil):list {
     val m0 = state.monsters[i]
-    val m = if (hasFlag(m0, "regenerates") && m0.hp < m0.maxHp) { m0 copy {hp: m0.hp + 1} } else { m0 }
+    val m = if (hasFlag(m0, "regenerates") && m0.hp < m0.maxHp) { m0 + {hp: m0.hp + 1} } else { m0 }
     setMonster(i, m)
     val p = state.player
     if (m.state == "asleep") {
         if (!hasFlag(m, "still") && near(m.x, m.y) && (hasFlag(m, "mean") || rng.below(3) == 0)) {
-            setMonster(i, m copy {state: "awake"})
+            setMonster(i, m + {state: "awake"})
         }
         [true, dist]
     } else if (hasFlag(m, "still")) {
@@ -581,7 +581,7 @@ val monsterAct = fn(i:num, dist:map|nil):list {
     } else if (hasFlag(m, "flies") && rng.below(2) == 0) {
         val d = ORDER[rng.below(8)]
         if (stepOk(m.x, m.y, d[0], d[1]) && openFor(m.x + d[0], m.y + d[1])) {
-            setMonster(i, m copy {x: m.x + d[0], y: m.y + d[1]})
+            setMonster(i, m + {x: m.x + d[0], y: m.y + d[1]})
         }
         [true, dist]
     } else {
@@ -608,7 +608,7 @@ val monsterAct = fn(i:num, dist:map|nil):list {
             }
             if (here != nil) {
                 match best(0, nil, here) {
-                    [sx, sy] => setMonster(i, m copy {x: m.x + sx, y: m.y + sy})
+                    [sx, sy] => setMonster(i, m + {x: m.x + sx, y: m.y + sy})
                     _ => nil
                 }
             }
@@ -638,35 +638,35 @@ val monstersAct = fn() {
 val upkeep = fn() {
     val p0 = state.player
     val food = p0.food - 1
-    setPlayer(p0 copy {food: food})
+    setPlayer(p0 + {food: food})
     if (food == 150) { say("You are starting to get hungry.") }
     if (food == 50) { say("You are starting to feel weak.") }
     if (food <= STARVED) {
         die("Starved to death")
     } else {
         if (food <= 0 && state.player.frozen == 0 && rng.below(5) == 0) {
-            setPlayer(state.player copy {frozen: state.player.frozen + rng.below(8) + 4})
+            setPlayer(state.player + {frozen: state.player.frozen + rng.below(8) + 4})
             say("You faint from lack of food.")
         }
         val p = state.player
         val every = if (21 - 2 * p.level < 3) { 3 } else { 21 - 2 * p.level }
         if (p.hp < p.maxHp) {
             if (p.regen + 1 >= every) {
-                setPlayer(p copy {hp: p.hp + 1, regen: 0})
+                setPlayer(p + {hp: p.hp + 1, regen: 0})
             } else {
-                setPlayer(p copy {regen: p.regen + 1})
+                setPlayer(p + {regen: p.regen + 1})
             }
         } else {
-            setPlayer(p copy {regen: 0})
+            setPlayer(p + {regen: 0})
         }
         val q = state.player
         if (q.confused > 0) {
-            setPlayer(q copy {confused: q.confused - 1})
+            setPlayer(q + {confused: q.confused - 1})
             if (q.confused == 1) { say("You feel less confused now.") }
         }
         val r = state.player
         if (r.blind > 0) {
-            setPlayer(r copy {blind: r.blind - 1})
+            setPlayer(r + {blind: r.blind - 1})
             if (r.blind == 1) { say("The darkness lifts.") }
         }
     }
@@ -677,7 +677,7 @@ val upkeep = fn() {
 val endTurn = fn() {
     monstersAct()
     if (!state.dead) { upkeep() }
-    state = state copy {turn: state.turn + 1}
+    state = state + {turn: state.turn + 1}
     see()
 }
 
@@ -685,7 +685,7 @@ val endTurn = fn() {
 val thaw = fn() {
     val p = state.player
     if (p.frozen > 0 && !state.dead) {
-        setPlayer(p copy {frozen: p.frozen - 1})
+        setPlayer(p + {frozen: p.frozen - 1})
         endTurn()
         recur()
     }
@@ -693,7 +693,7 @@ val thaw = fn() {
 
 // The player attacks monster i.
 val attack = fn(i:num) {
-    val m = state.monsters[i] copy {state: "awake"}
+    val m = state.monsters[i] + {state: "awake"}
     setMonster(i, m)
     val kind = kindOf(m)
     val p = state.player
@@ -708,7 +708,7 @@ val attack = fn(i:num) {
             say("You defeat the " + kind.name + ".")
             gainXp(kind.xp)
         } else {
-            setMonster(i, m copy {hp: m.hp - damage})
+            setMonster(i, m + {hp: m.hp - damage})
             say("You hit the " + kind.name + ".")
         }
     } else {
@@ -716,7 +716,7 @@ val attack = fn(i:num) {
     }
     if (hasFlag(m, "paralyses") && p.blind == 0 && indexAt(state.monsters, m.x, m.y) >= 0) {
         say("You are frozen by the " + kind.name + "'s gaze!")
-        setPlayer(state.player copy {frozen: state.player.frozen + rng.below(4) + 2})
+        setPlayer(state.player + {frozen: state.player.frozen + rng.below(4) + 2})
     }
 }
 
@@ -733,7 +733,7 @@ val step = fn(dx:num, dy:num):bool {
             endTurn()
             false
         } else {
-            setPlayer(p copy {x: p.x + dx, y: p.y + dy})
+            setPlayer(p + {x: p.x + dx, y: p.y + dy})
             pickUp()
             endTurn()
             true
@@ -787,9 +787,9 @@ val descend = fn() {
         say("I see no way down.")
     } else if (state.depth < level.DEEPEST) {
         enterLevel(state.depth + 1)
-        state = state copy {turn: state.turn + 1}
+        state = state + {turn: state.turn + 1}
     } else if (hasOrb()) {
-        state = state copy {won: true}
+        state = state + {won: true}
         say("You escape with the Orb and " + p.gold + " gold.")
         say("Press enter to play again.")
     } else {
@@ -805,23 +805,23 @@ val quaff = fn(type:num) {
     val p = state.player
     if (name == "healing") {
         val hp = p.hp + rng.roll(p.level, 4)
-        setPlayer(if (hp > p.maxHp) { p copy {hp: p.maxHp + 1, maxHp: p.maxHp + 1} } else { p copy {hp: hp} })
+        setPlayer(if (hp > p.maxHp) { p + {hp: p.maxHp + 1, maxHp: p.maxHp + 1} } else { p + {hp: hp} })
         say("You begin to feel better.")
     } else if (name == "poison") {
         val str = p.str - (rng.below(3) + 1)
-        setPlayer(p copy {str: if (str < 3) { 3 } else { str }})
+        setPlayer(p + {str: if (str < 3) { 3 } else { str }})
         say("You feel very sick now.")
     } else if (name == "confusion") {
-        setPlayer(p copy {confused: p.confused + rng.below(8) + 8})
+        setPlayer(p + {confused: p.confused + rng.below(8) + 8})
         say("Wait, what's going on here?")
     } else if (name == "blindness") {
-        setPlayer(p copy {blind: p.blind + rng.below(50) + 50})
+        setPlayer(p + {blind: p.blind + rng.below(50) + 50})
         say("A cloak of darkness falls around you.")
     } else if (name == "gain strength") {
-        setPlayer(p copy {str: p.str + 1, maxStr: if (p.str + 1 > p.maxStr) { p.str + 1 } else { p.maxStr }})
+        setPlayer(p + {str: p.str + 1, maxStr: if (p.str + 1 > p.maxStr) { p.str + 1 } else { p.maxStr }})
         say("You feel stronger.")
     } else if (len(state.monsters) > 0) {
-        state = state copy {sense: true}
+        state = state + {sense: true}
         say("You sense the presence of monsters.")
     } else {
         say("You have a strange feeling for a moment.")
@@ -847,18 +847,18 @@ val read = fn(type:num) {
         } else {
             val item = state.pack[i].item
             val known = state.known
-            state = state copy {
+            state = state + {
                 known: if (item.kind == "potion") {
-                    known copy {potions: known.potions :+ item.type}
+                    known + {potions: known.potions :+ item.type}
                 } else {
-                    known copy {scrolls: known.scrolls :+ item.type}
+                    known + {scrolls: known.scrolls :+ item.type}
                 },
             }
             say(packLine(state.pack[i]))
         }
     } else if (name == "teleportation") {
         val spot = level.freeSpot(state)
-        setPlayer(p copy {x: spot.x, y: spot.y})
+        setPlayer(p + {x: spot.x, y: spot.y})
         say("You are somewhere else.")
     } else if (name == "magic mapping") {
         val row = fn(y:num, rows:list):list {
@@ -876,7 +876,7 @@ val read = fn(type:num) {
                 recur(y + 1, rows :+ mapped(0, ""))
             }
         }
-        state = state copy {memory: row(0, [])}
+        state = state + {memory: row(0, [])}
         say("A map forms in your mind.")
     } else if (name == "enchant weapon") {
         val i = packIndex(p.weapon)
@@ -884,7 +884,7 @@ val read = fn(type:num) {
             say("Your hands tingle.")
         } else {
             val e = state.pack[i]
-            setEntry(e.letter, e copy {item: e.item copy {bonus: e.item.bonus + 1}})
+            setEntry(e.letter, e + {item: e.item + {bonus: e.item.bonus + 1}})
             say("Your " + data.weapons[e.item.type].name + " glows blue for a moment.")
         }
     } else {
@@ -893,7 +893,7 @@ val read = fn(type:num) {
             say("Your skin crawls.")
         } else {
             val e = state.pack[i]
-            setEntry(e.letter, e copy {item: e.item copy {bonus: e.item.bonus + 1}})
+            setEntry(e.letter, e + {item: e.item + {bonus: e.item.bonus + 1}})
             say("Your " + data.armours[e.item.type].name + " glows silver for a moment.")
         }
     }
@@ -921,19 +921,19 @@ val useWith = fn(spec:struct<ItemCommand>, c:str, letter:str) {
                 takeOne(letter)
                 val start = if (p.food < 0) { 0 } else { p.food }
                 val food = start + 1100 + rng.below(400)
-                setPlayer(state.player copy {food: if (food > FOOD_MAX) { FOOD_MAX } else { food }})
+                setPlayer(state.player + {food: if (food > FOOD_MAX) { FOOD_MAX } else { food }})
                 say("Yum, that tasted good.")
                 endTurn()
             }
             "q" => {
                 takeOne(letter)
-                state = state copy {known: state.known copy {potions: if (contains(state.known.potions, e.item.type)) { state.known.potions } else { state.known.potions :+ e.item.type }}}
+                state = state + {known: state.known + {potions: if (contains(state.known.potions, e.item.type)) { state.known.potions } else { state.known.potions :+ e.item.type }}}
                 quaff(e.item.type)
                 endTurn()
             }
             "r" => {
                 takeOne(letter)
-                state = state copy {known: state.known copy {scrolls: if (contains(state.known.scrolls, e.item.type)) { state.known.scrolls } else { state.known.scrolls :+ e.item.type }}}
+                state = state + {known: state.known + {scrolls: if (contains(state.known.scrolls, e.item.type)) { state.known.scrolls } else { state.known.scrolls :+ e.item.type }}}
                 read(e.item.type)
                 endTurn()
             }
@@ -941,20 +941,20 @@ val useWith = fn(spec:struct<ItemCommand>, c:str, letter:str) {
                 if (p.weapon == letter) {
                     say("You are already wielding that.")
                 } else {
-                    setPlayer(p copy {weapon: letter})
+                    setPlayer(p + {weapon: letter})
                     say("You are now wielding " + itemName(e.item, 1) + ".")
                     endTurn()
                 }
             }
             "a" => {
                 if (p.armour == letter) {
-                    setPlayer(p copy {armour: nil})
+                    setPlayer(p + {armour: nil})
                     say("You took off " + itemName(e.item, 1) + ".")
                     endTurn()
                 } else if (p.armour != nil) {
                     say("You are already wearing armour.")
                 } else {
-                    setPlayer(p copy {armour: letter})
+                    setPlayer(p + {armour: letter})
                     say("You are now wearing " + itemName(e.item, 1) + ".")
                     endTurn()
                 }
@@ -966,7 +966,7 @@ val useWith = fn(spec:struct<ItemCommand>, c:str, letter:str) {
                     say("There is no room to drop that here.")
                 } else {
                     takeOne(letter)
-                    state = state copy {items: state.items :+ {x: p.x, y: p.y, item: e.item}}
+                    state = state + {items: state.items :+ {x: p.x, y: p.y, item: e.item}}
                     say("Dropped " + itemName(e.item, 1) + ".")
                     endTurn()
                 }
@@ -998,7 +998,7 @@ val askWith = fn(spec:struct<ItemCommand>, c:str) {
     } else if (!any(0)) {
         say(spec.nothing)
     } else {
-        state = state copy {prompt: c}
+        state = state + {prompt: c}
         say(spec.verb + " which item? (space to cancel)")
     }
 }
@@ -1026,7 +1026,7 @@ val paginate = fn(messages:list):list {
 
 val showMessages = fn(messages:list) {
     match paginate(messages) {
-        [shown, more] => state = state copy {messages: shown, more: more}
+        [shown, more] => state = state + {messages: shown, more: more}
     }
 }
 
@@ -1040,13 +1040,13 @@ export val command = fn(key:str, shift:bool) {
     } else if (state.dead || state.won) {
         if (key == "enter") { newGame(state.seed + 1) }
     } else if (state.showingPack) {
-        if (key == "space") { state = state copy {showingPack: false, messages: []} }
+        if (key == "space") { state = state + {showingPack: false, messages: []} }
     } else if (state.prompt != nil) {
         val c = state.prompt
         if (key == "space") {
-            state = state copy {prompt: nil, messages: []}
+            state = state + {prompt: nil, messages: []}
         } else if (len(key) == 1) {
-            state = state copy {prompt: nil, messages: []}
+            state = state + {prompt: nil, messages: []}
             useItem(c, key)
             thaw()
             showMessages(state.messages)
@@ -1055,7 +1055,7 @@ export val command = fn(key:str, shift:bool) {
         val direction = DIRECTIONS[key]
         val known = key == "space" || key == "enter" || key == "i" || direction != nil || ITEM_COMMANDS[key] != nil
         if (known) {
-            state = state copy {messages: []}
+            state = state + {messages: []}
             if (key == "space") {
                 endTurn()
             } else if (key == "enter") {
@@ -1064,7 +1064,7 @@ export val command = fn(key:str, shift:bool) {
                 if (len(state.pack) == 0) {
                     say("You are empty-handed.")
                 } else {
-                    state = state copy {showingPack: true}
+                    state = state + {showingPack: true}
                     say("Press space to continue.")
                 }
             } else if (direction != nil) {

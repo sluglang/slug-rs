@@ -344,11 +344,10 @@ tested before its guard; a failed constraint is a failed case rather than a
 runtime type error. Recursive list and map constraints inspect every element
 or entry.
 
-Map merge, key removal, and map copy produce new map values; they do not
+Map merge and key removal produce new map values; they do not
 modify either operand. Maps are unordered: a runtime may choose any internal
 entry layout, and map-key enumeration has unspecified order. This does not
-relax source evaluation order for map-literal entries, merge operands, or map
-copy expressions. Map equality compares key/value membership rather than an
+relax source evaluation order for map-literal entries or merge operands. Map equality compares key/value membership rather than an
 entry sequence.
 
 String indexing and slicing operate on Unicode scalar values, never UTF-8 byte

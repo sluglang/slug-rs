@@ -1120,7 +1120,7 @@ fn imported_schema_bindings_preserve_nominal_construction_types() {
     let program = loader
         .compile_source(
             &main_path.to_string_lossy(),
-            "val {S} = import(\"shapes\")\nval Alias = S\nexport val value: struct<S> = S {name: \"Slug\"}\nexport val alias:struct<Alias> = value\nexport val name:str = alias.name\nexport val updated:struct<S> = alias copy {age: 2}\nexport val age:num = updated.age\n",
+            "val {S} = import(\"shapes\")\nval Alias = S\nexport val value: struct<S> = S {name: \"Slug\"}\nexport val alias:struct<Alias> = value\nexport val name:str = alias.name\nexport val updated:struct<S> = alias + {age: 2}\nexport val age:num = updated.age\n",
         )
         .expect("type-check importer using a schema binding");
     let mut vm = Vm::with_module_loader(loader);

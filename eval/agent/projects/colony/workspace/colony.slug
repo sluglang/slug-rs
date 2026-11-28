@@ -158,7 +158,7 @@ val sightFrom = fn(x0:num, y0:num):list {
 
 // What the acting ant sees, counted in `stats.looks`.
 val look = fn():list {
-    stats = stats copy {looks: stats.looks + 1}
+    stats = stats + {looks: stats.looks + 1}
     sightFrom(me.x, me.y)
 }
 
@@ -244,20 +244,20 @@ export val tick = fn(forks:num = 1) {
             if (tx == me.x && ty == me.y) { return nil }
             val key = "" + tx + "," + ty
             if (!open(tx, ty) || occupied[key] != nil) {
-                stats = stats copy {blocked: stats.blocked + 1}
+                stats = stats + {blocked: stats.blocked + 1}
                 return nil
             }
             occupied = occupied - ("" + me.x + "," + me.y) + {[key]: id}
-            me = me copy {x: tx, y: ty}
-            stats = stats copy {moves: stats.moves + 1}
+            me = me + {x: tx, y: ty}
+            stats = stats + {moves: stats.moves + 1}
             if (!me.carrying && at(tx, ty) == FOOD) {
                 setAt(tx, ty, FLOOR)
-                me = me copy {carrying: true}
+                me = me + {carrying: true}
             }
             if (me.carrying && math.abs(tx - nest.x) <= 1 && math.abs(ty - nest.y) <= 1) {
-                me = me copy {carrying: false}
+                me = me + {carrying: false}
                 store = store + 1
-                stats = stats copy {gathered: stats.gathered + 1}
+                stats = stats + {gathered: stats.gathered + 1}
             }
         })
         recur(i + 1)

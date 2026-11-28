@@ -337,8 +337,8 @@ fn spawned_tasks_retain_immutable_collection_snapshots() {
          val userTask = spawn { user }\n\
          val nextList = list :+ 3\n\
          val nextBytes = bytes :+ 4\n\
-         val nextMap = map copy {version: 2}\n\
-         val nextUser = user copy {active: false}\n\
+         val nextMap = map + {version: 2}\n\
+         val nextUser = user + {active: false}\n\
          val oldList = await(listTask)\n\
          val oldBytes = await(bytesTask)\n\
          val oldMap = await(mapTask)\n\

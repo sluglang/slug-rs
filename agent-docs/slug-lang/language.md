@@ -59,7 +59,7 @@ val original = [1, 2]
 val appended = original :+ 3
 val combined = original + [3, 4]
 val user = {name: "Slug", active: true}
-val updated = user copy { active: false }
+val updated = user + { active: false }
 val field = "score"
 val scores = {[field]: 7}
 println([original, appended, combined])
@@ -67,8 +67,8 @@ println([user.active, updated.active, scores["absent"] ?? 0])
 ```
 
 Lists and maps are immutable values. Appending (`:+`), concatenating lists
-(`+`), merging maps (`+`), removing a map key (`-`), and `copy` return new
-values. Retain the result or reassign a `var`. A right-hand map merge overwrites
+(`+`), merging maps (`+`), and removing a map key (`-`) return new
+values; `+` also sets a struct's fields, as `user + { active: false }`. Retain the result or reassign a `var`. A right-hand map merge overwrites
 matching keys. Map order is unspecified. A missing map key returns `nil`.
 `??` evaluates its fallback only for `nil`, preserving `false`, `0`, and `""`.
 
@@ -85,11 +85,13 @@ type Named = {name: str}
 val label = fn(value:Named):str { value.name }
 val User = struct { name:str, active:bool = true }
 val user = User { name: "Slug" }
-val disabled = user copy { active: false }
+val disabled = user + { active: false }
 println(label(disabled))
 ```
 
-`struct<User>` denotes instances of that particular schema. Declare shared
+`struct<User>` denotes instances of that particular schema. `+` on a struct
+checks each field it sets against the schema and keeps the schema. It binds
+less tightly than `.`, so read a field of the result as `(user + { active: false }).active`. Declare shared
 schemas once at module level. Defaults evaluate when the schema is created.
 
 ## Repetition and pipelines

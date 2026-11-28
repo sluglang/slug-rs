@@ -135,7 +135,7 @@ val ME = "me"
 // Moves the player to (x, y) in the chunk they are in.
 val placePlayer = fn(x:num, y:num) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[ME]: s.players[ME] copy {x: x, y: y}}})
+    game.load(s + {players: s.players + {[ME]: s.players[ME] + {x: x, y: y}}})
 }
 
 // Starts a world with `seed` and `options`, joins it, and takes the stairs
@@ -307,8 +307,8 @@ val noOneWalksOffTheWorld = fn() {
     val s:any = game.snapshot()
     val key = game.chunkKey(0, 16, 0)
     val edge = level.generate(4, 0, 16, 0, 32)
-    val moved = s.players[ME] copy {cx: 0, cy: 16, depth: 0, x: 0, y: 10}
-    game.load(s copy {levels: s.levels + {[key]: edge}, players: s.players + {[ME]: moved}})
+    val moved = s.players[ME] + {cx: 0, cy: 16, depth: 0, x: 0, y: 10}
+    game.load(s + {levels: s.levels + {[key]: edge}, players: s.players + {[ME]: moved}})
     game.command(ME, "h", false)
     assertEqual([game.playerOf(ME).cx, game.playerOf(ME).x], [0, 0])
 }
@@ -324,7 +324,7 @@ val outdoorsPlayersSeeFarButNotThroughTrees = fn() {
         if (y == 11) { "." * 45 + level.TREE + "." * 34 } else { "." * level.WIDTH }
     })
     val lv:any|nil = s.levels[key] + {map: open, items: [], monsters: []}
-    game.load(s copy {levels: s.levels + {[key]: lv}, players: s.players + {[ME]: p copy {x: 40, y: 11}}})
+    game.load(s + {levels: s.levels + {[key]: lv}, players: s.players + {[ME]: p + {x: 40, y: 11}}})
     assertTrue(game.visible(ME, 45, 11))
     assertTrue(!game.visible(ME, 50, 11))
     assertTrue(game.visible(ME, 40, 3))

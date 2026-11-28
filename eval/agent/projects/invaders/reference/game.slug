@@ -746,10 +746,10 @@ val findInColumn = fn(column:num):num|nil {
 
 val shotBlowingUp = fn() {
     val blow = (ash.blow - 1) & 255
-    ash = ash copy {blow: blow}
+    ash = ash + {blow: blow}
     if (blow == 3) {
         eraseShifted(ash.yr, ash.xr, ash.pic)
-        ash = ash copy {pic: rom.alienShotExplosion, xr: (ash.xr - 2) & 255, yr: (ash.yr - 2) & 255}
+        ash = ash + {pic: rom.alienShotExplosion, xr: (ash.xr - 2) & 255, yr: (ash.yr - 2) & 255}
         drawCollide(ash.yr, ash.xr, ash.pic)
     } else if (blow == 0) {
         eraseShifted(ash.yr, ash.xr, ash.pic)
@@ -761,7 +761,7 @@ val shotBlowingUp = fn() {
 val handleAlienShot = fn(pictures:bytes) {
     if ((ash.status & 0x80) == 0) {
         if (enableAlienFire != 0) {
-            ash = ash copy {step: 0}
+            ash = ash + {step: 0}
             val tooSoon = (otherShot1 != 0 && aShotReloadRate >= otherShot1) ||
                 (otherShot2 != 0 && aShotReloadRate >= otherShot2)
             if (!tooSoon) {
@@ -770,13 +770,13 @@ val handleAlienShot = fn(pictures:bytes) {
                     if (c >= 12) { 11 } else { c }
                 } else {
                     val c = rom.columnFireTable[ash.cfir]
-                    ash = ash copy {cfir: ash.cfir + 1}
+                    ash = ash + {cfir: ash.cfir + 1}
                     c
                 }
                 val index = findInColumn(column)
                 if (index != nil) {
                     val c = alienCoords(index)
-                    ash = ash copy {xr: (c[1] + 7) & 255, yr: (c[0] - 10) & 255, status: ash.status | 0x80, step: ash.step + 1}
+                    ash = ash + {xr: (c[1] + 7) & 255, yr: (c[0] - 10) & 255, status: ash.status | 0x80, step: ash.step + 1}
                 }
             }
         }
@@ -784,16 +784,16 @@ val handleAlienShot = fn(pictures:bytes) {
         if ((ash.status & 1) != 0) {
             shotBlowingUp()
         } else {
-            ash = ash copy {step: (ash.step + 1) & 255}
+            ash = ash + {step: (ash.step + 1) & 255}
             eraseShifted(ash.yr, ash.xr, ash.pic)
             val frame = (ash.frame + 3) % 12
-            ash = ash copy {frame: frame, pic: pictures[frame:frame + 3], yr: (ash.yr + alienShotDelta) & 255}
+            ash = ash + {frame: frame, pic: pictures[frame:frame + 3], yr: (ash.yr + alienShotDelta) & 255}
             drawCollide(ash.yr, ash.xr, ash.pic)
             if (ash.yr < 0x15) {
-                ash = ash copy {status: ash.status | 1}
+                ash = ash + {status: ash.status | 1}
             } else if (collision != 0) {
                 if (ash.yr >= 0x1E && ash.yr < 0x27) { playerAlive = 0 }
-                ash = ash copy {status: ash.status | 1}
+                ash = ash + {status: ash.status | 1}
             }
         }
     }
@@ -803,7 +803,7 @@ val handleAlienShot = fn(pictures:bytes) {
 val gameObj2 = fn() {
     obj2Extra = 2
     if (rolling.cfir == 0) {
-        rolling = rolling copy {cfir: 0xFFFF}
+        rolling = rolling + {cfir: 0xFFFF}
     } else {
         ash = rolling
         otherShot1 = plunger.step
@@ -826,11 +826,11 @@ val gameObj3 = fn() {
         otherShot1 = rolling.step
         otherShot2 = squiggly.step
         handleAlienShot(rom.plungerShot)
-        if (ash.cfir >= 16) { ash = ash copy {cfir: 0} }
+        if (ash.cfir >= 16) { ash = ash + {cfir: 0} }
         if (ash.blow != 0) {
             plunger = ash
         } else {
-            plunger = plungerInit copy {cfir: ash.cfir}
+            plunger = plungerInit + {cfir: ash.cfir}
             obj3Timer = 0
             obj3Extra = 0
             if (numAliens == 1) { skipPlunger = 1 }
@@ -843,11 +843,11 @@ val squigglyShot = fn() {
     otherShot1 = plunger.step
     otherShot2 = rolling.step
     handleAlienShot(rom.squigglyShot)
-    if (ash.cfir >= 21) { ash = ash copy {cfir: 6} }
+    if (ash.cfir >= 21) { ash = ash + {cfir: 6} }
     if (ash.blow != 0) {
         squiggly = ash
     } else {
-        squiggly = squigglyInit copy {cfir: ash.cfir}
+        squiggly = squigglyInit + {cfir: ash.cfir}
         obj4Timer = 0
         obj4Extra = 0
     }

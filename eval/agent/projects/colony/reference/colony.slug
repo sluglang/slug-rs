@@ -285,7 +285,7 @@ export val tick = fn(forks:num = 1) {
     currentCache()
     val chosen = decideAll(forks)
     val wants = map(order, fn(id) { chosen[id] })
-    stats = stats copy {looks: stats.looks + len(order)}
+    stats = stats + {looks: stats.looks + len(order)}
     // Where each ant stands, by "x,y".
     var occupied:map = reduce(order, {}, fn(acc, id) { acc + {["" + ants[id].x + "," + ants[id].y]: id} })
     val move = fn(i:num) {
@@ -296,20 +296,20 @@ export val tick = fn(forks:num = 1) {
             if (tx == me.x && ty == me.y) { return nil }
             val key = "" + tx + "," + ty
             if (!open(tx, ty) || occupied[key] != nil) {
-                stats = stats copy {blocked: stats.blocked + 1}
+                stats = stats + {blocked: stats.blocked + 1}
                 return nil
             }
             occupied = occupied - ("" + me.x + "," + me.y) + {[key]: id}
-            me = me copy {x: tx, y: ty}
-            stats = stats copy {moves: stats.moves + 1}
+            me = me + {x: tx, y: ty}
+            stats = stats + {moves: stats.moves + 1}
             if (!me.carrying && at(tx, ty) == FOOD) {
                 setAt(tx, ty, FLOOR)
-                me = me copy {carrying: true}
+                me = me + {carrying: true}
             }
             if (me.carrying && math.abs(tx - nest.x) <= 1 && math.abs(ty - nest.y) <= 1) {
-                me = me copy {carrying: false}
+                me = me + {carrying: false}
                 store = store + 1
-                stats = stats copy {gathered: stats.gathered + 1}
+                stats = stats + {gathered: stats.gathered + 1}
             }
         })
         recur(i + 1)

@@ -4,6 +4,9 @@
 
 Accepted; implemented on 2026-11-24 ([Record Types](../language/record-types.md)).
 
+Revised by [`+` replaces `copy`](2026-11-28-plus-replaces-copy.md): a
+merge with computed keys or a runtime map is now allowed on a record type.
+
 ## Context
 
 Programs update map records with `+`: `empire + {wars: wars}`. A

@@ -206,7 +206,7 @@ fn record_types_check_maps_and_structs_by_their_fields() {
          val p = {name: \"bo\", hp: 2, guild: nil}\n\
          val t:Tree = {value: 1, children: [{value: 2, children: []}]}\n\
          val counts:map<str, num> = {a: 1, b: 2}\n\
-         val healed = p copy {hp: 9}\n\
+         val healed = p + {hp: 9}\n\
          val {name, hp} = p + {hp: 5}\n\
          val quoted:{\"first name\": str} = {\"first name\": \"x\"}\n\
          val kind = fn(v) match {\n\
@@ -287,7 +287,7 @@ fn record_type_mismatches_name_the_field() {
             "expected num, got str",
         ),
         (
-            "val p = {hp: 1}\nval q = p copy {hp: \"x\"}\nval f = fn(r:{hp: num}) { r }\nf(q)",
+            "val p = {hp: 1}\nval q = p + {hp: \"x\"}\nval f = fn(r:{hp: num}) { r }\nf(q)",
             "field `hp` is str, but must be num",
         ),
         (
@@ -339,7 +339,7 @@ fn generic_schemas_infer_and_check_their_type_arguments() {
          val {first, second} = p\n\
          val main = fn() {\n\
            println(p.first + 1, p.second + \"!\", firstOf(p) + 10, swap(p).first + \"?\")\n\
-           println(b.value[0] + 1, (b copy { value: [3] }).value, kind(raw), kind(p), named(wide))\n\
+           println(b.value[0] + 1, (b + { value: [3] }).value, kind(raw), kind(p), named(wide))\n\
            println(first + 1, second, (o ?? Box { value: 0 }).value)\n\
          }\n",
     )
@@ -379,7 +379,7 @@ fn generic_schemas_infer_and_check_their_type_arguments() {
             "type arguments are not checked at run time, so match `struct<Box>`",
         ),
         (
-            "val b = Box { value: 1 }\nb copy { value: \"s\" }",
+            "val b = Box { value: 1 }\nb + { value: \"s\" }",
             "expected num, got str",
         ),
         (
@@ -435,7 +435,7 @@ fn payload_enum_cases_construct_match_and_cover() {
          val main = fn() {\n\
            println(unwrapOr(parsed, 0) + 1, unwrapOr(failed, 7), parsed == Result.Ok { value: 3 }, parsed == failed)\n\
            println(area(circle), area(Shape.Square { side: 3 }), area(Shape.Empty), Shape.Square { side: 1 }.label)\n\
-           println(kind(circle), kind(Shape.Empty), kind([Shape.Empty, circle]), kind(3), named(circle), (circle copy { radius: 5 }).radius, maybe(parsed), maybe(nil))\n\
+           println(kind(circle), kind(Shape.Empty), kind([Shape.Empty, circle]), kind(3), named(circle), (circle + { radius: 5 }).radius, maybe(parsed), maybe(nil))\n\
          }\n",
     )
     .expect("write payload enums");
@@ -1489,7 +1489,7 @@ fn type_check_uses_known_schema_fields_for_struct_values() {
          val user:struct<User> = User {name: \"Slug\"}\n\
          val alias:struct<Alias> = Alias {name: \"Ada\", age: 42}\n\
          val same_schema:struct<Alias> = user\n\
-         val updated:struct<User> = user copy {age: 1}\n\
+         val updated:struct<User> = user + {age: 1}\n\
          val name:str = user.name\n\
          val age:num = updated.age\n\
          { val User = struct { name:num }\n\
@@ -1527,7 +1527,7 @@ fn type_check_uses_known_schema_fields_for_struct_values() {
             "missing required struct field `name`",
         ),
         (
-            "val User = struct { name:str, age:num = 0 }\nval user = User {name: \"Slug\"}\nuser copy {age: \"old\"}\n",
+            "val User = struct { name:str, age:num = 0 }\nval user = User {name: \"Slug\"}\nuser + {age: \"old\"}\n",
             "expected num, got str",
         ),
         (
@@ -1676,8 +1676,8 @@ fn collection_updates_preserve_local_and_closure_aliases() {
          val changedBytes = 1 +: bytes :+ 4\n\
          val merged = map + {replace: 20, added: 3}\n\
          val removed = map - \"replace\"\n\
-         val copied = map copy {replace: 30, added: 4}\n\
-         val changedUser = user copy {active: false}\n\
+         val copied = map + {replace: 30, added: 4}\n\
+         val changedUser = user + {active: false}\n\
          println(list, appended, prepended, bytes, changedBytes, map.replace, merged.replace, removed.replace, copied.replace, user.active, changedUser.active, captureList(), captureBytes(), captureMap().replace, captureUser().active)\n",
     )
     .expect("write collection alias source");
@@ -2123,7 +2123,7 @@ fn persistently_copies_maps_with_string_key_updates() {
     fs::write(
         &path,
         "val opts = {timeout: 1000, retries: 2}\n\
-         val next = opts copy {timeout: 5000, retries: 3, mode: \"fast\"}\n\
+         val next = opts + {timeout: 5000, retries: 3, mode: \"fast\"}\n\
          println(opts.timeout, opts.retries, opts.mode, next.timeout, next.retries, next.mode)\n",
     )
     .expect("write map copy source");
@@ -3328,7 +3328,7 @@ fn a_value_the_checker_could_not_prove_is_checked_where_it_reaches_an_annotation
             "expected str, got num: the field `name`",
         ),
         (
-            "val Pet = struct { name: str }\nval rename = fn(p, v) { p copy { name: v } }\nrename(Pet { name: \"a\" }, 7)",
+            "val Pet = struct { name: str }\nval rename = fn(p, v) { p + { name: v } }\nrename(Pet { name: \"a\" }, 7)",
             "expected str, got num: the field `name`",
         ),
         // An overload set called as a value takes the member that accepts.
@@ -3480,7 +3480,7 @@ fn an_alias_names_an_imported_type_and_a_checked_var_stays_proven() {
          val dyn = fn(x) { x }\n\
          val bump = fn() {\n\
            current = dyn({failure: nil, n: current.n + 1})\n\
-           current = current copy {n: current.n + 1}\n\
+           current = current + {n: current.n + 1}\n\
          }\n\
          bump()\n\
          println(current.n)\n",

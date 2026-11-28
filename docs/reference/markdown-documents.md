@@ -9,8 +9,8 @@ val md = import("slug.text.markdown")
 val document = md.parse("# Guide\n\n[Next](compatibility.md)")
 val updated = md.transform(document, fn(node:md.Node):md.Node {
     match node {
-        link: md.Node.Link => link copy {url: "/next/"}
-        heading: md.Node.Heading => heading copy {id: "guide"}
+        link: md.Node.Link => link + {url: "/next/"}
+        heading: md.Node.Heading => heading + {id: "guide"}
         _ => node
     }
 })
@@ -57,7 +57,7 @@ Parsed reference links retain their occurrence in `span` and the supplying
 definition in `definition`. Direct links and autolinks have no definition
 span. Unresolved reference syntax remains ordinary Markdown text. Raw HTML
 nodes always render as escaped text. Constructed nodes may omit provenance;
-`copy` retains it unless the application replaces or clears it.
+A field update with `+` retains it unless the application replaces or clears it.
 
 ## Operations and limits
 

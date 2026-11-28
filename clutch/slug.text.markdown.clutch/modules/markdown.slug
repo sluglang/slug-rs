@@ -789,17 +789,17 @@ export val transform = fn(document:Document, rewrite:fn<Node, Node>, options:map
     lowerDocument(document, o)
     val visit = fn(node:Node):Node {
         val updated:Node = match node {
-            n:Node.Emphasis => n copy {children: map(n.children, visit)}
-            n:Node.Strong => n copy {children: map(n.children, visit)}
-            n:Node.Strikethrough => n copy {children: map(n.children, visit)}
-            n:Node.Link => n copy {children: map(n.children, visit)}
-            n:Node.Image => n copy {children: map(n.children, visit)}
-            n:Node.Paragraph => n copy {children: map(n.children, visit)}
-            n:Node.Heading => n copy {children: map(n.children, visit)}
-            n:Node.BlockQuote => n copy {children: map(n.children, visit)}
-            n:Node.Item => n copy {children: map(n.children, visit)}
-            n:Node.List => n copy {children: map(n.children, visit)}
-            n:Node.Table => n copy {
+            n:Node.Emphasis => n + {children: map(n.children, visit)}
+            n:Node.Strong => n + {children: map(n.children, visit)}
+            n:Node.Strikethrough => n + {children: map(n.children, visit)}
+            n:Node.Link => n + {children: map(n.children, visit)}
+            n:Node.Image => n + {children: map(n.children, visit)}
+            n:Node.Paragraph => n + {children: map(n.children, visit)}
+            n:Node.Heading => n + {children: map(n.children, visit)}
+            n:Node.BlockQuote => n + {children: map(n.children, visit)}
+            n:Node.Item => n + {children: map(n.children, visit)}
+            n:Node.List => n + {children: map(n.children, visit)}
+            n:Node.Table => n + {
                 head: map(n.head, fn(cell:list<Node>):list<Node> { map(cell, visit) }),
                 rows: map(n.rows, fn(row:list<list<Node>>):list<list<Node>> { map(row, fn(cell:list<Node>):list<Node> { map(cell, visit) }) }),
             }
@@ -807,7 +807,7 @@ export val transform = fn(document:Document, rewrite:fn<Node, Node>, options:map
         }
         rewrite(updated)
     }
-    val result = document copy {children: map(document.children, visit)}
+    val result = document + {children: map(document.children, visit)}
     lowerDocument(result, o)
     result
 }

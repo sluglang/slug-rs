@@ -1,5 +1,13 @@
 # Preserve schema identity when copying structs
 
+## Status
+
+Superseded
+
+## Superseded by
+
+[`+` replaces `copy`](2026-11-28-plus-replaces-copy.md).
+
 ## Context
 
 The source grammar specifies `value copy { field: replacement }`, but the

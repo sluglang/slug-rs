@@ -9,7 +9,7 @@ val {filter, map, range, reduce, all, any} = import("slug.std")
 // Changes the player with `id` by `fields`, and the world by `world`.
 val change = fn(id:str, fields:map, world:map = {}) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}, world: s.world + world})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}, world: s.world + world})
 }
 
 // A world with a little history and Mara in it, just down the stairs from
@@ -177,7 +177,7 @@ val innkeepersKeepARollOfTheFallen = fn() {
     assertEqual(game.playerOf("a").messages, [inn.name + " says: \"No one has fallen yet. May it stay that way.\""])
     val s:any = game.snapshot()
     val death = {kind: "death", who: "Mara", level: 3, cause: "killed by the orc", at: "1,1,1", depth: 2}
-    game.load(s copy {world: s.world copy {empire: empire.record(s.world.empire, death)}})
+    game.load(s + {world: s.world + {empire: empire.record(s.world.empire, death)}})
     game.command("a", "4", false)
     val w = game.current().world
     // The roll's lines are long; they page on with --More--.
@@ -194,7 +194,7 @@ val battlefieldsAreStrewnWithTheRemainsOfBattles = fn() {
     val under = empire.territoryOf(home.cx, home.cy, 1)
     val s:any = game.snapshot()
     val e = s.world.empire
-    game.load(s copy {world: s.world copy {empire: e copy {lands: (e.lands ?? {}) + {[under]: {changes: 0, battles: 10, fought: [4, 2]}}}}})
+    game.load(s + {world: s.world + {empire: e + {lands: (e.lands ?? {}) + {[under]: {changes: 0, battles: 10, fought: [4, 2]}}}}})
     val down = game.here("a").down
     change("a", {x: down.x, y: down.y})
     game.command("a", "enter", false)

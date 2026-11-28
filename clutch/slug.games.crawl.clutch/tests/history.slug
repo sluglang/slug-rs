@@ -66,9 +66,9 @@ val theDungeonUnderARuinIsRicher = fn() {
     val seed = game.current().world.seed
     val ruin = town.build(seed, level.generate(seed, s.cx, s.cy, 0, 32), s)
     val snap:any = game.snapshot()
-    game.load(snap copy {
+    game.load(snap + {
         levels: snap.levels + {[key]: ruin},
-        players: snap.players + {a: snap.players.a copy {cx: s.cx, cy: s.cy, depth: 0, x: ruin.down.x, y: ruin.down.y}},
+        players: snap.players + {a: snap.players.a + {cx: s.cx, cy: s.cy, depth: 0, x: ruin.down.x, y: ruin.down.y}},
     })
     game.command("a", "enter", false)
     assertEqual(game.playerOf("a").depth, 1)
