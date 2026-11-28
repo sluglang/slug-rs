@@ -2633,6 +2633,14 @@ fn check_function_body_in_scope(
             scoped.record_boundary_check(span, &completed, expected, CheckPlace::Result);
             note_generic_result(&scoped, &completed, expected);
         }
+        // A literal given where its result is known, as `map(ks, fn(k) {
+        // [k, rows] })` for a `list<[str, list<str>]>`, gives it.
+        let completed = match (&expected, environment.expected_literal_result(span)) {
+            (None, Some(wanted)) => {
+                as_expected_tuple(&wanted, result_expression(body), completed, &scoped)
+            }
+            _ => completed,
+        };
         if scoped.result_unproven() {
             scoped.record_unproven_result(span.clone());
         }
@@ -6676,9 +6684,12 @@ fn expect_function_argument(
     }
     let expected = super::semantic::substitute(&parameter.value_type, &substitutions);
     if let Type::Function(Some(types)) = expected
-        && let Some((_, parameters)) = types.split_first()
+        && let Some((result, parameters)) = types.split_first()
     {
         environment.expect_parameters(value.span.clone(), parameters.to_vec());
+        if first_generic_parameter(result).is_none() {
+            environment.expect_literal_result(value.span.clone(), result.clone());
+        }
     }
 }
 
@@ -8176,6 +8187,22 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn a_function_literal_gives_the_tuple_its_call_expects() {
+        // A literal whose result the call's other arguments determine, as a
+        // fold's tuple accumulator, makes that tuple of a list literal.
+        super::super::compile(
+            "test.slug",
+            "val reduce = fn<T, A>(vs:list<T>, v:A, f:fn<A, A, T>):A match {\n\
+               [[], ...] => v\n\
+               [[h, ...t], ...] => recur(t, f(v, h), f)\n\
+             }\n\
+             val start:[num, num] = [0, 0]\n\
+             val r:[num, num] = reduce([1, 2], start, fn(acc, x) { [acc[0] + x, acc[1] + 1] })\n",
+        )
+        .unwrap_or_else(|error| panic!("{}", error.message));
     }
 
     #[test]

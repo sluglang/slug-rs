@@ -1060,7 +1060,7 @@ export val sightsOf = fn(ids:list<str>):list<Found> {
             if (seenAt[id] == stamp) { return nil }
             noted = {}
             lookAround()
-            val changed = map(keys(noted ?? {}), fn(k):[str, list<str>] { [k, player.memory[k] ?? BLANK_ROWS] })
+            val changed:list<[str, list<str>]> = map(keys(noted ?? {}), fn(k) { [k, player.memory[k] ?? BLANK_ROWS] })
             {id: id, stamp: stamp, memory: changed, sight: sights[id]}
         })
     }
@@ -1825,7 +1825,7 @@ val stepOk = fn(x:num, y:num, dx:num, dy:num):bool {
     passable(x + dx, y + dy) && (dx == 0 || dy == 0 || (passable(x + dx, y) && passable(x, y + dy)))
 }
 
-val kindOf = fn(m:level.Monster) { bestiary.monsters[m.kind] }
+val kindOf = fn(m:level.Monster):struct<data.Monster> { bestiary.monsters[m.kind] }
 
 val hasFlag = fn(m:level.Monster, flag:str):bool { contains(kindOf(m).flags, flag) }
 

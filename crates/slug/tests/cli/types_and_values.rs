@@ -3699,3 +3699,39 @@ fn a_named_function_given_to_a_parametric_function_is_checked_only_when_unproven
     assert_eq!(stdout, "", "{stderr}");
     assert!(stderr.contains("list<num>"), "{stderr}");
 }
+
+#[test]
+fn a_struct_type_names_a_schema_an_imported_module_exports() {
+    let directory =
+        std::env::temp_dir().join(format!("slug-cli-qualified-schema-{}", std::process::id()));
+    fs::create_dir_all(&directory).expect("make module directory");
+    fs::write(
+        directory.join("data.slug"),
+        "export val Mon = struct { name:str, level:num }\n",
+    )
+    .expect("write schema module");
+    fs::write(
+        directory.join("main.slug"),
+        "val data = import(\"data\")\n\
+         val Other = struct { name:str, level:num }\n\
+         val f = fn(x:struct<data.Mon>):num { x.level }\n\
+         val dyn = fn(x) { x }\n\
+         println(f(data.Mon { name: \"orc\", level: 2 }))\n\
+         println(f(dyn(Other { name: \"elf\", level: 1 })))\n",
+    )
+    .expect("write importer");
+    let output = slug()
+        .arg("main.slug")
+        .current_dir(&directory)
+        .output()
+        .expect("run importer");
+    fs::remove_dir_all(&directory).expect("remove module directory");
+    // Its own schema's struct passes; another schema's, of the same fields,
+    // fails the check.
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("expected struct<data.Mon>, got struct"),
+        "{stderr}"
+    );
+}

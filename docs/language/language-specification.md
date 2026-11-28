@@ -528,7 +528,9 @@ a known `struct<S>` use the declared field types. Aliased and imported schema
 bindings retain this precision; dynamically selected schemas remain generic
 `struct` values and use their ordinary checked runtime behavior.
 
-In a `struct<S>` annotation, `S` must resolve lexically to a schema binding.
+In a `struct<S>` annotation, `S` must resolve lexically to a schema binding,
+or name one an imported module exports, as `struct<data.Monster>` for
+`val data = import("slug.games.crawl.data")`.
 Its nominal identity is the schema value's identity, not the spelling of `S`:
 an alias denotes the original schema, and a later shadowing binding does not
 change the meaning of an already established `struct<S>` type.

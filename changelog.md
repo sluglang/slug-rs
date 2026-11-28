@@ -82,6 +82,10 @@
   ranges over its keys, as `filter(keys(m), fn(k) { m[k] ... })` does.
   Crawl's hot folds start from `[]` and `{}` again, and pass `insert` and
   `item` by name.
+- `struct<data.Monster>` names a schema an imported module exports. A
+  function literal given to a generic function whose other arguments say
+  what it returns gives that, so `reduce(xs, start, fn(acc, x) { [acc[0] + x,
+  acc[1] + 1] })` keeps a `[num, num]` start's tuple.
 - A function reads a module's annotated value or `var` declared after it as
   its annotated type, not as unknown, so a cache declared below the function
   that reads it is not checked on every read.

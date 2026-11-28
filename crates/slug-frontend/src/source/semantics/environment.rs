@@ -427,6 +427,10 @@ struct SemanticRecords {
     /// For a function literal that is an argument, the parameter types its
     /// callee expects of it.
     expected_parameters: HashMap<SourceSpan, Vec<Type>>,
+    /// The result a function literal argument is expected to give, when the
+    /// call's types determine it, which its last value is refined to, as a
+    /// list literal to the tuple it makes.
+    expected_literal_results: HashMap<SourceSpan, Type>,
     selected_calls: HashMap<SourceSpan, CallableIdentity>,
     /// Whether each call that may skip its callee's entry checks was found
     /// proven every time it was checked: a trial, or a body checked again,
@@ -1343,6 +1347,23 @@ impl Environment {
             .borrow_mut()
             .expected_parameters
             .insert(span, types);
+    }
+
+    /// Records the result expected of the function literal at `span`.
+    pub(super) fn expect_literal_result(&self, span: SourceSpan, result: Type) {
+        self.records
+            .borrow_mut()
+            .expected_literal_results
+            .insert(span, result);
+    }
+
+    /// The result expected of the function literal at `span`, if known.
+    pub(super) fn expected_literal_result(&self, span: &SourceSpan) -> Option<Type> {
+        self.records
+            .borrow()
+            .expected_literal_results
+            .get(span)
+            .cloned()
     }
 
     /// The parameter types expected of the function literal at `span`.

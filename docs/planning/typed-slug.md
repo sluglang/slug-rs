@@ -868,13 +868,23 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
   workloads run at 0.98x to 1.00x of untyped.
   - [ ] Matching a record's string field does not narrow its others: in
     `match item.kind { "potion" => data.potions[item.type] ... }`, `type`
-    stays `num|nil`. `level.typeOf` takes it out or throws. A tagged union
-    of record types, or an enum, would say it.
-  - [ ] A function literal is checked before a generic's result type is
-    inferred, so `map(ks, fn(k) { [k, rows] })` for a `list<[str,
-    list<str>]>` needs the literal's result annotated.
-  - [ ] `struct<data.Monster>`, a schema named through a module, is not
-    accepted.
+    stays `num|nil`, since `Item` is one record type whose `type` is
+    `num|nil` for every kind. `level.typeOf` takes it out or throws. Saying
+    it needs a union of record types each with its own literal `kind`,
+    which wants singleton string types, or an enum, whose payload cases a
+    match narrows but which would change how Crawl stores items. Left for
+    the strict-mode decision of stage 9 (decided 2026-11-27).
+  - [x] A function literal was given its parameters' types from the call
+    but not its result's, so a list literal it ended with stayed a list:
+    `reduce(xs, start, fn(acc, x) { [acc[0] + x, acc[1] + 1] })` for a
+    `[num, num]` start failed. A literal whose expected result the call's
+    other arguments, or its own expected type, determine now has its last
+    value refined to it, as an annotated result would be; Crawl's
+    `map(keys(noted ?? {}), fn(k) { [k, rows] })` needs no annotation.
+  - [x] `struct<data.Monster>`, a schema named through a module, was not
+    accepted; `struct<S>` now finds `S` among an imported module's exports,
+    and its check tells that schema from another of the same fields.
+    `game.kindOf` says it returns one.
   - A record type is not a `map`, so every bare `map` annotation that met a
     `Chunk` or a `Player` had to say which, test helpers included, and a
     `match` case `x: map` on one became a nil test.

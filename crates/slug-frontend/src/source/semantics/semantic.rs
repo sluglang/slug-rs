@@ -1716,13 +1716,25 @@ fn resolve_struct_reference(
         .into_iter()
         .map(|argument| resolve_schema_references(argument, span, environment))
         .collect::<Result<Vec<_>, _>>()?;
-    let binding = environment.lookup(name).ok_or_else(|| {
-        SourceError::semantic(
-            SourceErrorCode::InvalidTypeArguments,
-            format!("struct type argument `{name}` must resolve to a schema binding"),
-            span.clone(),
-        )
-    })?;
+    // A schema an imported module exports is named through it, as
+    // `struct<data.Monster>`.
+    let binding = environment
+        .lookup(name)
+        .or_else(|| {
+            let (module, member) = name.split_once('.')?;
+            environment
+                .lookup(module)
+                .filter(|module| module.module_binding)?
+                .members
+                .get(member)
+        })
+        .ok_or_else(|| {
+            SourceError::semantic(
+                SourceErrorCode::InvalidTypeArguments,
+                format!("struct type argument `{name}` must resolve to a schema binding"),
+                span.clone(),
+            )
+        })?;
     binding.schema_identity.clone().map_or_else(
         || {
             Err(SourceError::semantic(
