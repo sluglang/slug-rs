@@ -393,17 +393,22 @@ impl ModuleGraph {
         )
     }
 
+    /// The semantic snapshot of the module `request` imports, or why it has
+    /// none, which a type named through the import reports.
     fn semantic_snapshot(
         &self,
         resolver: &dyn ModuleResolver,
         request: ModuleRequest<'_>,
-    ) -> Option<ModuleSnapshot> {
+    ) -> Result<ModuleSnapshot, String> {
         if request.name == BUILTIN_CONTRACT {
-            return self.builtin_snapshot(resolver);
+            return self
+                .builtin_snapshot(resolver)
+                .ok_or_else(|| "the host's builtin contract does not compile".into());
         }
-        let source = resolve_module(resolver, request).ok()?;
+        let source = resolve_module(resolver, request)
+            .map_err(|error| format!("it cannot be loaded: {error}"))?;
         if let Some(snapshot) = self.state.semantic_snapshots.borrow().get(&source.key) {
-            return Some(snapshot.clone());
+            return Ok(snapshot.clone());
         }
         if !self
             .state
@@ -412,7 +417,7 @@ impl ModuleGraph {
             .insert(source.key.clone())
         {
             self.state.cycle_cut.set(true);
-            return None;
+            return Err("it imports this module".into());
         }
         let outer_cut = self.state.cycle_cut.replace(false);
         let compilation = self
@@ -423,7 +428,7 @@ impl ModuleGraph {
                 &source.text,
                 Some(request.name),
             )
-            .ok();
+            .map_err(|error| format!("it does not compile: {error}"));
         let cut = self.state.cycle_cut.replace(outer_cut);
         self.state
             .resolving_snapshots
@@ -448,7 +453,7 @@ impl ModuleGraph {
             .semantic_snapshots
             .borrow_mut()
             .insert(source.key, snapshot.clone());
-        Some(snapshot)
+        Ok(snapshot)
     }
 
     /// Activates the native clutch that provides module `name`'s foreign
@@ -677,7 +682,7 @@ impl ModuleGraph {
             &contract.diagnostic_name,
             &contract.text,
             Some(BUILTIN_CONTRACT),
-            |_| None,
+            |_| Err("the builtin contract imports nothing".into()),
             |name| {
                 Err(format!(
                     "no asset `{name}`: the builtin contract has no assets"

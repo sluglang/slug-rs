@@ -11,7 +11,7 @@ use slug_vm::Program;
 use super::{
     SourceError,
     compiler::Compiler,
-    environment::{ModuleSnapshot, SessionSnapshot},
+    environment::{ImportSnapshots, ModuleSnapshot, SessionSnapshot},
     lexer::Lexer,
     parser::Parser,
     typecheck,
@@ -95,31 +95,29 @@ pub fn compile_interactive_forms(
     source: &str,
     state: &InteractiveCompilerState,
 ) -> Result<Vec<InteractiveCompilation>, SourceError> {
-    compile_interactive_forms_with_resolver(path, source, state, |_| None)
+    compile_interactive_forms_with_resolver(path, source, state, |name| {
+        Err(format!(
+            "`{name}` cannot be loaded without a module resolver"
+        ))
+    })
 }
 
 pub(crate) fn compile_interactive_forms_with_resolver(
     path: &str,
     source: &str,
     state: &InteractiveCompilerState,
-    mut resolve: impl FnMut(&str) -> Option<ModuleSnapshot>,
+    mut resolve: impl FnMut(&str) -> Result<ModuleSnapshot, String>,
 ) -> Result<Vec<InteractiveCompilation>, SourceError> {
     let tokens = Lexer::new(path, source).tokens()?;
     let expressions = Parser::new(tokens).parse()?;
     let mut state = state.clone();
     let mut compilations = Vec::with_capacity(expressions.len());
     for expression in expressions {
-        let imports = typecheck::static_import_names(std::slice::from_ref(&expression))
-            .into_iter()
-            .filter_map(|name| resolve(&name).map(|snapshot| (name, snapshot)))
-            .collect::<HashMap<_, _>>();
-        let mut imports = imports;
-        if let std::collections::hash_map::Entry::Vacant(entry) =
-            imports.entry("slug.builtin".into())
-            && let Some(snapshot) = resolve("slug.builtin")
-        {
-            entry.insert(snapshot);
-        }
+        let imports = ImportSnapshots::resolve(
+            typecheck::static_import_names(std::slice::from_ref(&expression)),
+            true,
+            &mut resolve,
+        );
         let expressions = vec![expression];
         let assets = super::assets::load(&expressions, super::no_assets)?;
         let analysis =

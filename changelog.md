@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A type named through an import that has no types, such as `sqlite.Database`
+  when `slug.db.sqlite` cannot load its native library on this platform, now
+  says why: the module cannot be loaded (with its load error), does not
+  compile (with its compile error), or imports the module being compiled.
+  Named in a function body, such a type reported ``type prefix `sqlite` is not
+  a module binding`` instead.
+
 - `slug.io.fs` adds native macOS directory watching with recursive subscriptions,
   subtree exclusions, selectable readiness, bounded invalidation batches,
   explicit rescan on event loss, and idempotent cancellation. Other platforms

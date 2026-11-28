@@ -1,7 +1,7 @@
 //! The Rust source front end. Its AST and bytecode lowering are deliberately
 //! private while the language surface is still growing.
 
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 use slug_loader::{ForeignDeclaration, ForeignParameter};
 use slug_vm::{Program, SourceSpan};
@@ -411,24 +411,18 @@ pub(crate) fn compile_with_resolver(
     path: &str,
     source: &str,
     module_name: Option<&str>,
-    mut resolve: impl FnMut(&str) -> Option<ModuleSnapshot>,
+    resolve: impl FnMut(&str) -> Result<ModuleSnapshot, String>,
     read_asset: impl FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> Result<CompiledSource, SourceError> {
     let include_implicit_builtins = module_name != Some("slug.builtin");
     let tokens = Lexer::new(path, source).tokens()?;
     let expressions = Parser::new(tokens).parse()?;
     let assets = assets::load(&expressions, read_asset)?;
-    let mut imports = typecheck::static_import_names(&expressions)
-        .into_iter()
-        .filter_map(|name| resolve(&name).map(|snapshot| (name, snapshot)))
-        .collect::<HashMap<_, _>>();
-    if include_implicit_builtins
-        && let std::collections::hash_map::Entry::Vacant(entry) =
-            imports.entry("slug.builtin".into())
-        && let Some(snapshot) = resolve("slug.builtin")
-    {
-        entry.insert(snapshot);
-    }
+    let imports = ImportSnapshots::resolve(
+        typecheck::static_import_names(&expressions),
+        include_implicit_builtins,
+        resolve,
+    );
     // With the implicit module's exports known, every name the runtime
     // provides is known, so an undeclared one is an error now rather than
     // when it runs. An explicit import of `slug.builtin` does not tell

@@ -3664,7 +3664,64 @@ fn a_type_from_a_module_that_does_not_compile_names_that_module() {
     fs::remove_dir_all(&directory).expect("remove module directory");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("`broken.T` cannot be resolved: module `broken`, imported as `broken`, has no types here"),
+        stderr.contains("`broken.T` cannot be resolved: module `broken`, imported as `broken`, has no types here, because it does not compile: "),
+        "{stderr}"
+    );
+}
+
+/// Runs `main` beside `modules` in a fresh directory, and gives its stderr.
+fn importer_stderr(name: &str, modules: &[(&str, &str)], main: &str) -> String {
+    let directory = std::env::temp_dir().join(format!(
+        "slug-cli-unavailable-{name}-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&directory).expect("make module directory");
+    for (module, source) in modules {
+        fs::write(directory.join(format!("{module}.slug")), source).expect("write module");
+    }
+    fs::write(directory.join("main.slug"), main).expect("write importer");
+    let output = slug()
+        .arg("main.slug")
+        .current_dir(&directory)
+        .env_remove("SLUG_HOME")
+        .output()
+        .expect("run importer");
+    fs::remove_dir_all(&directory).expect("remove module directory");
+    assert!(!output.status.success());
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn a_type_in_a_function_from_a_module_that_does_not_compile_names_that_module() {
+    // Named in a function body, after the import's declaration is checked,
+    // the type still says which module it is, not that the import is no
+    // module.
+    let stderr = importer_stderr(
+        "body",
+        &[(
+            "broken",
+            "export type T = {a: num}\nexport val f = fn():num { \"x\" }\n",
+        )],
+        "val broken = import(\"broken\")\nval g = fn(x) { match x { t: broken.T => 1\n _ => 2 } }\nprintln(g(1))\n",
+    );
+    assert!(
+        stderr.contains("`broken.T` cannot be resolved: module `broken`, imported as `broken`, has no types here, because it does not compile: "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("is not a module binding"), "{stderr}");
+}
+
+#[test]
+fn a_type_from_a_module_that_cannot_be_loaded_says_why() {
+    // A module that cannot be loaded, as a clutch missing its native library
+    // for this platform, reports its load error through the type named.
+    let stderr = importer_stderr(
+        "missing",
+        &[],
+        "val gone = import(\"gone\")\nval g = fn(x) { match x { t: gone.T => 1\n _ => 2 } }\nprintln(g(1))\n",
+    );
+    assert!(
+        stderr.contains("`gone.T` cannot be resolved: module `gone`, imported as `gone`, has no types here, because it cannot be loaded: module `gone` was not found"),
         "{stderr}"
     );
 }

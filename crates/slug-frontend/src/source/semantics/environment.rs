@@ -341,7 +341,56 @@ pub(crate) struct SessionSnapshot {
     types: HashMap<String, TypeMember>,
 }
 
-pub(super) type ImportSnapshots = HashMap<String, ModuleSnapshot>;
+/// The semantic snapshots of a compilation's static imports, and, for each
+/// import with none, why: it cannot be loaded, it does not compile, or it
+/// imports the module being compiled.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ImportSnapshots {
+    snapshots: HashMap<String, ModuleSnapshot>,
+    unavailable: HashMap<String, String>,
+}
+
+impl ImportSnapshots {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resolves each of `names`, then, with `builtins`, the implicit
+    /// `slug.builtin`, unless `names` resolved it.
+    pub(crate) fn resolve(
+        names: Vec<String>,
+        builtins: bool,
+        mut resolve: impl FnMut(&str) -> Result<ModuleSnapshot, String>,
+    ) -> Self {
+        let mut imports = Self::new();
+        for name in names {
+            match resolve(&name) {
+                Ok(snapshot) => {
+                    imports.snapshots.insert(name, snapshot);
+                }
+                Err(reason) => {
+                    imports.unavailable.insert(name, reason);
+                }
+            }
+        }
+        if builtins
+            && !imports.snapshots.contains_key("slug.builtin")
+            && let Ok(snapshot) = resolve("slug.builtin")
+        {
+            imports.snapshots.insert("slug.builtin".into(), snapshot);
+        }
+        imports
+    }
+
+    pub(crate) fn get(&self, name: &str) -> Option<&ModuleSnapshot> {
+        self.snapshots.get(name)
+    }
+
+    /// Why import `name` has no snapshot, if it was resolved and has none.
+    pub(super) fn unavailable(&self, name: &str) -> Option<&str> {
+        self.unavailable.get(name).map(String::as_str)
+    }
+}
 
 /// The annotated place a runtime check guards, which its error names.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -530,7 +579,7 @@ struct FunctionReturns {
 impl Environment {
     #[cfg(test)]
     pub(super) fn new() -> Self {
-        Self::with_imports_and_session(HashMap::new(), &SessionSnapshot::default())
+        Self::with_imports_and_session(ImportSnapshots::new(), &SessionSnapshot::default())
     }
 
     pub(super) fn with_imports_and_session(
@@ -1077,12 +1126,14 @@ impl Environment {
                 )
             })?;
             if let Some(unavailable) = &binding.unavailable_module {
+                let reason = self.unavailable_import(unavailable).unwrap_or(
+                    "it cannot be loaded, it does not compile, or it imports this module",
+                );
                 return Err(super::SourceError::semantic(
                     super::SourceErrorCode::UnknownType,
                     format!(
                         "`{name}` cannot be resolved: module `{unavailable}`, imported as \
-                         `{module}`, has no types here, because it does not compile or it \
-                         imports this module"
+                         `{module}`, has no types here, because {reason}"
                     ),
                     span.clone(),
                 ));
@@ -1202,6 +1253,11 @@ impl Environment {
 
     pub(super) fn import(&self, name: &str) -> Option<&ModuleSnapshot> {
         self.imports.get(name)
+    }
+
+    /// Why import `name` has no snapshot here, when it has none.
+    pub(super) fn unavailable_import(&self, name: &str) -> Option<&str> {
+        self.imports.unavailable(name)
     }
 
     /// Notes that the parameters at `parameters`' positions of the function

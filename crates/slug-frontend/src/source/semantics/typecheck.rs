@@ -4085,24 +4085,33 @@ fn bind_imports(expressions: &[Expr], environment: &mut Environment) {
         } = &expression.kind
             && let ExprKind::Call { callee, arguments } = &value.kind
             && matches!(&callee.kind, ExprKind::Name(callee) if callee == "import")
+            && let Some(binding) = expression_binding(value, environment)
+                .or_else(|| unavailable_import(callee, arguments))
         {
-            if let Some(binding) = expression_binding(value, environment) {
-                environment.declare(name.clone(), binding);
-            } else if let [
-                CallArgument::Positional(Expr {
-                    kind: ExprKind::Value(Value::Str(module)),
-                    ..
-                }),
-            ] = arguments.as_slice()
-            {
-                // A module with no snapshot, as one that does not compile,
-                // has no types; naming one says which module it is.
-                let mut binding = SemanticBinding::value(Type::Unknown);
-                binding.unavailable_module = Some(module.to_string());
-                environment.declare(name.clone(), binding);
-            }
+            environment.declare(name.clone(), binding);
         }
     }
+}
+
+/// The binding of `import(module)` when `module` has no snapshot, as one
+/// that cannot be loaded or does not compile: it has no types, and naming
+/// one through it says which module it is and why.
+fn unavailable_import(callee: &Expr, arguments: &[CallArgument]) -> Option<SemanticBinding> {
+    if !matches!(&callee.kind, ExprKind::Name(callee) if callee == "import") {
+        return None;
+    }
+    let [
+        CallArgument::Positional(Expr {
+            kind: ExprKind::Value(Value::Str(module)),
+            ..
+        }),
+    ] = arguments
+    else {
+        return None;
+    };
+    let mut binding = SemanticBinding::value(Type::Unknown);
+    binding.unavailable_module = Some(module.to_string());
+    Some(binding)
 }
 
 /// Declares each of a module's annotated values and `var`s, but functions,
@@ -5319,6 +5328,14 @@ fn value_binding(
             return schema_binding(fields, own, environment, type_parameters, &expression.span);
         }
         if let Some(binding) = expression_binding(expression, environment) {
+            return Ok(binding);
+        }
+        // An import keeps naming its module when it has no types, as
+        // `bind_imports` declared it, so a type named through it in a
+        // function body says why, as one in an alias does.
+        if let ExprKind::Call { callee, arguments } = &expression.kind
+            && let Some(binding) = unavailable_import(callee, arguments)
+        {
             return Ok(binding);
         }
         if let ExprKind::Map(entries) = &expression.kind {
@@ -7953,7 +7970,7 @@ mod tests {
         let expressions = super::super::Parser::new(tokens)
             .parse()
             .expect("source parses");
-        analyze_with_imports(&expressions, HashMap::new(), None)
+        analyze_with_imports(&expressions, ImportSnapshots::new(), None)
             .expect("source analyzes")
             .snapshot
             .exports
@@ -7978,7 +7995,7 @@ mod tests {
         let expressions = super::super::Parser::new(tokens)
             .parse()
             .expect("source parses");
-        let mut checks = analyze_with_imports(&expressions, HashMap::new(), None)
+        let mut checks = analyze_with_imports(&expressions, ImportSnapshots::new(), None)
             .expect("source analyzes")
             .boundary_checks
             .into_iter()
