@@ -24,6 +24,25 @@ val data = import("slug.games.crawl.data")
 val math = import("slug.math")
 val {map, filter, range} = import("slug.std")
 
+/**
+ * A settlement: its `kind` ("town", "fort", or "ruin", with `was` what a ruin
+ * was), its name, and the surface chunk (cx, cy) it fills.
+ */
+export type Settlement = {kind: str, name: str, cx: num, cy: num, was: str|nil}
+
+// What building a settlement lays over a chunk.
+type Built = {
+    map: list<str>,
+    down: level.Spot,
+    characters: list<level.Character>,
+    walls: level.Walls,
+    items: list<level.Thing>,
+    start: level.Spot,
+}
+
+// A chunk (cx, cy) of the surface.
+type At = {cx: num, cy: num}
+
 // ---------------------------------------------------------------------------
 // Names.
 
@@ -36,7 +55,7 @@ val PEOPLE = [
 ]
 
 // A settlement name of `kind` not in `used`.
-val nameFor = fn(kind:str, used:list):str {
+val nameFor = fn(kind:str, used:list<str>):str {
     val ends = if (kind == "fort") { FORT_ENDS } else { TOWN_ENDS }
     val name = STARTS[rng.below(len(STARTS))] + ends[rng.below(len(ends))]
     val full = if (kind == "fort") { "Fort " + name } else { name }
@@ -56,26 +75,24 @@ val LAND = 70
  * more town for every 200 chunks and one fort for every 250, on land, at
  * least five chunks from each other and one from the world's edge.
  */
-export val place = fn(world:num, size:num):list {
+export val place = fn(world:num, size:num):list<Settlement> {
     rng.within(rng.mix([world, 41]), fn() {
         val middle = math.div(size, 2)
         val ok = fn(cx:num, cy:num):bool { level.inWorld(size, cx, cy) && level.landShare(world, cx, cy, size) >= LAND }
         // The first chunk with enough land, ring by ring out from the middle.
-        val ring = fn(r:num):map {
+        val ring = fn(r:num):At {
             if (size > 0 && r > size) { return {cx: middle, cy: middle} }
             val sides = 8 * r
-            val each = fn(i:num):map|nil {
+            val each = fn(i:num):At|nil {
                 if (i >= math.max(sides, 1)) { return nil }
                 val [dx, dy] = if (r == 0) { [0, 0] } else if (i < 2 * r) { [i - r, -r] } else if (i < 4 * r) { [r, i - 3 * r] } else if (i < 6 * r) { [5 * r - i, r] } else { [-r, 7 * r - i] }
                 if (ok(middle + dx, middle + dy)) { {cx: middle + dx, cy: middle + dy} } else { recur(i + 1) }
             }
-            match each(0) {
-                spot: map => spot
-                _ => recur(r + 1)
-            }
+            val spot = each(0)
+            if (spot != nil) { spot } else { recur(r + 1) }
         }
         val start = ring(0)
-        var found = [{kind: "town", name: nameFor("town", []), cx: start.cx, cy: start.cy}]
+        var found:list<Settlement> = [{kind: "town", name: nameFor("town", []), cx: start.cx, cy: start.cy}]
         val far = fn(cx:num, cy:num):bool {
             len(filter(found, fn(s) { math.max(math.abs(s.cx - cx), math.abs(s.cy - cy)) < 5 })) == 0
         }
@@ -105,15 +122,15 @@ export val place = fn(world:num, size:num):list {
 // ---------------------------------------------------------------------------
 // Building.
 
-val write = fn(rows:list, x:num, y:num, text:str):list {
+val write = fn(rows:list<str>, x:num, y:num, text:str):list<str> {
     val row = rows[y]
     rows[:y] + [row[:x] + text + row[x + len(text):]] + rows[y + 1:]
 }
 
 // Draws a box of walls from (left, top) to (right, bottom), floor inside.
-val box = fn(rows:list, left:num, top:num, right:num, bottom:num):list {
+val box = fn(rows:list<str>, left:num, top:num, right:num, bottom:num):list<str> {
     val w = right - left + 1
-    val go = fn(y:num, acc:list):list {
+    val go = fn(y:num, acc:list<str>):list<str> {
         if (y > bottom) { return acc }
         val line = if (y == top || y == bottom) { level.HWALL * w } else { level.VWALL + level.FLOOR * (w - 2) + level.VWALL }
         recur(y + 1, write(acc, left, y, line))
@@ -123,7 +140,7 @@ val box = fn(rows:list, left:num, top:num, right:num, bottom:num):list {
 
 // A straight road from (x, y) one square at a time by (dx, dy) to the
 // chunk's edge, over whatever is there.
-val road = fn(rows:list, x:num, y:num, dx:num, dy:num):list {
+val road = fn(rows:list<str>, x:num, y:num, dx:num, dy:num):list<str> {
     if (x < 0 || x >= level.WIDTH || y < 0 || y >= level.HEIGHT) { return rows }
     recur(write(rows, x, y, level.ROAD), x + dx, y + dy, dx, dy)
 }
@@ -136,7 +153,7 @@ val SLOT_W = 11
 // A building in slot `i` (0 to 3 above the street, 4 to 7 below): its box,
 // its door on the side facing the street, and the square inside farthest
 // from the door, where its keeper stands.
-val building = fn(i:num):map {
+val building = fn(i:num):{left: num, top: num, right: num, bottom: num, door: level.Spot, keeper: level.Spot} {
     val w = 7 + rng.below(5)
     val h = 4 + rng.below(2)
     val left = SLOT_LEFTS[i % 4] + rng.below(SLOT_W - w + 1)
@@ -149,7 +166,7 @@ val building = fn(i:num):map {
     {left: left, top: top, right: left + w - 1, bottom: bottom, door: {x: doorX, y: doorY}, keeper: {x: left + 1 + math.div(w - 2, 2), y: keeperY}}
 }
 
-val person = fn(at:map, role:str, used:list):map {
+val person = fn(at:level.Spot, role:str, used:list<str>):level.Character {
     val pick = fn():str {
         val n = PEOPLE[rng.below(len(PEOPLE))]
         if (len(filter(used, fn(u) { u == n })) > 0 && len(used) < len(PEOPLE)) { recur() } else { n }
@@ -158,7 +175,7 @@ val person = fn(at:map, role:str, used:list):map {
 }
 
 // The items of `lv` still on open ground outside `walls`.
-val outside = fn(lv:map, rows:list, walls:map):list {
+val outside = fn(lv:level.Chunk, rows:list<str>, walls:level.Walls):list<level.Thing> {
     filter(lv.items, fn(i) {
         val inside = i.x >= walls.left && i.x <= walls.right && i.y >= walls.top && i.y <= walls.bottom
         !inside && rows[i.y][i.x] == level.FLOOR
@@ -167,7 +184,7 @@ val outside = fn(lv:map, rows:list, walls:map):list {
 
 // A square of open ground outside `walls`, for the way down; failing that,
 // beside the west road near the chunk's edge.
-val groundOutside = fn(rows:list, walls:map, tries:num = 2000):map {
+val groundOutside = fn(rows:list<str>, walls:level.Walls, tries:num = 2000):level.Spot {
     if (tries == 0) { return {x: 2, y: 10} }
     val x = rng.below(level.WIDTH)
     val y = rng.below(level.HEIGHT)
@@ -176,8 +193,8 @@ val groundOutside = fn(rows:list, walls:map, tries:num = 2000):map {
 }
 
 // Characters and the people's names taken so far, as one list grows.
-val people = fn(spots:list):list {
-    val go = fn(i:num, acc:list):list {
+val people = fn(spots:list<[level.Spot, str]>):list<level.Character> {
+    val go = fn(i:num, acc:list<level.Character>):list<level.Character> {
         if (i == len(spots)) { return acc }
         val [at, role] = spots[i]
         recur(i + 1, acc :+ person(at, role, map(acc, fn(c) { c.name })))
@@ -185,7 +202,7 @@ val people = fn(spots:list):list {
     go(0, [])
 }
 
-val buildTown = fn(lv:map):map {
+val buildTown = fn(lv:level.Chunk):Built {
     val walls = {left: 14, top: 3, right: 65, bottom: 18}
     var rows = box(lv.map, walls.left, walls.top, walls.right, walls.bottom)
     // Gates and roads: north and south at column 40, west and east at row 10.
@@ -225,7 +242,7 @@ val buildTown = fn(lv:map):map {
     {map: rows, down: down, characters: characters, walls: walls, items: outside(lv, rows, walls), start: {x: 40, y: 10}}
 }
 
-val buildFort = fn(lv:map):map {
+val buildFort = fn(lv:level.Chunk):Built {
     val walls = {left: 24, top: 4, right: 55, bottom: 17}
     var rows = box(lv.map, walls.left, walls.top, walls.right, walls.bottom)
     rows = road(rows, 40, walls.top, 0, -1)
@@ -255,7 +272,7 @@ val buildFort = fn(lv:map):map {
 // What the years leave of a settlement `built`: walls fallen in or grown
 // over, doors gone, roads and floors overgrown, no one left, and the way
 // down in the middle of what was.
-val decay = fn(built:map):map {
+val decay = fn(built:Built):Built {
     val w = built.walls
     val square = fn(c:str):str {
         val r = rng.below(100)
@@ -275,7 +292,7 @@ val decay = fn(built:map):map {
         if (x > w.right) { return out }
         recur(y, x + 1, out + square(built.map[y][x]))
     }
-    val rows = fn(y:num, acc:list):list {
+    val rows = fn(y:num, acc:list<str>):list<str> {
         if (y > w.bottom) { return acc }
         recur(y + 1, write(acc, w.left, y, row(y, w.left, "")))
     }
@@ -298,16 +315,18 @@ val decay = fn(built:map):map {
  * as it stood and then left to the years: the ruins of it, with no one
  * there and the way down inside.
  */
-export val build = fn(world:num, lv:map, s:map):map {
+export val build = fn(world:num, lv:level.Chunk, s:Settlement):level.Chunk {
     rng.within(rng.mix([world, 43, s.cx, s.cy]), fn() {
         // The way down moves, so the old one goes first.
         val cleared = lv copy {map: write(lv.map, lv.down.x, lv.down.y, level.FLOOR)}
         val kind = if (s.kind == "ruin") { s.was ?? "town" } else { s.kind }
         val built = if (kind == "fort") { buildFort(cleared) } else { buildTown(cleared) }
-        if (s.kind == "ruin") {
-            lv + decay(built) + {monsters: [], place: {kind: "ruin", name: "the ruins of " + s.name, was: s.name}}
-        } else {
-            lv + built + {monsters: [], place: {kind: s.kind, name: s.name}}
+        val ruin = s.kind == "ruin"
+        val made = if (ruin) { decay(built) } else { built }
+        lv copy {
+            map: made.map, down: made.down, characters: made.characters, walls: made.walls,
+            items: made.items, start: made.start, monsters: [],
+            place: if (ruin) { {kind: "ruin", name: "the ruins of " + s.name, was: s.name} } else { {kind: s.kind, name: s.name} },
         }
     })
 }
@@ -324,13 +343,13 @@ val ARMOUR_PRICES = [40, 70, 140, 250]
  * What `item` costs to buy, in gold: fixed for each type, and 20 more or
  * less for each point of a weapon or armour's bonus, at least 1.
  */
-export val price = fn(item:map):num {
+export val price = fn(item:level.Item):num {
     val base = match item.kind {
         "food" => 10
-        "potion" => POTION_PRICES[item.type]
-        "scroll" => SCROLL_PRICES[item.type]
-        "weapon" => WEAPON_PRICES[item.type] + 20 * (item.bonus ?? 0)
-        "armour" => ARMOUR_PRICES[item.type] + 20 * (item.bonus ?? 0)
+        "potion" => POTION_PRICES[level.typeOf(item)]
+        "scroll" => SCROLL_PRICES[level.typeOf(item)]
+        "weapon" => WEAPON_PRICES[level.typeOf(item)] + 20 * (item.bonus ?? 0)
+        "armour" => ARMOUR_PRICES[level.typeOf(item)] + 20 * (item.bonus ?? 0)
         _ => 0
     }
     math.max(1, base)
@@ -339,13 +358,13 @@ export val price = fn(item:map):num {
 /**
  * What a dealer pays for `item`: half its price, rounded down, at least 1.
  */
-export val offer = fn(item:map):num { math.max(1, math.div(price(item), 2)) }
+export val offer = fn(item:level.Item):num { math.max(1, math.div(price(item), 2)) }
 
 /**
  * What a character in `role` sells, as items; none for those who do not
  * trade.
  */
-export val wares = fn(role:str):list {
+export val wares = fn(role:str):list<level.Item> {
     match role {
         "trader" => [{kind: "food"}, {kind: "potion", type: 0}, {kind: "scroll", type: 0}]
         "quartermaster" => map(range(len(data.weapons)), fn(t) { {kind: "weapon", type: t, bonus: 0} })
@@ -357,7 +376,7 @@ export val wares = fn(role:str):list {
 /**
  * Whether a character in `role` buys `item`.
  */
-export val buys = fn(role:str, item:map):bool {
+export val buys = fn(role:str, item:level.Item):bool {
     match role {
         "trader" => true
         "quartermaster" => item.kind == "weapon" || item.kind == "armour"
@@ -424,4 +443,4 @@ export val LINES = {
  * What a character in `role` is called with their name, as "Mara the
  * trader".
  */
-export val title = fn(c:map):str { c.name + " the " + c.role }
+export val title = fn(c:level.Character):str { c.name + " the " + c.role }

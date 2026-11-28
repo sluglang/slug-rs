@@ -286,7 +286,7 @@ export val prices = fn(seed:num, e:empire.Empire, here:str):str|nil {
  * An epitaph for `grave`, `{name, level, cause, step}`: "Here lies Mara,
  * level 4, killed by the troll, in the summer of year 102."
  */
-export val epitaph = fn(grave:map):str {
+export val epitaph = fn(grave:{name: str, level: num, cause: str, step: num}):str {
     "Here lies " + grave.name + ", level " + grave.level + ", " + grave.cause + ", in " + empire.dateOf(grave.step) + "."
 }
 
@@ -295,7 +295,7 @@ export val epitaph = fn(grave:map):str {
  * annals, newest first, as "Mara, level 4, killed by the troll in the
  * depths under the Ashmoor, in the summer of year 102."
  */
-export val fallen = fn(seed:num, e:empire.Empire, n:num):list {
+export val fallen = fn(seed:num, e:empire.Empire, n:num):list<str> {
     val deaths = filter(e.annals ?? [], fn(a) { a.kind == "death" })
     val newest = map(range(math.min(n, len(deaths))), fn(k) { deaths[len(deaths) - 1 - k] })
     map(newest, fn(d) {

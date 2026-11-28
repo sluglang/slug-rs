@@ -227,13 +227,13 @@ val pagesThatDrawTheirMapsAreSentItAsData = fn() {
 val deathOffersANewCharacterInTheSameWorld = fn() {
     web.start(1)
     val id = web.newPlayer()
-    val alive = game.snapshot()
+    val alive:any = game.snapshot()
     val p = alive.players[id]
     game.load(alive copy {players: alive.players + {[id]: p copy {dead: true, gold: 99}}})
     assertTrue(includes(web.gameHtml(id), "You died."))
     post("/key", "key=enter", id)
     web.tickOnce()
-    val now = game.current()
+    val now:any = game.current()
     assertEqual(now.world.seed, alive.world.seed)
     val kept = keys(alive.levels)
     assertEqual(map(kept, fn(k) { now.levels[k] }), map(kept, fn(k) { alive.levels[k] }))
@@ -249,7 +249,7 @@ val playersSeeEachOther = fn() {
     val a = web.newPlayer()
     val b = web.newPlayer()
     // Put b next to a.
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     val pa = s.players[a]
     val spot = if (game.here(a).map[pa.y][pa.x + 1] == ".") { pa.x + 1 } else { pa.x - 1 }
     game.load(s copy {players: s.players + {[b]: s.players[b] copy {cx: pa.cx, cy: pa.cy, depth: pa.depth, x: spot, y: pa.y}}})
@@ -266,7 +266,7 @@ val aCrowdInViewNamesTheNearestAndCountsTheRest = fn() {
     // Players 2-10 stand next to player 1, and players 11-13, joining
     // last, on their square.
     val crowd = map(range(12), fn(i) { web.newPlayer() })
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     val p = s.players[me]
     val spot = if (game.here(me).map[p.y][p.x + 1] == ".") { p.x + 1 } else { p.x - 1 }
     val placed = reduce(range(12), s.players, fn(acc, i) {
@@ -348,9 +348,9 @@ val theMapScrollsOnlyNearItsEdges = fn() {
         if (rows[y][x:x + 8] == "........") { {x: x, y: y} } else { recur(i + 1) }
     }
     val spot = find(0)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {levels: s.levels + {[game.chunkKey(s.players[id].cx, s.players[id].cy, s.players[id].depth)]: game.here(id) + {monsters: [], characters: []}}})
-    val t = game.snapshot()
+    val t:any = game.snapshot()
     game.load(t copy {players: t.players + {[id]: t.players[id] + {x: spot.x, y: spot.y}}})
     val events = get("/events", id, {cols: "20", rows: "8"})
     val first = mapText(web.gameHtml(id))
@@ -407,7 +407,7 @@ val twoSideBySide = fn():list {
     web.start(1)
     val a = web.newPlayer()
     val b = web.newPlayer()
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     val pa = s.players[a]
     val rows = game.here(a).map
     val go = fn(i:num):list {

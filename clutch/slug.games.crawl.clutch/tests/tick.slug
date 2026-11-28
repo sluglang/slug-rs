@@ -13,7 +13,7 @@ val kindNamed = fn(name:str):num {
 
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
 }
 
@@ -21,7 +21,7 @@ val setPlayer = fn(id:str, fields:map) {
 val setChunk = fn(id:str, fields:map) {
     val p = game.playerOf(id)
     val key = game.chunkKey(p.cx, p.cy, p.depth)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {levels: s.levels + {[key]: s.levels[key] + fields}})
 }
 

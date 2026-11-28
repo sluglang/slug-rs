@@ -61,7 +61,7 @@ val data = import("slug.games.crawl.data")
 val bestiary = import("slug.games.crawl.bestiary")
 val level = import("slug.games.crawl.level")
 val town = import("slug.games.crawl.town")
-val {map, filter, contains, reduce, range, or} = import("slug.std")
+val {map, filter, contains, reduce, range, or, compact} = import("slug.std")
 val {chars, fromBytes} = import("slug.string")
 val math = import("slug.math")
 val mustache = import("slug.text.mustache")
@@ -80,7 +80,7 @@ val USES = {food: "e", potion: "q", scroll: "r", weapon: "w", armour: "a"}
 // The use button's label for pack entry `e` of player `p`, or nil when using
 // it would do nothing: the weapon in hand, or armour while other armour is
 // worn.
-val useLabel = fn(p:map, e:map):str|nil {
+val useLabel = fn(p:game.Player, e:game.Entry):str|nil {
     match e.item.kind {
         "food" => "Eat"
         "potion" => "Quaff"
@@ -118,14 +118,17 @@ val HEARTBEAT = 60
 // Each player's log, by id: `log` holds [move, message] pairs, oldest
 // first, and `moves` counts the commands that did something, so the latest
 // move's messages can be told apart.
-var logs = {}
+var logs:map<str, Log> = {}
+
+// A player's log: [move, message] pairs, and how many moves they made.
+type Log = {log: list<[num, str]>, moves: num}
 
 // How many players have joined, which numbers them.
 var joined = 0
 
 // The keys waiting for a tick, `{id, key, shift, text}` in the order they
 // came; `text` is what the key "say" says.
-var queue = []
+var queue:list<game.Action> = []
 
 // The open event streams by player id, each a list of channels, and how
 // many ticks have run.
@@ -135,8 +138,11 @@ var ticks = 0
 // Each player's window size, `{cols, rows}`, as their page asked, and
 // where their window is, `{left, top, depth, cols, rows}` in world
 // coordinates.
-var sizes = {}
-var cameras = {}
+var sizes:map<str, {cols: num, rows: num}> = {}
+var cameras:map<str, Camera> = {}
+
+// Where a player's window is.
+type Camera = {left: num, top: num, depth: num, cols: num, rows: num}
 
 // Whether `serve` is serving, which keeps its ticks going, and on every how
 // many ticks monsters act.
@@ -158,13 +164,13 @@ val band = fn(hp:num, maxHp:num):str {
 
 // --- Playing -----------------------------------------------------------------
 
-val logOf = fn(id:str):map { logs[id] ?? {log: [], moves: 0} }
+val logOf = fn(id:str):Log { logs[id] ?? {log: [], moves: 0} }
 
 // Records the messages of a move that did something.
-val record = fn(id:str, messages:list) {
+val record = fn(id:str, messages:list<str>) {
     val l = logOf(id)
     val moves = l.moves + 1
-    val all = l.log + map(messages, fn(message) { [moves, message] })
+    val all = l.log + map(messages, fn(message):[num, str] { [moves, message] })
     logs = logs + {[id]: {log: if (len(all) > LOG_SIZE) { all[len(all) - LOG_SIZE:] } else { all }, moves: moves}}
 }
 
@@ -201,12 +207,12 @@ export val tickOnce = fn() { push(simulate()) }
 // Carries out the first queued key of each player, moves the world on, and
 // logs what each player was told; returns the ids of the players with a page
 // open, for `push`.
-val simulate = fn():list {
+val simulate = fn():list<str> {
     // The first queued key of each player; the rest wait. The players seen,
     // who acted, and who were dead are sets, as maps from id to true: with
     // a thousand players, finding each in a list was most of a tick's work
     // outside the world's.
-    val firsts = fn(i:num, now:list, later:list, seen:map):list {
+    val firsts = fn(i:num, now:list<game.Action>, later:list<game.Action>, seen:map<str, bool>):[list<game.Action>, list<game.Action>] {
         if (i == len(queue)) { return [now, later] }
         val a = queue[i]
         if (seen[a.id] != nil) { recur(i + 1, now, later :+ a, seen) } else { recur(i + 1, now :+ a, later, seen + {[a.id]: true}) }
@@ -246,10 +252,10 @@ val simulate = fn():list {
 // each find what a share of the pages need, and this task sends it. A page
 // that opened a stream meanwhile was sent everything then, so what was found
 // for it is stale and not sent.
-val push = fn(present:list) {
+val push = fn(present:list<str>) {
     refreshed = {}
     // Drawing changes nothing, so each chunk's company is found once.
-    val found = inForks(present, fn(ids:list):list { game.steady(fn() { map(ids, fn(id) { changesFor(id, false) }) }) })
+    val found = inForks(present, fn(ids:list<str>):list<Change> { game.steady(fn() { map(ids, fn(id) { changesFor(id, false) }) }) })
     map(filter(found, fn(c) { refreshed[c.id] == nil }), fn(c) {
         if (!send(c) && ticks % HEARTBEAT == 0) { broadcast(c.id, ": alive\n\n") }
     })
@@ -259,14 +265,15 @@ val push = fn(present:list) {
 // joined: with `forks` above one, that many forks each find it for a share,
 // every nth player, as players near each other cost alike. `find` must
 // change nothing.
-val inForks = fn(ids:list, find:fn):list {
+val inForks = fn<T>(ids:list<str>, find:fn<list<T>, list<str>>):list<T> {
     val n = math.min(forks, len(ids))
     if (n <= 1) { return find(ids) }
     val tasks = map(range(n), fn(w) {
         val mine = map(range(math.div(len(ids) - w + n - 1, n)), fn(i) { ids[w + i * n] })
         fork { find(mine) }
     })
-    reduce(tasks, [], fn(acc, task) { acc + await(task) })
+    val none:list<T> = []
+    reduce(tasks, none, fn(acc, task) { acc + await(task) })
 }
 
 // Sends the player's page what changed since it was last sent anything, or
@@ -278,7 +285,7 @@ val sendChanges = fn(id:str, everything:bool = false):bool { send(changesFor(id,
 // window, map data and parts' data to keep for next time, the events to
 // send, and whether anything changed. It changes nothing, so a fork can
 // find it; `send` keeps and sends it.
-val changesFor = fn(id:str, everything:bool):map {
+val changesFor = fn(id:str, everything:bool):Change {
     val p = game.playerOf(id)
     // The map's data is what it shows, so it tells whether it changed.
     // The other players here whom they see, which the map and the list of
@@ -296,9 +303,12 @@ val changesFor = fn(id:str, everything:bool):map {
     {id: id, camera: camera(id, p), map: data, parts: now, events: events, sent: moved || len(html) > 0}
 }
 
+// What `changesFor` finds for a player's page.
+type Change = {id: str, camera: Camera, map: str, parts: map, events: list<str>, sent: bool}
+
 // Keeps what `changesFor` found for the player's page and sends it;
 // returns whether anything changed.
-val send = fn(c:map):bool {
+val send = fn(c:Change):bool {
     cameras = cameras + {[c.id]: c.camera}
     shownMaps = shownMaps + {[c.id]: c.map}
     shownParts = shownParts + {[c.id]: c.parts}
@@ -355,7 +365,7 @@ val partHtml = fn(name:str, data:map):str { mustache.render(PARTS[name], data, P
 // on another depth, another size, or no longer holds them, in which case
 // it is centred on them; then moved just enough to keep them a quarter of
 // its size from each edge. `send` keeps it, for the next tick.
-val camera = fn(id:str, p:map):map {
+val camera = fn(id:str, p:game.Player):Camera {
     val size = sizes[id] ?? {cols: level.WIDTH, rows: level.HEIGHT}
     val px = p.cx * level.WIDTH + p.x
     val py = p.cy * level.HEIGHT + p.y
@@ -364,8 +374,8 @@ val camera = fn(id:str, p:map):map {
     val was = cameras[id]
     val fresh = was == nil || was.depth != p.depth || was.cols != size.cols || was.rows != size.rows
         || px < was.left || px >= was.left + size.cols || py < was.top || py >= was.top + size.rows
-    val left0 = if (fresh) { px - math.div(size.cols, 2) } else { was.left }
-    val top0 = if (fresh) { py - math.div(size.rows, 2) } else { was.top }
+    val left0 = if (fresh || was == nil) { px - math.div(size.cols, 2) } else { was.left }
+    val top0 = if (fresh || was == nil) { py - math.div(size.rows, 2) } else { was.top }
     val keep = fn(at:num, start:num, length:num, margin:num):num {
         if (at < start + margin) { at - margin } else if (at > start + length - 1 - margin) { at - (length - 1 - margin) } else { start }
     }
@@ -380,7 +390,10 @@ val camera = fn(id:str, p:map):map {
 // `id` at `p`: its class, dimmed when the square is out of their sight (not
 // in `sight`, from `game.inView`), and for a monster or another player their
 // name, from `near`; nil for a blank square.
-val cell = fn(p:map, sight:map, near:map, c:str, wx:num, wy:num):map {
+// How a square looks: its class and, for someone there, their name.
+type Look = {cls: str|nil, title: str|nil}
+
+val cell = fn(p:game.Player, sight:map<num, bool>, near:map<num, Look>, c:str, wx:num, wy:num):Look {
     val x = wx - p.cx * level.WIDTH
     val y = wy - p.cy * level.HEIGHT
     if (c == "@") {
@@ -407,54 +420,58 @@ val cell = fn(p:map, sight:map, near:map, c:str, wx:num, wy:num):map {
 // id order, from `seen` (`game.peopleSeen`), then townsfolk. The map draws
 // an `@` only where they see one, so the people out of sight would never
 // be looked up.
-val nearby = fn(id:str, seen:list):map {
-    val stand = fn(acc:map, x:num, y:num, look:map):map {
+val nearby = fn(id:str, seen:list<[str, game.Player]>):map<num, Look> {
+    val stand = fn(acc:map<num, Look>, x:num, y:num, look:Look):map<num, Look> {
         val k = game.viewKey(x, y)
         if (acc[k] == nil) { acc + {[k]: look} } else { acc }
     }
     val sees = game.seeing(id)
-    val folk = reduce(filter(game.here(id).characters ?? [], fn(c) { sees(c.x, c.y) }), {}, fn(acc, c) {
+    val none:map<num, Look> = {}
+    val folk = reduce(filter(game.here(id).characters ?? [], fn(c) { sees(c.x, c.y) }), none, fn(acc, c) {
         stand(acc, c.x, c.y, {cls: "character", title: town.title(c)})
     })
-    val near = reduce(seen, {}, fn(acc, o) {
+    val near = reduce(seen, none, fn(acc, o) {
         stand(acc, o[1].x, o[1].y, {cls: "ally", title: o[1].name})
     })
     reduce(keys(folk), near, fn(acc, k) { if (acc[k] == nil) { acc + {[k]: folk[k]} } else { acc } })
 }
 
 // One row of the map as runs of characters that look alike.
-val mapRow = fn(p:map, sight:map, near:map, cam:map, row:str, y:num, end:str):map {
+// A run of map characters that look alike.
+type Run = {cls: str|nil, title: str|nil, text: str}
+
+val mapRow = fn(p:game.Player, sight:map<num, bool>, near:map<num, Look>, cam:Camera, row:str, y:num, end:str):{runs: list<Run>, end: str} {
     val wy = cam.top + y
-    val go = fn(x:num, start:num, look:map, out:list):list {
-        if (x == len(row)) { return out :+ (look + {text: row[start:x]}) }
+    val run = fn(look:Look, text:str):Run { {cls: look.cls, title: look.title, text: text} }
+    val go = fn(x:num, start:num, look:Look, out:list<Run>):list<Run> {
+        if (x == len(row)) { return out :+ run(look, row[start:x]) }
         val next = cell(p, sight, near, row[x], cam.left + x, wy)
-        if (next == look) { recur(x + 1, start, look, out) } else { recur(x + 1, x, next, out :+ (look + {text: row[start:x]})) }
+        if (next == look) { recur(x + 1, start, look, out) } else { recur(x + 1, x, next, out :+ run(look, row[start:x])) }
     }
     {runs: go(1, 0, cell(p, sight, near, row[0], cam.left, wy), []), end: end}
 }
 
 // The player's window onto the map, row by row.
-val mapRows = fn(id:str, p:map, seen:list):list {
+val mapRows = fn(id:str, p:game.Player, seen:list<[str, game.Player]>):list<{runs: list<Run>, end: str}> {
     val cam = camera(id, p)
     val rows = game.view(id, cam.left, cam.top, cam.cols, cam.rows)
     val sight = game.inView(id)
     val everyone = nearby(id, seen)
-    val go = fn(y:num, out:list):list {
+    val go = fn(y:num, out:list<{runs: list<Run>, end: str}>):list<{runs: list<Run>, end: str}> {
         if (y == cam.rows) { return out }
         recur(y + 1, out :+ mapRow(p, sight, everyone, cam, rows[y], y, if (y < cam.rows - 1) { "\n" } else { "" }))
     }
     go(0, [])
 }
 
-val statsView = fn(id:str, p:map):map {
+val statsView = fn(id:str, p:game.Player):map {
     val hunger = if (p.food <= 0) { "Faint" } else if (p.food <= 50) { "Weak" } else if (p.food <= 150) { "Hungry" } else { "" }
+    val place = game.here(id).place
     {
         hp: p.hp, maxHp: p.maxHp, health: percent(p.hp, p.maxHp),
         band: band(p.hp, p.maxHp),
-        depth: if (p.depth == 0) { "Surface" } else { p.depth }, area: match game.here(id).place {
-            place: map => place.name
-            _ => "" + p.cx + ", " + p.cy
-        }, gold: p.gold, str: p.str, maxStr: p.maxStr,
+        depth: if (p.depth == 0) { "Surface" } else { p.depth },
+        area: if (place != nil) { place.name } else { "" + p.cx + ", " + p.cy }, gold: p.gold, str: p.str, maxStr: p.maxStr,
         armour: game.armourValue(id), level: p.level, xp: p.xp,
         // Who holds the land here, and where that is.
         land: game.land(id).holder ?? "No one", place: game.land(id).place,
@@ -476,10 +493,10 @@ val statsView = fn(id:str, p:map):map {
 // The pack: while a prompt asks for an item, the items it accepts can be
 // chosen and the rest are disabled; otherwise each item has a button to use
 // it as its kind is used, and one to drop it unless it is worn.
-val packView = fn(id:str, p:map):map {
+val packView = fn(id:str, p:game.Player):map {
     val asking = p.prompt != nil
-    val wanted = if (asking) { PROMPT_KINDS[p.prompt] } else { nil }
-    val item = fn(e:map):map {
+    val wanted = if (asking) { PROMPT_KINDS[p.prompt ?? ""] } else { nil }
+    val item = fn(e:game.Entry):map {
         val kind = e.item.kind
         val fits = wanted == nil || kind == wanted
         {
@@ -489,7 +506,7 @@ val packView = fn(id:str, p:map):map {
             use: if (asking) { nil } else { {verb: useLabel(p, e), drop: e.letter != p.armour} },
         }
     }
-    {asking: asking, count: len(p.pack), size: 22, items: map(p.pack, item)}
+    {asking: asking, count: len(p.pack), size: 22, items: map(p.pack, fn(e) { item(e) })}
 }
 
 // How many of the other players in view the list names, the nearest; the
@@ -498,18 +515,18 @@ val NEAREST = 8
 
 // The `NEAREST` of `people` ([id, player] pairs) nearest `p` in moves,
 // nearest first, those as near in id order.
-val nearest = fn(p:map, people:list):list {
-    val away = fn(o:list):num { math.max(math.abs(o[1].x - p.x), math.abs(o[1].y - p.y)) }
+val nearest = fn(p:game.Player, people:list<[str, game.Player]>):list<[str, game.Player]> {
+    val away = fn(o:[str, game.Player]):num { math.max(math.abs(o[1].x - p.x), math.abs(o[1].y - p.y)) }
     // Whether `a`, `da` away, comes before `b`.
-    val before = fn(a:list, da:num, b:list):bool {
+    val before = fn(a:[str, game.Player], da:num, b:[str, game.Player]):bool {
         val db = away(b)
         da < db || (da == db && a[0] < b[0])
     }
     // Puts `o` into `kept`, which is in that order, keeping no more than
     // NEAREST.
-    val insert = fn(kept:list, o:list):list {
+    val insert = fn(kept:list<[str, game.Player]>, o:[str, game.Player]):list<[str, game.Player]> {
         val d = away(o)
-        val go = fn(i:num):list {
+        val go = fn(i:num):list<[str, game.Player]> {
             if (i == len(kept) || before(o, d, kept[i])) {
                 val placed = kept[:i] + [o] + kept[i:]
                 if (len(placed) > NEAREST) { placed[:NEAREST] } else { placed }
@@ -519,19 +536,22 @@ val nearest = fn(p:map, people:list):list {
         }
         if (len(kept) == NEAREST && !before(o, d, kept[NEAREST - 1])) { kept } else { go(0) }
     }
-    reduce(people, [], insert)
+    val none:list<[str, game.Player]> = []
+    // A literal, which checks nothing on entry; `insert` would check `kept`.
+    reduce(people, none, fn(kept, o) { insert(kept, o) })
 }
 
 // `people` ([id, player] pairs) in id order.
-val byId = fn(people:list):list {
-    val found = reduce(people, {}, fn(acc, o) { acc + {[o[0]]: o} })
-    map(sort(keys(found)), fn(id) { found[id] })
+val byId = fn(people:list<[str, game.Player]>):list<[str, game.Player]> {
+    val none:map<str, [str, game.Player]> = {}
+    val found = reduce(people, none, fn(acc, o) { acc + {[o[0]]: o} })
+    map(sort(keys(found)), fn(id) { found[id] }) /> compact()
 }
 
 // Who is in view: the nearest of the other players the player sees,
 // `people` (`game.peopleSeen`), and how many more there are, then
 // townsfolk, then monsters.
-val foesView = fn(id:str, p:map, people:list):list {
+val foesView = fn(id:str, p:game.Player, people:list<[str, game.Player]>):list {
     val sees = game.seeing(id)
     val named = if (len(people) > NEAREST) { nearest(p, people) } else { byId(people) }
     val rest = len(people) - len(named)
@@ -547,7 +567,7 @@ val foesView = fn(id:str, p:map, people:list):list {
         })
 }
 
-val overView = fn(p:map) {
+val overView = fn(p:game.Player) {
     if (p.dead) {
         {title: "You died.", detail: (if (p.depth == 0) { "On the surface" } else { "On depth " + p.depth }) + ", with " + p.gold + " gold, at experience level " + p.level + "."}
     } else {
@@ -559,7 +579,7 @@ val overView = fn(p:map) {
 // the prompt's question or what the latest move said; over it, an open menu
 // or the end of a game; below it, the older messages; and beside it, what
 // is in view, the stats, and the pack.
-val partsData = fn(id:str, p:map, seen:list):map {
+val partsData = fn(id:str, p:game.Player, seen:list<[str, game.Player]>):map {
     val prompt = p.prompt != nil
     val foes = foesView(id, p, seen)
     val l = logOf(id)
@@ -578,7 +598,7 @@ val partsData = fn(id:str, p:map, seen:list):map {
 }
 
 // What the map part draws: the map, or the element that draws it on the page.
-val mapPart = fn(id:str, p:map, seen:list):map {
+val mapPart = fn(id:str, p:game.Player, seen:list<[str, game.Player]>):map {
     if (clientMaps) { {island: true, rows: []} } else { {island: false, rows: mapRows(id, p, seen)} }
 }
 
@@ -593,14 +613,13 @@ val view = fn(id:str):map {
 // The menu the player has open, drawn over the map: its entries as
 // buttons, and on the Talk page a way to type something instead.
 val menuView = fn(id:str):map|nil {
-    match game.menu(id) {
-        m: map => {
-            title: m.title,
-            entries: m.entries,
-            talk: m.page == "talk",
-            back: if (m.page == "main") { "Close" } else { "Back" },
-        }
-        _ => nil
+    val m = game.menu(id)
+    if (m == nil) { return nil }
+    {
+        title: m.title,
+        entries: m.entries,
+        talk: m.page == "talk",
+        back: if (m.page == "main") { "Close" } else { "Back" },
     }
 }
 
@@ -651,7 +670,7 @@ val LEGEND = json.stringify({width: level.WIDTH, height: level.HEIGHT, classes: 
 // coordinates; their chunk, depth, and square in it; the window's rows, as
 // `game.view` gives them; the `game.viewKey`s of the squares in their sight;
 // and `near`, the look of each `@` that is not them, as [key, class, title].
-val mapData = fn(id:str, p:map, seen:list):str {
+val mapData = fn(id:str, p:game.Player, seen:list<[str, game.Player]>):str {
     val cam = camera(id, p)
     val near = nearby(id, seen)
     json.stringify({
@@ -828,7 +847,7 @@ val reset = fn(players:num) {
  * Starts a new world with `worldSeed`, with no one in it; `options` go to
  * the engine's `newGame`.
  */
-export val start = fn(worldSeed:num, options:map = {}) {
+export val start = fn(worldSeed:num, options:game.Options = {}) {
     game.newGame(worldSeed, options)
     reset(0)
 }

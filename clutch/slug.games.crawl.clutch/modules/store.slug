@@ -63,6 +63,17 @@ val TABLES = [
     "CREATE TABLE IF NOT EXISTS populations (key TEXT PRIMARY KEY, counts TEXT NOT NULL)",
 ]
 
+// What `write` takes: the engine's `changes`.
+type Changes = {
+    world: any,
+    rng: num,
+    levels: map<str, any>,
+    players: map<str, any>,
+    memories: list<{id: str, key: str, rows: list<str>}>,
+    forgotten: list<str>,
+    populations: map<str, any|nil>,
+}
+
 // A stored state that must be an object, as parsed.
 val object = fn(value:json.Json):map {
     match value {
@@ -147,7 +158,7 @@ export val clear = fn(db:sqlite.Database) {
  * Writes the engine's `changes` to `db`, all of them or, if anything goes
  * wrong, none.
  */
-export val write = fn(db:sqlite.Database, changes:map) {
+export val write = fn(db:sqlite.Database, changes:Changes) {
     transaction(db, fn(db:sqlite.Database) {
         val put = fn(sql:str, rows:list) {
             val s = statement.prepare(db, sql)

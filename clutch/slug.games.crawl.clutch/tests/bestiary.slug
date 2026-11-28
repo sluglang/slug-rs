@@ -47,14 +47,14 @@ val dragonsLiveAlone = fn() {
 @test
 val newKindsTurnUpInTheDungeon = fn() {
     val seen = reduce(range(60), {}, fn(acc, i) {
-        val lv = level.generate(3, i % 6, int(i / 6), 1 + i % 12, 32)
+        val lv:any|nil = level.generate(3, i % 6, int(i / 6), 1 + i % 12, 32)
         reduce(lv.monsters, acc, fn(a, m) { a + {[bestiary.monsters[m.kind].name]: true} })
     })
     assertTrue(any(["giant rat", "wolf", "goblin", "giant ant", "skeleton", "ogre", "wraith"], fn(k) { seen[k] == true }))
 }
 
 val setPlayer = fn(id:str, fields:map) {
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
 }
 
@@ -64,8 +64,8 @@ val aWraithsBlowsSapStrength = fn() {
     game.join("a", "Ann")
     val p = game.playerOf("a")
     val key = game.chunkKey(p.cx, p.cy, p.depth)
-    val s = game.snapshot()
-    val lv = s.levels[key]
+    val s:any = game.snapshot()
+    val lv:any|nil = s.levels[key]
     val spot = filter(range(lv.walls.left + 1, lv.walls.right), fn(x) { lv.map[10][x] == "=" && lv.map[10][x + 1] == "=" })[0]
     val wraith = {x: spot + 1, y: 10, kind: indexOf("wraith"), hp: 999, maxHp: 999, state: "awake"}
     game.load(s copy {

@@ -10,7 +10,7 @@ val count = fn(rows:list, c:str):num {
     reduce(rows, 0, fn(n, row) { n + len(filter(range(len(row)), fn(x) { row[x] == c })) })
 }
 
-val inside = fn(walls:map, x:num, y:num):bool {
+val inside = fn(walls:any|nil, x:num, y:num):bool {
     x > walls.left && x < walls.right && y > walls.top && y < walls.bottom
 }
 
@@ -65,7 +65,7 @@ val theDungeonUnderARuinIsRicher = fn() {
     val key = game.chunkKey(s.cx, s.cy, 0)
     val seed = game.current().world.seed
     val ruin = town.build(seed, level.generate(seed, s.cx, s.cy, 0, 32), s)
-    val snap = game.snapshot()
+    val snap:any = game.snapshot()
     game.load(snap copy {
         levels: snap.levels + {[key]: ruin},
         players: snap.players + {a: snap.players.a copy {cx: s.cx, cy: s.cy, depth: 0, x: ruin.down.x, y: ruin.down.y}},

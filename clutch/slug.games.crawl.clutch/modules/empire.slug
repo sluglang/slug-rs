@@ -315,7 +315,7 @@ val besides = fn(key:str, regions:num):list {
  * seated in towns and holding the surface around every settlement, the
  * rest each holding a few territories at their home band.
  */
-export val create = fn(seed:num, size:num, settlements:list):Empire {
+export val create = fn(seed:num, size:num, settlements:list<{kind: str, name: str, cx: num, cy: num}>):Empire {
     if (size == 0) { return {factions: [], holds: {}, fixed: {}, start: "", fallen: [], chronicle: [], annals: [], lands: {}, step: 0, regions: 0, kills: {}} }
     val regions = math.div(size + REGION - 1, REGION)
     val towns = filter(settlements, fn(s) { s.kind == "town" })
@@ -337,8 +337,8 @@ export val create = fn(seed:num, size:num, settlements:list):Empire {
     })
     // Every settlement's surface territory goes to the nearer human seat.
     val seatTerritories = map(seats, fn(s) { territoryOf(s.cx, s.cy, 0) })
-    val nearer = fn(s:map):num {
-        val d = fn(t:map):num { math.abs(t.cx - s.cx) + math.abs(t.cy - s.cy) }
+    val nearer = fn(s:{cx: num, cy: num}):num {
+        val d = fn(t:{cx: num, cy: num}):num { math.abs(t.cx - s.cx) + math.abs(t.cy - s.cy) }
         if (d(seats[0]) <= d(seats[1])) { 0 } else { 1 }
     }
     each(settlements, fn(s) { holds = holds + {[territoryOf(s.cx, s.cy, 0)]: nearer(s)} })
@@ -974,15 +974,14 @@ export val holder = fn(empire:Held, key:str):Faction|nil {
  * land, and there they belong whatever the depth; the wild kinds belong
  * wherever they live.
  */
-export val habitatAt = fn(empire:Held, key:str, base:list):list {
-    val owner = match holder(empire, key) {
-        f: map => f.people
-        _ => nil
-    }
+export val habitatAt = fn(empire:Held, key:str, base:list<str>):list<str> {
+    val found = holder(empire, key)
+    val owner = if (found != nil) { found.people } else { nil }
     val wild = filter(base, fn(k) { peopleOf(k) == nil })
     // A holder's kinds count three times over, as common kinds do in `base`.
     val theirs = if (owner == nil) { filter(base, fn(k) { peopleOf(k) != nil }) } else {
-        reduce(people(owner).kinds, [], fn(acc, k) { acc + [k, k, k] })
+        val none:list<str> = []
+        reduce(people(owner).kinds, none, fn(acc, k) { acc + [k, k, k] })
     }
     // Land no one holds keeps its kinds; held land has only its holder's.
     wild + theirs
@@ -1011,21 +1010,23 @@ export val priceFactor = fn(empire:Empire, key:str):num {
 val HEADS = {kobold: 5, goblin: 4, hobgoblin: 8, orc: 10, zombie: 10, skeleton: 8, wraith: 50, ogre: 30, troll: 40}
 
 /**
+ * A bounty: what it pays a head of `kind`.
+ */
+export type Bounty = {kind: str, price: num}
+
+/**
  * The bounties posted for the region (rx, ry): a price a head for the kinds
  * of every people from below that holds land under it, as `{kind, price}`,
  * from the faction holding its surface; generous factions pay more.
  */
-export val bounties = fn(empire:Held, rx:num, ry:num):list {
+export val bounties = fn(empire:Held, rx:num, ry:num):list<Bounty> {
     val payer = holder(empire, "" + rx + "," + ry + ",0")
-    val greed = match payer {
-        f: map => f.traits.greedy
-        _ => 0
-    }
+    val greed = if (payer != nil) { payer.traits.greedy } else { 0 }
     val below = map([1, 2, 3], fn(b) { holder(empire, "" + rx + "," + ry + "," + b) })
         /> compact()
         /> filter(fn(f) { people(f.people).side == "below" })
     val kinds = reduce(below, [], fn(acc, f) { acc + filter(people(f.people).kinds, fn(k) { !any(acc, fn(a) { a == k }) }) })
-    map(kinds, fn(k) { {kind: k, price: math.max(1, math.div(HEADS[k] * (100 - 15 * greed), 100))} })
+    map(kinds, fn(k) { {kind: k, price: math.max(1, math.div((HEADS[k] ?? 0) * (100 - 15 * greed), 100))} })
 }
 
 /**

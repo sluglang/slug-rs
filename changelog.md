@@ -54,6 +54,30 @@
   `Counts` and `Visit`, `empire` exports `Empire`, `Faction`, `War`, `Land`,
   and narrower `Factions`, `Held`, and `Territories`, and `game` exports
   `World`. `rng.within` returns its body's type.
+- The rest of Crawl is typed. `level` exports `Chunk`, with its `Room`s,
+  `Thing`s (an `Item` lying at a `Spot`), `Monster`s, and the `Character`s,
+  `Walls`, `Place`, and `Grave`s settlements and the engine add, and
+  `typeOf(item)`, an item's type index; `town` exports `Settlement`; `empire`
+  exports `Bounty`; and `game` exports `Player`, `Entry`, `Menu`, `Known`,
+  `Game`, `Snapshot`, `Changes`, `Found`, `Action`, and `Options`, with
+  `current`, `snapshot`, `changes`, `playerOf`, `here`, `menu`, `tick`, and
+  the rest saying what they take and give. `load` takes `any`, since a
+  snapshot may be from before settlements or empires. `changes` gives
+  players with their memories empty, which `store.read` fills, rather than
+  without them. Typed Crawl runs as fast as untyped.
+- A list literal where a list of tuples is expected, or appended or
+  prepended to one, is that list: `[[1, 2]]` for a `list<[num, num]>`, and
+  `pairs :+ [x, y]` keeps a `list<[num, num]>`. So are a map literal's values
+  where a map of tuples is expected or added to one, and a tuple field's new
+  value in a `copy`. An empty `[]` or `{}` is one of any list or map type
+  expected of it, and `xs ?? []` for a `list<T>|nil` is a `list<T>`; none of
+  these is checked when the program runs.
+- A function reads a module's annotated value or `var` declared after it as
+  its annotated type, not as unknown, so a cache declared below the function
+  that reads it is not checked on every read.
+- A type named through an import whose module does not compile, as
+  `town.Settlement`, says which module it is and why it has no types, rather
+  than that the import is an unknown module binding.
 - A call of an imported module's function, as `empire.holder(e, k)`, enters
   past its checks as a call of a name does; a `foreign` function's never
   does. A `var` assigned a value the checker cannot prove is checked there

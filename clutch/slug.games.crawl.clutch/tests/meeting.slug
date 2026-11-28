@@ -6,7 +6,7 @@ val math = import("slug.math")
 
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
 }
 
@@ -117,7 +117,7 @@ val typedWordsAreSaidOnOneLineAndNoLongerThanALine = fn() {
 val givingAnItemMovesItToTheOtherPack = fn() {
     sideBySide(7)
     val ann = game.playerOf("a")
-    val weapon = ann.weapon
+    val weapon = ann.weapon ?? ""
     val worn = ann.armour
     meetBo()
     game.command("a", "2", false)
@@ -184,7 +184,8 @@ val playersMeetAcrossAChunkEdge = fn() {
     val edge = fn(y:num):num { if (here[y][level.WIDTH - 1] == ".") { y } else { recur(y + 1) } }
     setPlayer("a", {x: level.WIDTH - 1, y: edge(0)})
     game.command("a", "space", false)
-    val east = game.snapshot().levels[game.chunkKey(a.cx + 1, a.cy, a.depth)].map
+    val all:any = game.snapshot()
+    val east = all.levels[game.chunkKey(a.cx + 1, a.cy, a.depth)].map
     val open = fn(y:num):num {
         if (here[y][level.WIDTH - 1] == "." && east[y][0] == ".") { y } else { recur(y + 1) }
     }
@@ -225,7 +226,7 @@ val aFullPackSaysWhatIsLeftBehind = fn() {
     val full = map(range(22), fn(i) { {letter: "abcdefghijklmnopqrstuv"[i], item: {kind: "weapon", type: 0, bonus: i}, count: 1} })
     // Ann knows healing potions, so she knows what she leaves.
     setPlayer("a", {pack: full, weapon: nil, armour: nil, known: {potions: [0], scrolls: []}})
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     val a = game.playerOf("a")
     val key = game.chunkKey(a.cx, a.cy, a.depth)
     game.load(s copy {levels: s.levels + {[key]: s.levels[key] copy {

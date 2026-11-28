@@ -805,6 +805,61 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     keys(m)`, is one of `m`'s keys, and `m[k]` reads `V`.
 
   With those, typed Crawl runs within 2% of untyped, the rest compile time.
+
+  Then the rest of Crawl: `level` exports `Chunk` and what is in one,
+  `Room`, `Thing` (an `Item` lying at a `Spot`), `Monster`, and the
+  `Character`s, `Walls`, `Place`, and `Grave`s that settlements and the
+  engine add, which `Chunk` lists as `|nil` fields, since a merge sets only
+  listed fields and a type lacking a field does not accept a value that has
+  it; `town` exports `Settlement`; and `game` exports `Player` and its
+  `Entry`, `Menu`, and `Known`, and the shapes its exported functions take
+  and give, `Game`, `Snapshot`, `Changes`, `Found`, `Action`, and `Options`.
+  `web` types its log, queue, windows, and what it draws a map from; its
+  Mustache view models and HTTP requests stay maps, and menu actions stay
+  `list`, being `["buy", i]`, `["sell", letter]`, and the like, which want
+  an enum. `game.load` takes `any`: a snapshot may predate settlements or
+  empires, which it adds. The tests read state loosely, as `val lv:any|nil
+  = game.here(id)`, where they reach into nilable fields. Typed, the five
+  Crawl workloads run at 0.99x to 1.00x of untyped.
+
+  What typing it found:
+  - [x] A list literal took a tuple type only where one was expected of it
+    whole: `[[1, 2]]` for a `list<[num, num]>`, `pairs :+ [x, y]`, a map
+    literal's values for a `map<str, [str, str]>`, and a tuple field's new
+    value in a `copy` were lists, and failed or were checked. They are the
+    tuples now. An empty `[]` or `{}` is one of any list or map type
+    expected of it, and `xs ?? []` for a `list<T>|nil` is a `list<T>`;
+    before, the first was checked and the second widened to `list`.
+  - [x] A module's `var` declared below a function that reads it read as
+    unknown, so `game`'s caches, `companies` and `crowds`, were checked
+    deeply on every read, each player of a crowd once per page: 2% of
+    `crawl-crowd`. Annotated values and `var`s are predeclared with their
+    types, as functions are.
+  - [x] A type named through an import whose module did not compile said
+    `unknown module binding`; it names the module now.
+  - [ ] An empty start gives a generic's type parameter no element type:
+    `reduce(xs, [], fn(acc, x) { acc :+ x })` gives a bare `list`, which a
+    typed result then checks deeply on each return. Crawl names typed
+    starts, as `val none:list<Found> = []`. Inferring the parameter from the
+    function literal's result, or from the call's expected type, would make
+    that unnecessary.
+  - [ ] A named function passed as a value, as `reduce(people, none,
+    insert)`, enters at its checks on every call; a function literal is
+    trusted. Crawl passes `fn(kept, o) { insert(kept, o) }`; the checks were
+    3% of `crawl-crowd`. A parametric callee could be given the function's entry
+    past its checks.
+  - [ ] Matching a record's string field does not narrow its others: in
+    `match item.kind { "potion" => data.potions[item.type] ... }`, `type`
+    stays `num|nil`. `level.typeOf` takes it out or throws. A tagged union
+    of record types, or an enum, would say it.
+  - [ ] A function literal is checked before a generic's result type is
+    inferred, so `map(ks, fn(k) { [k, rows] })` for a `list<[str,
+    list<str>]>` needs the literal's result annotated.
+  - [ ] `struct<data.Monster>`, a schema named through a module, is not
+    accepted.
+  - A record type is not a `map`, so every bare `map` annotation that met a
+    `Chunk` or a `Player` had to say which, test helpers included, and a
+    `match` case `x: map` on one became a nil test.
 - [ ] Specify opt-in strict modules, where everything must type and unknown
   data is narrowed from `any|nil`.
 - [ ] Run the agent evaluation projects in strict and gradual modes and

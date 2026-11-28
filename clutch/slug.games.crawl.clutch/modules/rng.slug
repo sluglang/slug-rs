@@ -87,7 +87,7 @@ export val roll = fn(dice:num, sides:num):num {
  * The index of an entry chosen by weight: one draw r = below(total of the
  * weights), then the first entry whose running total exceeds r.
  */
-export val pick = fn(entries:list):num {
+export val pick = fn(entries:list<{weight: num}>):num {
     val total = fn(i:num, sum:num):num {
         if (i == len(entries)) { sum } else { recur(i + 1, sum + entries[i].weight) }
     }
@@ -103,4 +103,4 @@ export val pick = fn(entries:list):num {
  * A shuffled copy: for i from len - 1 down to 1, swap entry i with entry
  * below(i + 1).
  */
-export val shuffle = fn(items:list):list { drawing().shuffle(items) }
+export val shuffle = fn<T>(items:list<T>):list<T> { drawing().shuffle(items) }

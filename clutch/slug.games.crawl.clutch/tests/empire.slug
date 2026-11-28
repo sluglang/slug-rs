@@ -103,7 +103,7 @@ val marketsChargeMoreAtWarAndUnderGreed = fn() {
 // --- In the game ------------------------------------------------------------
 
 val setPlayer = fn(id:str, fields:map) {
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
 }
 
@@ -118,7 +118,7 @@ val theEmpireTakesAStepEverySoManyTicks = fn() {
 @test
 val aWorldSavedBeforeEmpiresGainsOne = fn() {
     game.newGame(8)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {world: s.world copy {empire: nil}})
     assertEqual(game.current().world.empire, s.world.empire)
 }
@@ -131,11 +131,11 @@ val aCaptainPaysForKillsUnderTheirRegion = fn() {
     val key = game.chunkKey(p.cx, p.cy, 0)
     val rx = int(p.cx / empire.REGION)
     val ry = int(p.cy / empire.REGION)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     // Orcs hold the depths under the start town, and a captain stands
     // beside Ann.
     val e = s.world.empire copy {holds: s.world.empire.holds + {["" + rx + "," + ry + ",2"]: 4}}
-    val lv = s.levels[key]
+    val lv:any|nil = s.levels[key]
     val spot = filter(range(lv.walls.left + 1, lv.walls.right), fn(x) { lv.map[10][x] == "=" && lv.map[10][x + 1] == "=" })[0]
     game.load(s copy {
         world: s.world copy {empire: e},
@@ -161,8 +161,8 @@ val killingAPeoplesMonsterCountsForTheEmpireAndForBounties = fn() {
     game.join("a", "Ann")
     val p = game.playerOf("a")
     val key = game.chunkKey(p.cx, p.cy, 0)
-    val s = game.snapshot()
-    val lv = s.levels[key]
+    val s:any = game.snapshot()
+    val lv:any|nil = s.levels[key]
     val spot = filter(range(lv.walls.left + 1, lv.walls.right), fn(x) { lv.map[10][x] == "=" && lv.map[10][x + 1] == "=" })[0]
     game.load(s copy {
         levels: s.levels + {[key]: lv copy {monsters: [{x: spot + 1, y: 10, kind: 0, hp: 1, maxHp: 1, state: "awake"}]}},
@@ -175,7 +175,7 @@ val killingAPeoplesMonsterCountsForTheEmpireAndForBounties = fn() {
     // Counted under the killer's name, for their deeds.
     assertEqual(game.current().world.empire.kills[territory + "|kobold|" + game.playerOf("a").name], 1)
     val [rx, ry, _] = string.split(territory, ",")
-    assertEqual(game.playerOf("a").kills[rx + "," + ry + "|kobold"], 1)
+    assertEqual((game.playerOf("a").kills ?? {})[rx + "," + ry + "|kobold"], 1)
 }
 
 val string = import("slug.string")

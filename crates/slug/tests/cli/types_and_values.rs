@@ -3637,3 +3637,34 @@ fn a_list_literal_ending_a_branch_is_the_tuple_expected() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn a_type_from_a_module_that_does_not_compile_names_that_module() {
+    // An import with no types here, as one that does not compile, makes a
+    // type named through it say which module it is, not that the import is
+    // unknown.
+    let directory =
+        std::env::temp_dir().join(format!("slug-cli-unavailable-{}", std::process::id()));
+    fs::create_dir_all(&directory).expect("make module directory");
+    fs::write(
+        directory.join("broken.slug"),
+        "export type T = {a: num}\nexport val f = fn():num { \"x\" }\n",
+    )
+    .expect("write broken module");
+    fs::write(
+        directory.join("main.slug"),
+        "val broken = import(\"broken\")\ntype U = {t: broken.T}\nprintln(1)\n",
+    )
+    .expect("write importer");
+    let output = slug()
+        .arg("main.slug")
+        .current_dir(&directory)
+        .output()
+        .expect("run importer");
+    fs::remove_dir_all(&directory).expect("remove module directory");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`broken.T` cannot be resolved: module `broken`, imported as `broken`, has no types here"),
+        "{stderr}"
+    );
+}

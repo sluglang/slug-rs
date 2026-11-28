@@ -162,6 +162,9 @@ pub(super) struct SemanticBinding {
     /// For a `val` bound to `keys(m)`, the map `m`: an element of it is one
     /// of `m`'s keys.
     pub(super) keys_of: Option<Rc<KeyPath>>,
+    /// For an import whose module has no types here, as one that does not
+    /// compile, the module's name: a type named through it says so.
+    pub(super) unavailable_module: Option<String>,
     /// For an immutable binding, the narrowed types of string-keyed members a
     /// nil test established on this path, such as `r.error` after
     /// `r.error != nil`. The binding never changes, so neither do they.
@@ -237,6 +240,7 @@ impl SemanticBinding {
             function_kind: FunctionKind::Ordinary,
             key_of: None,
             keys_of: None,
+            unavailable_module: None,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -259,6 +263,7 @@ impl SemanticBinding {
             function_kind: FunctionKind::Ordinary,
             key_of: None,
             keys_of: None,
+            unavailable_module: None,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -285,6 +290,7 @@ impl SemanticBinding {
             function_kind: FunctionKind::Ordinary,
             key_of: None,
             keys_of: None,
+            unavailable_module: None,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -1058,6 +1064,17 @@ impl Environment {
                     span.clone(),
                 )
             })?;
+            if let Some(unavailable) = &binding.unavailable_module {
+                return Err(super::SourceError::semantic(
+                    super::SourceErrorCode::UnknownType,
+                    format!(
+                        "`{name}` cannot be resolved: module `{unavailable}`, imported as \
+                         `{module}`, has no types here, because it does not compile or it \
+                         imports this module"
+                    ),
+                    span.clone(),
+                ));
+            }
             if !binding.module_binding {
                 return Err(super::SourceError::semantic(
                     super::SourceErrorCode::UnknownType,

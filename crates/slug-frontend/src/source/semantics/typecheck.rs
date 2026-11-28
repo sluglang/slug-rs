@@ -1972,21 +1972,7 @@ fn analyze_expressions(
             declare_enum(&mut environment, expression, module_name);
         }
     }
-    // A module's imports are bound before its type aliases resolve, so an
-    // alias may name an imported module's type, as `{c: region.Counts}`.
-    for expression in expressions {
-        if let ExprKind::Declare {
-            pattern: Pattern::Binding(name),
-            value,
-            ..
-        } = &expression.kind
-            && let ExprKind::Call { callee, .. } = &value.kind
-            && matches!(&callee.kind, ExprKind::Name(callee) if callee == "import")
-            && let Some(binding) = expression_binding(value, &environment)
-        {
-            environment.declare(name.clone(), binding);
-        }
-    }
+    bind_imports(expressions, &mut environment);
     resolve_type_aliases(expressions, &mut environment, &resource_names, &enum_names)?;
     declare_enum_payloads(expressions, &mut environment)?;
     for expression in expressions {
@@ -2010,8 +1996,10 @@ fn analyze_expressions(
         }
     }
     infer_nil_starts(expressions, &environment, &[], false);
-    // A module's functions may call one another whatever their order.
+    // A module's functions may call one another whatever their order, and
+    // read its annotated values and `var`s declared after them.
     predeclare_functions(expressions, &mut environment);
+    predeclare_annotated(expressions, &mut environment);
     for expression in expressions {
         let _ = check_expression_with_flow(expression, &mut environment, &[])?;
         record_exports(expression, &environment, &mut exports, &mut types);
@@ -3268,8 +3256,52 @@ fn check_expression_inner(
                     let right = check_expression(right, &mut right_environment, type_parameters)?;
                     return Ok(Type::union([left_type, right]));
                 }
-                let right = check_expression(right, environment, type_parameters)?;
-                binary_result(*operator, &left_type, &right, &expression.span)
+                let right_type = check_expression(right, environment, type_parameters)?;
+                // A list literal appended to a list of tuples is the tuple
+                // its elements make, as `pairs :+ [x, y]`; a map literal
+                // added to a map of tuples has them as its values.
+                let (left_type, right_type) = match operator {
+                    Binary::Append => {
+                        let right_type = match left_type.as_list() {
+                            Type::List(Some(element)) => {
+                                as_expected_tuple(&element, right, right_type, environment)
+                            }
+                            _ => right_type,
+                        };
+                        (left_type, right_type)
+                    }
+                    Binary::Prepend => {
+                        let left_type = match right_type.as_list() {
+                            Type::List(Some(element)) => {
+                                as_expected_tuple(&element, left, left_type, environment)
+                            }
+                            _ => left_type,
+                        };
+                        (left_type, right_type)
+                    }
+                    // An empty literal after `??` is an empty one of the
+                    // kind before it, as `xs ?? []` for a `list<T>|nil`.
+                    Binary::Coalesce => {
+                        let right_type = match type_subtract(&left_type, &Type::Nil) {
+                            Some(present @ Type::List(Some(_))) if matches!(&right.kind, ExprKind::List(items) if items.is_empty()) => {
+                                present
+                            }
+                            Some(present @ Type::Map(Some(_))) if matches!(&right.kind, ExprKind::Map(entries) if entries.is_empty()) => {
+                                present
+                            }
+                            _ => right_type,
+                        };
+                        (left_type, right_type)
+                    }
+                    // And a map literal added to a map of tuples.
+                    Binary::Add if matches!(left_type, Type::Map(Some(_))) => {
+                        let right_type =
+                            as_expected_tuple(&left_type, right, right_type, environment);
+                        (left_type, right_type)
+                    }
+                    _ => (left_type, right_type),
+                };
+                binary_result(*operator, &left_type, &right_type, &expression.span)
             }
             ExprKind::Prefix { operators, value } => {
                 let mut result = check_expression(value, environment, type_parameters)?;
@@ -3847,6 +3879,19 @@ fn check_expression_inner(
                         .with_extent(replacement));
                     }
                     let actual = check_expression(replacement, environment, type_parameters)?;
+                    // A list literal for a tuple field is that tuple.
+                    let wanted = result.record_field(name).cloned().or_else(|| {
+                        schema
+                            .as_ref()
+                            .and_then(|schema| schema.members.get(name))
+                            .map(|member| member.value_type.clone())
+                    });
+                    let actual = match wanted {
+                        Some(wanted) => {
+                            as_expected_tuple(&wanted, replacement, actual, environment)
+                        }
+                        None => actual,
+                    };
                     map_replacements.push(actual.clone());
                     record_fields.push((name.clone(), actual.clone()));
                     if let Some(schema) = &schema {
@@ -4011,6 +4056,65 @@ fn predeclare_functions(values: &[Expr], environment: &mut Environment) {
                 name.clone(),
                 annotated.unwrap_or_else(|| SemanticBinding::value(Type::Unknown)),
             );
+        }
+    }
+}
+
+/// Binds a module's imports before its type aliases resolve, so an alias may
+/// name an imported module's type, as `{c: region.Counts}`.
+fn bind_imports(expressions: &[Expr], environment: &mut Environment) {
+    for expression in expressions {
+        if let ExprKind::Declare {
+            pattern: Pattern::Binding(name),
+            value,
+            ..
+        } = &expression.kind
+            && let ExprKind::Call { callee, arguments } = &value.kind
+            && matches!(&callee.kind, ExprKind::Name(callee) if callee == "import")
+        {
+            if let Some(binding) = expression_binding(value, environment) {
+                environment.declare(name.clone(), binding);
+            } else if let [
+                CallArgument::Positional(Expr {
+                    kind: ExprKind::Value(Value::Str(module)),
+                    ..
+                }),
+            ] = arguments.as_slice()
+            {
+                // A module with no snapshot, as one that does not compile,
+                // has no types; naming one says which module it is.
+                let mut binding = SemanticBinding::value(Type::Unknown);
+                binding.unavailable_module = Some(module.to_string());
+                environment.declare(name.clone(), binding);
+            }
+        }
+    }
+}
+
+/// Declares each of a module's annotated values and `var`s, but functions,
+/// with its annotated type, so a function declared before it reads it as
+/// that, as `companyIn` reads the cache `companies`: every value it holds is
+/// checked to be one. Its declaration replaces this.
+fn predeclare_annotated(values: &[Expr], environment: &mut Environment) {
+    for value in values {
+        if let ExprKind::Declare {
+            mutable,
+            pattern: Pattern::Binding(name),
+            annotation: Some(annotation),
+            value: declared,
+            ..
+        } = &value.kind
+            && !matches!(declared.kind, ExprKind::Function { .. })
+            && environment.lookup_in_scope(name).is_none()
+            && let Ok(annotated) =
+                resolve_static_annotation(annotation, &[], &value.span, environment)
+        {
+            let mut binding = SemanticBinding::value(annotated.clone());
+            binding.implicit = true;
+            if *mutable {
+                binding.declared = Some(annotated);
+            }
+            environment.declare(name.clone(), binding);
         }
     }
 }
@@ -4493,6 +4597,70 @@ fn list_append_result(list: &Type, value: &Type, span: &SourceSpan) -> Result<Ty
     }
 }
 
+/// An empty literal where a list or map is expected, as that type: it has
+/// no elements to be otherwise, so `[]` is a `list<str>` where one is wanted.
+fn as_expected_empty(expected: &Type, value: &Expr) -> Option<Type> {
+    let empty_list = matches!(&value.kind, ExprKind::List(items) if items.is_empty());
+    let empty_map = matches!(&value.kind, ExprKind::Map(entries) if entries.is_empty());
+    if !empty_list && !empty_map {
+        return None;
+    }
+    let fits = |member: &Type| match member.unfolded() {
+        Type::List(_) => empty_list,
+        Type::Map(_) => empty_map,
+        _ => false,
+    };
+    let members = match expected.unfolded() {
+        Type::Union(members) => members,
+        other => vec![other],
+    };
+    members
+        .iter()
+        .find(|member| fits(member))
+        .map(Type::unfolded)
+}
+
+/// A map literal's values where a map is expected, refined to the type it
+/// wants, as `{[k]: [x, y]}` for a `map<str, [num, num]>`; so are those of
+/// one of constant keys, whose record type lists them.
+fn as_expected_map_values(
+    expected: &Type,
+    value: &Expr,
+    actual: &Type,
+    environment: &Environment,
+) -> Option<Type> {
+    if let (Type::Map(Some((_, wanted))), ExprKind::Map(entries)) = (expected, &value.kind)
+        && !actual.is_proven_assignable_to(expected)
+    {
+        let values = entries
+            .iter()
+            .map(|(_, entry)| {
+                environment
+                    .recorded_expression_type(&entry.span)
+                    .map(|actual| as_expected_tuple(wanted, entry, actual, environment))
+            })
+            .collect::<Option<Vec<_>>>();
+        let refined = match (actual, values) {
+            (Type::Map(Some((key, _))), Some(values)) => Some(Type::Map(Some((
+                key.clone(),
+                Box::new(Type::union(values)),
+            )))),
+            (Type::Record { .. }, Some(values)) => entries
+                .iter()
+                .zip(values)
+                .map(|((key, _), value)| match &key.kind {
+                    ExprKind::Value(Value::Str(name)) => Some((name.to_string(), value)),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(|fields| Type::record(fields, true)),
+            _ => None,
+        };
+        return refined.filter(|refined| refined.is_proven_assignable_to(expected));
+    }
+    None
+}
+
 /// `actual`, the type of `value`, as the tuple `expected` asks for when
 /// `value` is a list literal of that many elements, each with its own type:
 /// `[lo, hi]` is a `[num, num]` where one is expected, though alone it is a
@@ -4503,6 +4671,11 @@ fn as_expected_tuple(
     actual: Type,
     environment: &Environment,
 ) -> Type {
+    if let Some(refined) = as_expected_empty(expected, value)
+        .or_else(|| as_expected_map_values(expected, value, &actual, environment))
+    {
+        return refined;
+    }
     let ExprKind::List(items) = &value.kind else {
         // A conditional whose branches end in list literals is the tuples
         // they make, where they make what is expected.
@@ -4517,6 +4690,24 @@ fn as_expected_tuple(
             _ => actual,
         };
     };
+    // A list literal where a list is expected has elements of the type it
+    // wants, as `[[1, 2]]` for a `list<[num, num]>`.
+    if let Type::List(Some(element)) = expected
+        && !actual.is_proven_assignable_to(expected)
+    {
+        return items
+            .iter()
+            .map(|item| match item {
+                ListElement::Value(value) => environment
+                    .recorded_expression_type(&value.span)
+                    .map(|actual| as_expected_tuple(element, value, actual, environment)),
+                ListElement::Spread(_) => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|elements| Type::List(Some(Box::new(Type::union(elements)))))
+            .filter(|refined| refined.is_proven_assignable_to(expected))
+            .unwrap_or(actual);
+    }
     let wants = |length: usize| match expected {
         Type::Tuple(elements) => elements.len() == length,
         Type::Union(members) => members
@@ -7675,6 +7866,85 @@ mod tests {
                 (3, parameter("out", 1), "list<num>".into()),
                 (3, parameter("out", 1), "list<num>".into()),
             ]
+        );
+    }
+
+    /// How many annotation checks `source` compiles to.
+    fn check_count(source: &str) -> usize {
+        let program = super::super::compile("test.slug", source)
+            .unwrap_or_else(|error| panic!("{source}: {}", error.message));
+        (0..program.chunk_count())
+            .map(|index| {
+                program
+                    .chunk(index)
+                    .expect("existing chunk")
+                    .code
+                    .iter()
+                    .filter(|instruction| instruction.opcode == slug_vm::PackedOpcode::CheckFailed)
+                    .count()
+            })
+            .sum::<usize>()
+    }
+
+    #[test]
+    fn literals_take_the_tuple_types_expected_of_their_elements() {
+        // A list literal where a list of tuples is expected, one appended or
+        // prepended to one, a map or record literal's values where a map of
+        // tuples is, and a tuple field's replacement in a copy, are those
+        // tuples; so none needs a check.
+        for source in [
+            "val a:list<[num, num]> = [[1, 2]]\n",
+            "val f = fn():list<[num, str]> { [[1, \"a\"], [2, \"b\"]] }\n",
+            "val xs:list<[num, str]> = []\nval ys:list<[num, str]> = xs :+ [1, \"a\"]\n",
+            "val xs:list<[num, num]> = []\nval ys:list<[num, num]> = [1, 2] +: xs\n",
+            "val m:map<str, [num, num]> = {}\nval k = \"a\"\n\
+             val n:map<str, [num, num]> = m + {[k]: [1, 2]}\n",
+            "val k = \"a\"\nval n:map<str, [num, num]> = {[k]: [1, 2]}\n",
+            "val m:map<str, [num, num]> = {a: [1, 2]}\n",
+            "type P = {at: [num, num]|nil, n: num}\nval p:P = {n: 1}\nval q:P = p copy {at: [1, 2]}\n",
+            // An empty literal after `??` is one of the kind before it.
+            "val pick = fn():list<num>|nil { nil }\nval xs:list<num> = pick() ?? []\n",
+            "val pick = fn():map<str, num>|nil { nil }\nval m:map<str, num> = pick() ?? {}\n",
+        ] {
+            assert_eq!(check_count(source), 0, "{source}");
+        }
+        // A literal of another length is no such tuple.
+        for source in [
+            "val a:list<[num, num]> = [[1, 2, 3]]\n",
+            "val m:map<str, [num, num]> = {a: [1]}\n",
+            "val pick = fn():list<num>|nil { nil }\nval xs:list<num> = pick() ?? {}\n",
+        ] {
+            assert!(
+                super::super::compile("test.slug", source).is_err(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_function_reads_an_annotated_value_declared_after_it_as_its_type() {
+        // So a cache a function reads, declared below it, is proven, and a
+        // misuse of it is found.
+        assert_eq!(
+            check_count(
+                "val get = fn(k:str):list<num> {\n\
+                   val c = cache\n\
+                   if (c != nil) { val v = c[k]; if (v != nil) { return v } }\n\
+                   []\n\
+                 }\n\
+                 task var cache:map<str, list<num>>|nil = nil\n"
+            ),
+            0
+        );
+        let error = super::super::compile(
+            "test.slug",
+            "val f = fn():str { later }\nvar later:num = 1\n",
+        )
+        .expect_err("a num is not a str");
+        assert!(
+            error.message.contains("expected str, got num"),
+            "{}",
+            error.message
         );
     }
 

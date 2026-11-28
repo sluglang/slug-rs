@@ -51,8 +51,9 @@ export val capacity = fn(depth:num):num {
  * The monsters in `monsters` (with `kind`, an index into the monster table)
  * as counts by name.
  */
-export val tally = fn(monsters:list):Counts {
-    reduce(monsters, {}, fn(acc, m) {
+export val tally = fn(monsters:list<{kind: num}>):Counts {
+    val none:Counts = {}
+    reduce(monsters, none, fn(acc, m) {
         val name = bestiary.monsters[m.kind].name
         acc + {[name]: (acc[name] ?? 0) + 1}
     })

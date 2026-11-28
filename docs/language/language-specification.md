@@ -179,7 +179,9 @@ Inside a function, a block's `val name = fn ...` and `var name = fn ...`
 declarations are visible throughout that block, so its functions may call one
 another in any order, as at module level. Using such a function directly
 before its declaration has run, or using another binding before the block
-declares it, is a static error at the use. A name that is not declared, and
+declares it, is a static error at the use. A module's function may read a
+module-level `val` or `var` declared after it, which holds its value by the
+time the function runs; one with a type annotation reads as that type. A name that is not declared, and
 is not one the runtime provides to every module, is a static error that
 suggests the names in scope it most likely misspells. The runtime provides
 the names its `slug.builtin` contract declares, and the VM's `cfg`, `int`,
@@ -1413,6 +1415,12 @@ element's type, and a list pattern without a rest binds each element's type.
 A literal whose elements share a type is a list of it. A list literal checked
 against a tuple annotation, in a declaration, a function result, or a
 `return`, takes its elements' types, so `fn():[num, num] { [lo, hi] }` holds.
+So does one that is an element of a list literal checked against a list of
+tuples, as `[[1, 2]]` for a `list<[num, num]>`, a value of a map literal
+checked against, or added to, a map of tuples, one appended or prepended to
+a list of tuples, as `pairs :+ [x, y]`, and a tuple field's value in a
+`copy`. An empty `[]` or `{}` is of any list or map type expected of it, and
+`xs ?? []`, for `xs` a `list<T>|nil`, is a `list<T>`.
 A tuple is assignable to a tuple of the same length whose elements its own
 are assignable to, and to a list whose element type its elements are; it takes
 part in every other list operation as that list. A `var` initialized with a

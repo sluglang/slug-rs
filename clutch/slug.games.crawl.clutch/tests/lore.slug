@@ -224,7 +224,7 @@ val newCharactersAndThoseGoingDownHearWhereTheyAre = fn() {
     assertEqual(game.land("a").since, lore.heldSince(w.empire, home))
     // Going down, the band changes: the land under the town.
     val move = fn(fields:map) {
-        val s = game.snapshot()
+        val s:any = game.snapshot()
         game.load(s copy {players: s.players + {a: s.players.a + fields}})
     }
     val down = game.here("a").down
@@ -238,14 +238,14 @@ val newCharactersAndThoseGoingDownHearWhereTheyAre = fn() {
 val anInnkeeperInAWorldWithAHistoryTellsOfIt = fn() {
     game.newGame(1, {history: 75})
     game.join("a", "Ann")
-    val lv = game.here("a")
-    val inn = filter(lv.characters, fn(c) { c.role == "innkeeper" })[0]
+    val lv:any|nil = game.here("a")
+    val inn = filter(lv.characters ?? [], fn(c) { c.role == "innkeeper" })[0]
     // Stand beside the innkeeper, walk into them, and ask ten times.
     val sides = filter([["h", 1, 0], ["l", -1, 0], ["k", 0, 1], ["j", 0, -1]], fn(d) {
         val ch = lv.map[inn.y + d[2]][inn.x + d[1]]
         (ch == level.FLOOR || ch == level.ROAD) && !any(lv.characters, fn(o) { o.x == inn.x + d[1] && o.y == inn.y + d[2] })
     })
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {a: s.players.a + {x: inn.x + sides[0][1], y: inn.y + sides[0][2]}}})
     game.command("a", sides[0][0], false)
     val heard = map(range(10), fn(_) {

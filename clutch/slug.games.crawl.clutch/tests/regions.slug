@@ -5,6 +5,9 @@ val rng = import("slug.games.crawl.rng")
 val {assertEqual, assertTrue} = import("slug.test")
 val {filter, map, range, reduce, all, any} = import("slug.std")
 
+// The chunk with `key`, read loosely.
+val chunkAt = fn(key:str):any|nil { game.current().levels[key] }
+
 // `n` visits in a row to a chunk starting with `counts`, each under its own
 // generator, as if it were closed: one that leaves comes back. Returns the
 // counts after each.
@@ -81,7 +84,7 @@ val oneThatLeavesIsTakenFromTheCounts = fn() {
 
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
 }
 
@@ -109,7 +112,7 @@ val aChunkIsMadeWithTheMonstersItsCountsSay = fn() {
     below(2)
     val p = game.playerOf("a")
     val key = game.chunkKey(p.cx, p.cy, 2)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {populations: s.populations + {[key]: {orc: 2, kobold: 1}}})
     setPlayer("a", {x: game.here("a").down.x, y: game.here("a").down.y})
     game.command("a", "enter", false)
@@ -122,13 +125,14 @@ val anEmptiedChunkFillsAgainInTime = fn() {
     below(3, {regionEvery: 2})
     val p = game.playerOf("a")
     val key = game.chunkKey(p.cx, p.cy, 1)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {levels: s.levels + {[key]: s.levels[key] copy {monsters: []}}})
     // Ann goes back up, so no one is there.
-    setPlayer("a", {x: game.here("a").up.x, y: game.here("a").up.y})
+    val up:any|nil = game.here("a").up
+    setPlayer("a", {x: up.x, y: up.y})
     game.command("a", "enter", false)
     map(range(600), fn(_) { game.tick([], ["a"]) })
-    assertTrue(len(game.current().levels[key].monsters) > 0)
+    assertTrue(len(chunkAt(key).monsters) > 0)
 }
 
 @test

@@ -8,9 +8,12 @@ val {filter, map, range, any, all, reduce, contains} = import("slug.std")
 val math = import("slug.math")
 val string = import("slug.string")
 
+// The chunk with `key`, read loosely.
+val chunkAt = fn(key:str):any|nil { game.current().levels[key] }
+
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
 }
 
@@ -20,7 +23,7 @@ val isOpen = fn(c:str):bool { any(OPEN, fn(o) { o == c }) }
 
 // The squares of `lv` reachable from (x, y) by straight steps over open
 // ground, around its characters, as a set of y * WIDTH + x.
-val reach = fn(lv:map, x:num, y:num):map {
+val reach = fn(lv:level.Chunk, x:num, y:num):map {
     val blocked = fn(x:num, y:num):bool { any(lv.characters ?? [], fn(c) { c.x == x && c.y == y }) }
     val fill = fn(queue:list, seen:map):map {
         if (len(queue) == 0) { return seen }
@@ -45,12 +48,12 @@ val besideReached = fn(reached:map, x:num, y:num):bool {
     any([[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]], fn(s) { reached[s[1] * level.WIDTH + s[0]] == true })
 }
 
-val inside = fn(walls:map, x:num, y:num):bool {
+val inside = fn(walls:any|nil, x:num, y:num):bool {
     x > walls.left && x < walls.right && y > walls.top && y < walls.bottom
 }
 
 // The settlement chunk for `s` in the world with seed `seed`.
-val built = fn(seed:num, size:num, s:map):map {
+val built = fn(seed:num, size:num, s:town.Settlement):level.Chunk {
     town.build(seed, level.generate(seed, s.cx, s.cy, 0, size), s)
 }
 
@@ -76,7 +79,7 @@ val settlementsAreOnLandApartWithTheStartTownNearTheMiddle = fn() {
 val aTownHasAMarketAnInnGuardsAndAWayOut = fn() {
     map([1, 2, 3, 4], fn(seed) {
         val s = town.place(seed, 32)[0]
-        val lv = built(seed, 32, s)
+        val lv:any|nil = built(seed, 32, s)
         assertEqual(lv.place, {kind: "town", name: s.name})
         val roles = map(lv.characters, fn(c) { c.role })
         assertTrue(any(roles, fn(r) { r == "trader" }) && any(roles, fn(r) { r == "innkeeper" }))
@@ -96,7 +99,7 @@ val aTownHasAMarketAnInnGuardsAndAWayOut = fn() {
 @test
 val aFortGuardsAWayDownInsideItsWalls = fn() {
     val forts = filter(town.place(2, 32), fn(s) { s.kind == "fort" })
-    val lv = built(2, 32, forts[0])
+    val lv:any|nil = built(2, 32, forts[0])
     assertTrue(inside(lv.walls, lv.down.x, lv.down.y))
     assertEqual(lv.map[lv.down.y][lv.down.x], level.STAIRS)
     assertEqual(len(filter(lv.map, fn(row) { len(filter(range(level.WIDTH), fn(x) { row[x] == level.STAIRS })) > 0 })), 1)
@@ -125,7 +128,7 @@ val newCharactersStartOutsideTheWallsWhenTheTownIsFull = fn() {
     game.newGame(5)
     game.join("a", "Ann")
     val home = game.current().world.settlements[0]
-    val lv = game.here("a")
+    val lv:any|nil = game.here("a")
     val w = lv.walls
     val held = fn(x:num, y:num):bool {
         any(lv.items + lv.characters, fn(t) { t.x == x && t.y == y })
@@ -136,7 +139,7 @@ val newCharactersStartOutsideTheWallsWhenTheTownIsFull = fn() {
             inside(w, x, y) && lv.map[y][x] == level.ROAD && !held(x, y)
         }), fn(x) { [x, y] })
     })
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     val crowd = reduce(range(len(streets)), {}, fn(acc, i) {
         val [x, y] = streets[i]
         acc + {["c" + i]: s.players.a + {name: "c" + i, x: x, y: y}}
@@ -157,7 +160,7 @@ val newCharactersStartOutsideTheWallsWhenTheTownIsFull = fn() {
 // Puts player "a" on an open square straight beside the character in `role`
 // in their chunk, with `gold`; returns the key that walks into them.
 val besideRole = fn(role:str, gold:num):str {
-    val lv = game.here("a")
+    val lv:any|nil = game.here("a")
     val c = filter(lv.characters, fn(c) { c.role == role })[0]
     val sides = filter([["h", 1, 0], ["l", -1, 0], ["k", 0, 1], ["j", 0, -1]], fn(s) {
         val ch = lv.map[c.y + s[2]][c.x + s[1]]
@@ -194,7 +197,7 @@ val walkingIntoATraderOpensTheirMenuAndTakesNoTime = fn() {
     val before = game.playerOf("a")
     game.command("a", key, false)
     val m = openMenu()
-    val trader = filter(game.here("a").characters, fn(c) { c.role == "trader" })[0]
+    val trader = filter(game.here("a").characters ?? [], fn(c) { c.role == "trader" })[0]
     // A trader says why prices are what they are, or that they're fair.
     val w = game.current().world
     val here = empire.territoryOf(before.cx, before.cy, 0)
@@ -256,7 +259,9 @@ val anInnFeedsHealsAndTellsRumours = fn() {
     setPlayer("a", {hp: 3, food: 100})
     game.command("a", key, false)
     game.command("a", "1", false)
-    assertTrue(any(town.RUMOURS, fn(r) { last() == game.here("a").characters[game.playerOf("a").menu.character].name + " says: \"" + r + "\"" }))
+    val shown:any|nil = game.here("a")
+    val asked:any|nil = game.playerOf("a")
+    assertTrue(any(town.RUMOURS, fn(r) { last() == shown.characters[asked.menu.character].name + " says: \"" + r + "\"" }))
     // Prices are the land's: read them off the menu.
     val labels = map(openMenu().entries, fn(e) { e.label })
     val meal = priceOf(labels[1])
@@ -279,15 +284,15 @@ val noMonstersComeToATown = fn() {
     setPlayer("a", {x: down.x, y: down.y})
     game.command("a", "enter", false)
     map(range(300), fn(_) { game.tick([], ["a"]) })
-    assertEqual(game.current().levels[key].monsters, [])
+    assertEqual(chunkAt(key).monsters, [])
     assertEqual(game.current().populations[key], nil)
-    assertTrue(len(game.current().levels[key].characters) >= 4)
+    assertTrue(len(chunkAt(key).characters) >= 4)
 }
 
 @test
 val aWorldSavedBeforeSettlementsGainsThem = fn() {
     game.newGame(11)
-    val s = game.snapshot()
+    val s:any = game.snapshot()
     game.load(s copy {world: s.world copy {settlements: nil}})
     assertEqual(game.current().world.settlements, s.world.settlements)
 }

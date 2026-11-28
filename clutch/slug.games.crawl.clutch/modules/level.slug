@@ -22,6 +22,89 @@ val rng = import("slug.games.crawl.rng")
 val math = import("slug.math")
 val {map, filter} = import("slug.std")
 
+/**
+ * A square of a chunk, column `x` from the left and row `y` from the top.
+ */
+export type Spot = {x: num, y: num}
+
+/**
+ * A room of a dungeon chunk: its walls' top left and size, whether its cell
+ * is gone (a single corridor square, `w` and `h` 1), and whether it is dark.
+ */
+export type Room = {x: num, y: num, w: num, h: num, gone: bool, dark: bool}
+
+/**
+ * An item: its `kind` ("gold", "potion", "scroll", "food", "weapon", or
+ * "armour"), its `type` (an index into its kind's table in
+ * `slug.games.crawl.data`) unless gold or food, a weapon's or armour's
+ * `bonus`, and gold's `amount`.
+ */
+export type Item = {kind: str, type: num|nil, bonus: num|nil, amount: num|nil}
+
+/**
+ * The `type` of `item`, an index into its kind's table, for an item of a
+ * kind that has one; throws for gold or food.
+ */
+export val typeOf = fn(item:Item):num {
+    val t = item.type
+    if (t == nil) { throw Error {type: "crawl.item", msg: item.kind + " has no type"} }
+    t
+}
+
+/**
+ * An item lying at a square; `dropped` when a player left it there.
+ */
+export type Thing = {x: num, y: num, item: Item, dropped: bool|nil}
+
+/**
+ * A monster at a square: its `kind`, an index into `slug.games.crawl.bestiary`'s
+ * table, its hit points, and its `state` ("asleep" or "awake").
+ */
+export type Monster = {x: num, y: num, kind: num, hp: num, maxHp: num, state: str}
+
+/**
+ * Someone who lives in a settlement, by their role, as "trader" or "guard".
+ */
+export type Character = {x: num, y: num, role: str, name: str}
+
+/**
+ * The squares a settlement's walls run along.
+ */
+export type Walls = {left: num, top: num, right: num, bottom: num}
+
+/**
+ * What a chunk is, when it is somewhere: a town, fort, or ruin, and its name.
+ */
+export type Place = {kind: str, name: str, was: str|nil}
+
+/**
+ * Where someone lies buried, at what level, of what, and in which season.
+ */
+export type Grave = {x: num, y: num, name: str, level: num, cause: str, step: num}
+
+/**
+ * A chunk: `map`, HEIGHT strings of WIDTH terrain characters; its `rooms`,
+ * none on the surface; what lies and walks there; its stairs `down` and `up`
+ * (none up on the surface); and a free `start`. The surface's are `outdoor`.
+ * A settlement (`slug.games.crawl.town`) adds its `characters`, `walls`, and
+ * `place`; the engine adds `graves` and the `remains` of battles.
+ */
+export type Chunk = {
+    map: list<str>,
+    rooms: list<Room>,
+    items: list<Thing>,
+    monsters: list<Monster>,
+    down: Spot,
+    up: Spot|nil,
+    start: Spot,
+    outdoor: bool|nil,
+    characters: list<Character>|nil,
+    walls: Walls|nil,
+    place: Place|nil,
+    graves: list<Grave>|nil,
+    remains: list<Spot>|nil,
+}
+
 export val WIDTH = 80
 export val HEIGHT = 22
 // Monsters come from the table for this depth at most.
@@ -39,7 +122,7 @@ export val VWALL = "|"
 export val STAIRS = "%"
 export val UP = "<"
 
-val contains = fn(xs:list, v):bool {
+val contains = fn(xs:list, v:any|nil):bool {
     val go = fn(i:num):bool {
         if (i == len(xs)) { false } else if (xs[i] == v) { true } else { recur(i + 1) }
     }
@@ -47,7 +130,7 @@ val contains = fn(xs:list, v):bool {
 }
 
 // Writes `text` into row y of `rows` starting at column x.
-val write = fn(rows:list, x:num, y:num, text:str):list {
+val write = fn(rows:list<str>, x:num, y:num, text:str):list<str> {
     val row = rows[y]
     rows[:y] + [row[:x] + text + row[x + len(text):]] + rows[y + 1:]
 }
@@ -62,7 +145,7 @@ val adjacent = fn(a:num, b:num):bool {
  * A new item of a random kind: the kind by weight, then its type by weight,
  * then for weapons and armour one draw for the bonus.
  */
-export val newItem = fn():map {
+export val newItem = fn():Item {
     val kind = data.itemKinds[rng.pick(data.itemKinds)].kind
     val bonus = fn():num {
         val b = rng.below(100)
@@ -88,9 +171,9 @@ export val newItem = fn():map {
  * `monsters`): draw a cell until it is not gone, then x and y in its room;
  * if that square is not floor without an item or monster, start again.
  */
-export val freeSpot = fn(lv:map):map {
+export val freeSpot = fn(lv:Chunk):Spot {
     if (lv.outdoor == true) { return outdoorSpot(lv) }
-    val occupied = fn(list:list, x:num, y:num):bool {
+    val occupied = fn(list:list<Spot>, x:num, y:num):bool {
         val go = fn(i:num):bool {
             if (i == len(list)) {
                 false
@@ -118,9 +201,9 @@ export val freeSpot = fn(lv:map):map {
 
 // The monster kinds that live at `depth`, by index, each common kind three
 // times and each rare one once, so that a draw from the list weighs them.
-val kindsAt = fn(depth:num):list {
+val kindsAt = fn(depth:num):list<num> {
     val d = math.min(depth, bestiary.DEEPEST)
-    val go = fn(i:num, acc:list):list {
+    val go = fn(i:num, acc:list<num>):list<num> {
         if (i == len(bestiary.monsters)) { return acc }
         val m = bestiary.monsters[i]
         val times = if (contains(m.flags, "rare")) { [i] } else { [i, i, i] }
@@ -135,7 +218,7 @@ val kindsAt = fn(depth:num):list {
  * deepest's below the deepest), a rare kind once and the rest three times
  * each, so that a draw from the list weighs them.
  */
-export val habitat = fn(depth:num):list {
+export val habitat = fn(depth:num):list<str> {
     if (depth == 0) { SURFACE_KINDS } else { map(kindsAt(depth), fn(i) { bestiary.monsters[i].name }) }
 }
 
@@ -143,7 +226,7 @@ export val habitat = fn(depth:num):list {
  * A new monster of the kind called `name`, asleep, at a free square of
  * chunk `lv`.
  */
-export val monsterIn = fn(lv:map, name:str):map {
+export val monsterIn = fn(lv:Chunk, name:str):Monster {
     val spot = freeSpot(lv)
     val kind = indexNamed(name)
     val hp = rng.roll(bestiary.monsters[kind].level, 8)
@@ -154,7 +237,7 @@ export val monsterIn = fn(lv:map, name:str):map {
  * Something found lying at a free square of chunk `lv` on `depth`: gold half
  * the time below the surface, as much as a room's, or else an item.
  */
-export val lootIn = fn(lv:map, depth:num):map {
+export val lootIn = fn(lv:Chunk, depth:num):Thing {
     val spot = freeSpot(lv)
     val item = if (depth > 0 && rng.below(2) == 0) { {kind: "gold", amount: rng.below(50 + 10 * depth) + 2} } else { newItem() }
     {x: spot.x, y: spot.y, item: item}
@@ -191,7 +274,7 @@ export val inWorld = fn(size:num, cx:num, cy:num):bool {
  * depth 1 stairs up lead to the surface), and `start`, a free spot. Edges
  * at the world's bounds have no opening.
  */
-export val generate = fn(world:num, cx:num, cy:num, depth:num, size:num = 0):map {
+export val generate = fn(world:num, cx:num, cy:num, depth:num, size:num = 0):Chunk {
     rng.within(rng.mix([world, cx, cy, depth]), fn() {
         if (depth == 0) { surface(world, cx, cy, size) } else { build(world, cx, cy, depth, size) }
     })
@@ -223,14 +306,14 @@ val floorDiv = fn(a:num, b:num):num {
 // blended between the four points around each square. `grid(x0, y0)`
 // returns a function of world (x, y) for squares of the chunk whose top left
 // is (x0, y0); it draws the chunk's lattice points once.
-val noise = fn(world:num, layer:num, sx:num, sy:num):fn {
-    fn(x0:num, y0:num):fn {
+val noise = fn(world:num, layer:num, sx:num, sy:num):fn<fn<num, num, num>, num, num> {
+    fn(x0:num, y0:num):fn<num, num, num> {
         val ix0 = floorDiv(x0, sx)
         val iy0 = floorDiv(y0, sy)
         val nx = floorDiv(x0 + WIDTH - 1, sx) - ix0 + 2
         val ny = floorDiv(y0 + HEIGHT - 1, sy) - iy0 + 2
         val point = fn(i:num):num { rng.mix([world, 7, layer, ix0 + i % nx, iy0 + math.div(i, nx)]) % 1000 }
-        val points = fn(i:num, acc:list):list { if (i == nx * ny) { acc } else { recur(i + 1, acc :+ point(i)) } }
+        val points = fn(i:num, acc:list<num>):list<num> { if (i == nx * ny) { acc } else { recur(i + 1, acc :+ point(i)) } }
         val lattice = points(0, [])
         fn(x:num, y:num):num {
             val ix = floorDiv(x, sx)
@@ -274,16 +357,16 @@ export val landShare = fn(world:num, cx:num, cy:num, size:num):num {
 
 // The squares (as y * WIDTH + x) of each group of passable squares joined
 // by the step rule, largest first.
-val regions = fn(rows:list, passable:fn):list {
+val regions = fn(rows:list<str>, passable:fn<bool, str>):list<list<num>> {
     val ok = fn(x:num, y:num):bool { x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT && passable(rows[y][x]) }
     val steps = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]
     var seen = {}
-    val fill = fn(queue:list, head:num):list {
+    val fill = fn(queue:list<num>, head:num):list<num> {
         if (head == len(queue)) { return queue }
         val c = queue[head]
         val x = c % WIDTH
         val y = math.div(c, WIDTH)
-        val each = fn(i:num, q:list):list {
+        val each = fn(i:num, q:list<num>):list<num> {
             if (i == 8) { return q }
             val dx = steps[i][0]
             val dy = steps[i][1]
@@ -297,7 +380,7 @@ val regions = fn(rows:list, passable:fn):list {
         }
         recur(each(0, queue), head + 1)
     }
-    val go = fn(c:num, found:list):list {
+    val go = fn(c:num, found:list<list<num>>):list<list<num>> {
         if (c == WIDTH * HEIGHT) { return found }
         val x = c % WIDTH
         val y = math.div(c, WIDTH)
@@ -330,7 +413,7 @@ val POCKET = 120
  * `monsters`, `down` (the way into the dungeon), `up` (nil), `start`, and
  * `outdoor` (true).
  */
-val surface = fn(world:num, cx:num, cy:num, size:num):map {
+val surface = fn(world:num, cx:num, cy:num, size:num):Chunk {
     val x0 = cx * WIDTH
     val y0 = cy * HEIGHT
     val broad = noise(world, 1, 24, 10)(x0, y0)
@@ -363,7 +446,7 @@ val surface = fn(world:num, cx:num, cy:num, size:num):map {
     val row = fn(y:num, x:num, out:str):str {
         if (x == WIDTH) { out } else { recur(y, x + 1, out + square(x0 + x, y0 + y)) }
     }
-    val makeRows = fn(y:num, acc:list):list {
+    val makeRows = fn(y:num, acc:list<str>):list<str> {
         if (y == HEIGHT) { acc } else { recur(y + 1, acc :+ row(y, 0, "")) }
     }
     var rows = makeRows(0, [])
@@ -392,34 +475,36 @@ val surface = fn(world:num, cx:num, cy:num, size:num):map {
     fillIn(1)
     val main = if (len(groups) == 0) { [] } else { groups[0] }
     // A free square of open ground in the largest group.
-    val ground = fn(taken:list):map {
+    val ground = fn(taken:list<list<num>>):Spot {
         val c = main[rng.below(len(main))]
         val x = c % WIDTH
         val y = math.div(c, WIDTH)
         if (rows[y][x] == FLOOR && !contains(taken, [x, y])) { {x: x, y: y} } else { recur(taken) }
     }
-    val lv = {map: rows, rooms: [], items: [], monsters: [], up: nil, outdoor: true}
     val down = ground([])
     rows = write(rows, down.x, down.y, STAIRS)
-    val stocked = stockSurface(lv + {map: rows}, [], [], 0)
-    val taken = map(stocked.items + stocked.monsters, fn(t) { [t.x, t.y] }) :+ [down.x, down.y]
-    lv + {map: rows, down: down, start: ground(taken)} + stocked
+    val stocked = stockSurface({map: rows}, [], [], 0)
+    val taken = map(stocked.items, fn(t) { [t.x, t.y] }) + map(stocked.monsters, fn(t) { [t.x, t.y] }) :+ [down.x, down.y]
+    {
+        map: rows, rooms: [], items: stocked.items, monsters: stocked.monsters,
+        down: down, up: nil, start: ground(taken), outdoor: true,
+    }
 }
 
 // Monsters and items for surface chunk `lv`: a few wild beasts and a few
 // things lying about, on free open ground, from the same generator as the
 // chunk. `keep` are items that stay; nothing new is put on
 // them or on the squares in `blocked`.
-val stockSurface = fn(lv:map, keep:list, blocked:list, n:num):map {
+val stockSurface = fn(lv:{map: list<str>}, keep:list<Thing>, blocked:list<Spot>, n:num):{items: list<Thing>, monsters: list<Monster>} {
     var items = keep
     var monsters = []
-    val taken = fn(list:list, x:num, y:num):bool {
+    val taken = fn(list:list<Spot>, x:num, y:num):bool {
         val go = fn(i:num):bool {
             if (i == len(list)) { false } else if (list[i].x == x && list[i].y == y) { true } else { recur(i + 1) }
         }
         go(0)
     }
-    val spot = fn():map {
+    val spot = fn():Spot {
         val x = rng.below(WIDTH)
         val y = rng.below(HEIGHT)
         if (lv.map[y][x] == FLOOR && !taken(items, x, y) && !taken(monsters, x, y) && !taken(blocked, x, y)) {
@@ -462,8 +547,8 @@ val indexNamed = fn(name:str):num {
 /**
  * A free square of open ground anywhere on surface chunk `lv`.
  */
-val outdoorSpot = fn(lv:map):map {
-    val occupied = fn(list:list, x:num, y:num):bool {
+val outdoorSpot = fn(lv:Chunk):Spot {
+    val occupied = fn(list:list<Spot>, x:num, y:num):bool {
         val go = fn(i:num):bool {
             if (i == len(list)) { false } else if (list[i].x == x && list[i].y == y) { true } else { recur(i + 1) }
         }
@@ -477,7 +562,7 @@ val outdoorSpot = fn(lv:map):map {
 // ---------------------------------------------------------------------------
 // The dungeon.
 
-val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
+val build = fn(world:num, cx:num, cy:num, depth:num, size:num):Chunk {
     var rows = []
     val blank = fn(i:num) {
         if (i < HEIGHT) {
@@ -491,7 +576,7 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
     var rooms = []
 
     val at = fn(x:num, y:num):str { rows[y][x] }
-    val occupied = fn(list:list, x:num, y:num):bool {
+    val occupied = fn(list:list<Spot>, x:num, y:num):bool {
         val go = fn(i:num):bool {
             if (i == len(list)) {
                 false
@@ -507,14 +592,14 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
         at(x, y) == FLOOR && !occupied(items, x, y) && !occupied(monsters, x, y)
     }
     // A free floor spot inside `room`: draw x then y until the spot is free.
-    val spotIn = fn(room:map):map {
+    val spotIn = fn(room:Room):Spot {
         val x = room.x + 1 + rng.below(room.w - 2)
         val y = room.y + 1 + rng.below(room.h - 2)
         if (free(x, y)) { {x: x, y: y} } else { recur(room) }
     }
     // A free floor spot in any room: draw a cell until it is not gone, then
     // a spot in it; if the spot is not free, start again from the cell.
-    val anySpot = fn():map {
+    val anySpot = fn():Spot {
         val room = rooms[rng.below(CELLS)]
         if (room.gone) {
             recur()
@@ -526,7 +611,7 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
     }
 
     // 1. Gone cells: below(2) of them, each drawn until not already gone.
-    val chooseGone = fn(n:num, gone:list):list {
+    val chooseGone = fn(n:num, gone:list<num>):list<num> {
         if (n == 0) {
             gone
         } else {
@@ -596,14 +681,14 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
         if (at(x, y) == BLANK) { rows = write(rows, x, y, CORRIDOR) }
     }
     // A door on a room's wall, or a gone cell's point, which becomes corridor.
-    val door = fn(room:map, x:num, y:num):map {
+    val door = fn(room:Room, x:num, y:num):Spot {
         rows = write(rows, x, y, if (room.gone) { CORRIDOR } else { DOOR })
         {x: x, y: y}
     }
     // Digs a corridor from s to e, not including either: across from s to a
     // turn, then along to e's line, then across to e when `horizontal`, or
     // the same down the map when not. Draws the turn.
-    val route = fn(s:map, e:map, horizontal:bool) {
+    val route = fn(s:Spot, e:Spot, horizontal:bool) {
         if (horizontal) {
             val turn = s.x + 1 + rng.below(e.x - s.x - 1)
             val first = fn(x:num) { if (x <= turn) { dig(x, s.y); recur(x + 1) } }
@@ -626,7 +711,7 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
     }
     // Where a corridor leaves `room` on its `side`: a door on that wall, or
     // the point of a gone cell. Draws the door's place along the wall.
-    val exit = fn(room:map, side:str):map {
+    val exit = fn(room:Room, side:str):Spot {
         if (room.gone) { return door(room, room.x, room.y) }
         match side {
             "east" => door(room, room.x + room.w - 1, room.y + 1 + rng.below(room.h - 2))
@@ -654,8 +739,8 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
     // Reservoir choice among the cells adjacent to r that pass `ok`, in cell
     // order: the j-th such cell replaces the choice when below(j) is 0.
     // Returns [count, choice].
-    val choose = fn(r:num, ok:fn):list {
-        val go = fn(i:num, j:num, choice:num):list {
+    val choose = fn(r:num, ok:fn<bool, num>):list<num> {
+        val go = fn(i:num, j:num, choice:num):list<num> {
             if (i == CELLS) {
                 [j, choice]
             } else if (adjacent(r, i) && ok(i)) {
@@ -669,7 +754,7 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
     }
     // A spanning tree: from r, join a random adjacent cell not yet in the
     // graph; when r has none, draw cells until one in the graph.
-    val span = fn(r:num, graph:list) {
+    val span = fn(r:num, graph:list<num>) {
         if (len(graph) < CELLS) {
             match choose(r, fn(i:num):bool { !contains(graph, i) }) {
                 [0, _] => {
@@ -718,7 +803,7 @@ val build = fn(world:num, cx:num, cy:num, depth:num, size:num):map {
     // 5. Openings: east, west, north, then south, each joined to the cell
     // beside it on that side, from the row or column band it lies in.
     val band = fn(at:num, size:num):num { math.min(2, math.div(at, size)) }
-    val opened = fn(x:num, y:num):map {
+    val opened = fn(x:num, y:num):Spot {
         rows = write(rows, x, y, CORRIDOR)
         {x: x, y: y}
     }
