@@ -209,20 +209,67 @@ fn assigning_a_value_that_may_be_nil_suggests_a_default() {
 }
 
 #[test]
-fn a_prefix_copy_is_fixed_by_moving_copy_after_the_value() {
+fn a_copy_is_rewritten_as_plus_parenthesized_where_plus_would_regroup() {
+    let schema = "val P = struct { n:num, m:num }\nval p = P { n: 1, m: 2 }\n";
+    for (copy, merge, value) in [
+        // Where `+` keeps the grouping, it replaces `copy`.
+        ("(p copy { n: 5 }).n", "(p + { n: 5 }).n", 5),
+        ("p copy { n: 5 } == p", "p + { n: 5 } == p", 0),
+        (
+            "(p copy { n: 5 } copy { m: 6 }).m",
+            "(p copy { n: 5 } + { m: 6 }).m",
+            6,
+        ),
+        // Elsewhere, it is parenthesized.
+        ("p copy { n: 5 }.n", "(p + { n: 5 }).n", 5),
+        ("-p copy { n: 5 }.n + 10", "-(p + { n: 5 }).n + 10", 5),
+        (
+            "([p] :+ p copy { n: 5 })[1].n",
+            "([p] :+ (p + { n: 5 }))[1].n",
+            5,
+        ),
+        ("1 + p copy { n: 5 }.n", "1 + (p + { n: 5 }).n", 6),
+    ] {
+        let source = format!("{schema}{copy}");
+        let error = compile("fixes.slug", &source).expect_err(&source);
+        assert_eq!(error.code.as_str(), "removed_syntax", "{source}");
+        assert_eq!(
+            only_fix(&source).as_deref(),
+            Some(format!("{schema}{merge}").as_str()),
+            "{source}"
+        );
+        // Fixed throughout, it keeps its value.
+        let mut fixed = source;
+        while let Some(next) = compile("fixes.slug", &fixed).err().and_then(|error| {
+            (error.code.as_str() == "removed_syntax")
+                .then(|| error.fixes()[0].apply(&fixed).expect("fix applies"))
+        }) {
+            fixed = next;
+        }
+        let expected = if copy.contains("==") {
+            slug_vm::Value::Bool(false)
+        } else {
+            slug_vm::Value::Int(value)
+        };
+        assert_eq!(run(&fixed), expected, "{fixed}");
+    }
+}
+
+#[test]
+fn a_prefix_copy_is_fixed_by_writing_plus_after_the_value() {
     for (source, fixed) in [
         (
             "val P = struct { x:num, y:num }\nval p = P { x: 1, y: 2 }\nval q = copy p { y: 5 }\nq.x + q.y",
-            "val P = struct { x:num, y:num }\nval p = P { x: 1, y: 2 }\nval q = p copy { y: 5 }\nq.x + q.y",
+            "val P = struct { x:num, y:num }\nval p = P { x: 1, y: 2 }\nval q = p + { y: 5 }\nq.x + q.y",
         ),
         (
             "val P = struct { x:num, y:num }\nval W = struct { p:struct<P> }\nval m = W { p: P { x: 1, y: 2 } }\nval q = copy m.p {\n  y: 5\n}\nq.x + q.y",
-            "val P = struct { x:num, y:num }\nval W = struct { p:struct<P> }\nval m = W { p: P { x: 1, y: 2 } }\nval q = m.p copy {\n  y: 5\n}\nq.x + q.y",
+            "val P = struct { x:num, y:num }\nval W = struct { p:struct<P> }\nval m = W { p: P { x: 1, y: 2 } }\nval q = m.p + {\n  y: 5\n}\nq.x + q.y",
         ),
     ] {
         let error = compile("fixes.slug", source).expect_err(source);
         assert!(
-            error.message.contains("`copy` follows"),
+            error.message.contains("`copy` is removed"),
             "{}",
             error.message
         );

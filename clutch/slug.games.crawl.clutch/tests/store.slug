@@ -124,10 +124,10 @@ val aNewCharacterRemembersNothingOfTheOldOne = fn() {
     val ids = twoPlaying(6)
     play(ids, 0, 200, db)
     // A chunk far from where new characters start, remembered.
-    store.write(db, game.changes() copy {memories: [{id: "a", key: "0,0,9", rows: ["#"]}]})
+    store.write(db, game.changes() + {memories: [{id: "a", key: "0,0,9", rows: ["#"]}]})
     assertEqual(saved(db).players.a.memory["0,0,9"], ["#"])
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {a: s.players.a copy {dead: true}}})
+    game.load(s + {players: s.players + {a: s.players.a + {dead: true}}})
     game.tick([{id: "a", key: "enter"}], ids)
     store.write(db, game.changes())
     val memory = game.playerOf("a").memory

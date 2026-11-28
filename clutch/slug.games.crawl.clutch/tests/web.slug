@@ -229,7 +229,7 @@ val deathOffersANewCharacterInTheSameWorld = fn() {
     val id = web.newPlayer()
     val alive:any = game.snapshot()
     val p = alive.players[id]
-    game.load(alive copy {players: alive.players + {[id]: p copy {dead: true, gold: 99}}})
+    game.load(alive + {players: alive.players + {[id]: p + {dead: true, gold: 99}}})
     assertTrue(includes(web.gameHtml(id), "You died."))
     post("/key", "key=enter", id)
     web.tickOnce()
@@ -252,7 +252,7 @@ val playersSeeEachOther = fn() {
     val s:any = game.snapshot()
     val pa = s.players[a]
     val spot = if (game.here(a).map[pa.y][pa.x + 1] == ".") { pa.x + 1 } else { pa.x - 1 }
-    game.load(s copy {players: s.players + {[b]: s.players[b] copy {cx: pa.cx, cy: pa.cy, depth: pa.depth, x: spot, y: pa.y}}})
+    game.load(s + {players: s.players + {[b]: s.players[b] + {cx: pa.cx, cy: pa.cy, depth: pa.depth, x: spot, y: pa.y}}})
     val html = web.gameHtml(a)
     assertTrue(includes(html, "class=\"ally\" title=\"Player 2\""))
     assertTrue(includes(html, "<i class=\"ally\">@</i>"))
@@ -271,9 +271,9 @@ val aCrowdInViewNamesTheNearestAndCountsTheRest = fn() {
     val spot = if (game.here(me).map[p.y][p.x + 1] == ".") { p.x + 1 } else { p.x - 1 }
     val placed = reduce(range(12), s.players, fn(acc, i) {
         val x = if (i < 9) { spot } else { p.x }
-        acc + {[crowd[i]]: acc[crowd[i]] copy {cx: p.cx, cy: p.cy, depth: p.depth, x: x, y: p.y}}
+        acc + {[crowd[i]]: acc[crowd[i]] + {cx: p.cx, cy: p.cy, depth: p.depth, x: x, y: p.y}}
     })
-    game.load(s copy {players: placed})
+    game.load(s + {players: placed})
     val html = web.gameHtml(me)
     val named = filter(range(2, 14), fn(n) { includes(html, "<span>Player " + n + "</span>") })
     // The three on their square, and five of the nine next to it.
@@ -349,9 +349,9 @@ val theMapScrollsOnlyNearItsEdges = fn() {
     }
     val spot = find(0)
     val s:any = game.snapshot()
-    game.load(s copy {levels: s.levels + {[game.chunkKey(s.players[id].cx, s.players[id].cy, s.players[id].depth)]: game.here(id) + {monsters: [], characters: []}}})
+    game.load(s + {levels: s.levels + {[game.chunkKey(s.players[id].cx, s.players[id].cy, s.players[id].depth)]: game.here(id) + {monsters: [], characters: []}}})
     val t:any = game.snapshot()
-    game.load(t copy {players: t.players + {[id]: t.players[id] + {x: spot.x, y: spot.y}}})
+    game.load(t + {players: t.players + {[id]: t.players[id] + {x: spot.x, y: spot.y}}})
     val events = get("/events", id, {cols: "20", rows: "8"})
     val first = mapText(web.gameHtml(id))
     assertEqual(len(first), 8)
@@ -416,9 +416,9 @@ val twoSideBySide = fn():list {
         if (rows[y][x] == "." && rows[y][x + 1] == ".") { [x, y] } else { recur(i + 1) }
     }
     val [x, y] = go(0)
-    game.load(s copy {players: s.players + {
-        [a]: pa copy {x: x, y: y},
-        [b]: s.players[b] copy {cx: pa.cx, cy: pa.cy, depth: pa.depth, x: x + 1, y: y},
+    game.load(s + {players: s.players + {
+        [a]: pa + {x: x, y: y},
+        [b]: s.players[b] + {cx: pa.cx, cy: pa.cy, depth: pa.depth, x: x + 1, y: y},
     }})
     [a, b]
 }

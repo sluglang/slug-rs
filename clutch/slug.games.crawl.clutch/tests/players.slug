@@ -13,7 +13,7 @@ val kindNamed = fn(name:str):num {
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}})
 }
 
 // Replaces the monsters of the chunk the player with `id` is in.
@@ -21,7 +21,7 @@ val setMonsters = fn(id:str, monsters:list) {
     val p = game.playerOf(id)
     val key = game.chunkKey(p.cx, p.cy, p.depth)
     val s:any = game.snapshot()
-    game.load(s copy {levels: s.levels + {[key]: s.levels[key] copy {monsters: monsters}}})
+    game.load(s + {levels: s.levels + {[key]: s.levels[key] + {monsters: monsters}}})
 }
 
 // Two floor squares side by side in the chunk the player with `id` is in,

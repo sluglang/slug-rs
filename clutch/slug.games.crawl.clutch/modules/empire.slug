@@ -471,7 +471,7 @@ val besieged = fn(annals:list, e:map):list {
     } else {
         val k = open[len(open) - 1]
         val a = annals[k]
-        annals[:k] + [a copy {held: a.held + held, last: e.step, fell: fell}] + annals[k + 1:]
+        annals[:k] + [a + {held: a.held + held, last: e.step, fell: fell}] + annals[k + 1:]
     }
 }
 
@@ -486,7 +486,7 @@ val note = fn(empire:Empire, event:map):Empire {
     val e = {step: empire.step} + event + led
     val all = empire.chronicle :+ e
     val annals = empire.annals ?? []
-    empire copy {
+    empire + {
         chronicle: if (len(all) > CHRONICLE) { all[len(all) - CHRONICLE:] } else { all },
         annals: match e.kind {
             "held", "sacked" => besieged(annals, e)
@@ -524,7 +524,7 @@ val claim = fn(empire:Empire, key:str, i:num):Empire {
     val lands = empire.lands ?? {}
     val before = lands[key] ?? {changes: 0}
     val changed = if (empire.holds[key] == nil) { 0 } else { 1 }
-    empire copy {
+    empire + {
         holds: empire.holds + {[key]: i},
         lands: lands + {[key]: before + {since: empire.step, changes: (before.changes ?? 0) + changed}},
     }
@@ -535,7 +535,7 @@ val claim = fn(empire:Empire, key:str, i:num):Empire {
 val battle = fn(empire:Empire, key:str, i:num, j:num):Empire {
     val lands = empire.lands ?? {}
     val before = lands[key] ?? {changes: 0}
-    empire copy {lands: lands + {[key]: before + {battles: (before.battles ?? 0) + 1, fought: [i, j]}}}
+    empire + {lands: lands + {[key]: before + {battles: (before.battles ?? 0) + 1, fought: [i, j]}}}
 }
 
 /**
@@ -559,12 +559,12 @@ val takeOver = fn(empire:Empire, i:num, j:num, target:str):Empire {
     val after = claim(empire, target, i)
     if (any(keys(after.holds), fn(k) { after.holds[k] == j })) { after } else {
         // A broken faction's leader falls with its last land.
-        note(setFaction(after, j, after.factions[j] copy {brokenAt: empire.step, leader: nil}), {kind: "broken", by: i, against: j, at: target, fallen: leaderOf(after, j)})
+        note(setFaction(after, j, after.factions[j] + {brokenAt: empire.step, leader: nil}), {kind: "broken", by: i, against: j, at: target, fallen: leaderOf(after, j)})
     }
 }
 
 val setFaction = fn(empire:Empire, i:num, f:Faction):Empire {
-    empire copy {factions: empire.factions[:i] + [f] + empire.factions[i + 1:]}
+    empire + {factions: empire.factions[:i] + [f] + empire.factions[i + 1:]}
 }
 
 // Faction `i` earns from what it holds, pays its upkeep, and turns half its
@@ -576,7 +576,7 @@ val earn = fn(empire:Empire, i:num):Empire {
     val wealth = f.wealth + income - math.div(f.strength, 10)
     val spend = if (wealth > 10) { math.div(wealth * (50 - 10 * f.traits.greedy), 100) } else { 0 }
     val broke = if (wealth < 0) { -wealth } else { 0 }
-    setFaction(empire, i, f copy {wealth: math.max(0, wealth - spend), strength: math.max(0, f.strength + spend - broke)})
+    setFaction(empire, i, f + {wealth: math.max(0, wealth - spend), strength: math.max(0, f.strength + spend - broke)})
 }
 
 // Faction `i` may push into a territory beside its own: more often if
@@ -597,7 +597,7 @@ val push = fn(empire:Empire, i:num, seed:num, history:bool):Empire {
     // Boxed in, with no wild land left beside it, a faction grows hungrier.
     val boxed = !any(targets, fn(k) { empire.holds[k] == nil })
     val hungry = if (boxed && rng.below(10) == 0) {
-        setFaction(empire, i, f copy {traits: f.traits copy {aggressive: clamp(f.traits.aggressive + 1)}})
+        setFaction(empire, i, f + {traits: f.traits + {aggressive: clamp(f.traits.aggressive + 1)}})
     } else { empire }
     // A settlement within reach draws a besieger half the time.
     val walled = filter(targets, fn(k) { empire.fixed[k] != nil })
@@ -642,13 +642,13 @@ val fight = fn(empire0:Empire, i:num, j:num, target:str):Empire {
     val loser = if (won) { j } else { i }
     val wf = empire.factions[winner]
     val lf = empire.factions[loser]
-    val after = setFaction(setFaction(empire, winner, wf copy {
+    val after = setFaction(setFaction(empire, winner, wf + {
         strength: wf.strength - math.div(wf.strength, 10), lastFight: empire.step,
-        traits: wf.traits copy {bold: clamp(wf.traits.bold + if (rng.below(4) == 0) { 1 } else { 0 })},
-    }), loser, lf copy {
+        traits: wf.traits + {bold: clamp(wf.traits.bold + if (rng.below(4) == 0) { 1 } else { 0 })},
+    }), loser, lf + {
         strength: lf.strength - math.div(lf.strength, 5), lastFight: empire.step,
         // A beaten faction may turn cautious, or vengeful.
-        traits: lf.traits copy {
+        traits: lf.traits + {
             bold: clamp(lf.traits.bold - if (rng.below(4) == 0) { 1 } else { 0 }),
             aggressive: clamp(lf.traits.aggressive + if (rng.below(4) == 0) { 1 } else { 0 }),
         },
@@ -689,7 +689,7 @@ val gained = fn(empire:Empire, i:num, j:num):Empire {
     val wars = warsOf(empire)
     val w = wars[k]
     val gains = if (w.by == i) { [w.gains[0] + 1, w.gains[1]] } else { [w.gains[0], w.gains[1] + 1] }
-    empire copy {wars: wars[:k] + [w copy {gains: gains}] + wars[k + 1:]}
+    empire + {wars: wars[:k] + [w + {gains: gains}] + wars[k + 1:]}
 }
 
 /**
@@ -739,7 +739,7 @@ val declare = fn(empire:Empire, i:num):Empire {
     } else { math.max(1, DECLARE + DECLARE * f.traits.aggressive + (if (boxed) { DECLARE } else { 0 })) }
     if (roll >= chance) { return empire }
     val front = border(empire, i, j)
-    note(empire copy {wars: warsOf(empire) :+ {by: i, against: j, began: empire.step, strength: [f.strength, g.strength], gains: [0, 0], at: front[0]}},
+    note(empire + {wars: warsOf(empire) :+ {by: i, against: j, began: empire.step, strength: [f.strength, g.strength], gains: [0, 0], at: front[0]}},
         {kind: "declared", by: i, against: j, at: front[0]})
 }
 
@@ -761,7 +761,7 @@ val wage = fn(empire:Empire, a:num, b:num):Empire {
     val ends = apart || (length >= 2 && ((worn && rng.below(100) < 40) || (length >= LONG && rng.below(100) < 25)))
     if (!ends) { return e2 }
     val wars = warsOf(e2)
-    note(e2 copy {wars: wars[:k] + wars[k + 1:]}, {kind: "peace", by: w.by, against: w.against, began: w.began, gains: w.gains, at: w.at})
+    note(e2 + {wars: wars[:k] + wars[k + 1:]}, {kind: "peace", by: w.by, against: w.against, began: w.began, gains: w.gains, at: w.at})
 }
 
 // Faction `i`, broken a while, may rise again at its home band: in wild
@@ -782,12 +782,12 @@ val rise = fn(empire:Empire, i:num):Empire {
     }
     val before = empire.holds[k]
     // It rises under a new leader.
-    val risen = setFaction(claim(empire, k, i), i, f copy {strength: math.max(f.strength, RISEN), brokenAt: nil, leader: newLeader(f, empire.step)})
+    val risen = setFaction(claim(empire, k, i), i, f + {strength: math.max(f.strength, RISEN), brokenAt: nil, leader: newLeader(f, empire.step)})
     val noted = note(risen, {kind: "rose", by: i, against: before, at: k})
     // Whoever held the land there may be broken in turn.
     match before {
         j: num => if (any(keys(noted.holds), fn(t) { noted.holds[t] == j })) { noted } else {
-            note(setFaction(noted, j, noted.factions[j] copy {brokenAt: empire.step, leader: nil}), {kind: "broken", by: i, against: j, at: k, fallen: leaderOf(noted, j)})
+            note(setFaction(noted, j, noted.factions[j] + {brokenAt: empire.step, leader: nil}), {kind: "broken", by: i, against: j, at: k, fallen: leaderOf(noted, j)})
         }
         _ => noted
     }
@@ -808,7 +808,7 @@ val succeed = fn(empire:Empire, i:num, how:str):Empire {
     } else {
         temper + {greedy: clamp(f.traits.greedy + shift)}
     }
-    note(setFaction(empire, i, f copy {leader: next, traits: traits}), {kind: "succeeded", by: i, who: old, leader: next.name, how: how})
+    note(setFaction(empire, i, f + {leader: next, traits: traits}), {kind: "succeeded", by: i, who: old, leader: next.name, how: how})
 }
 
 // Faction `i`'s leader may die, the more likely the longer they have led;
@@ -819,7 +819,7 @@ val reign = fn(empire:Empire, i:num):Empire {
     if (!any(keys(empire.holds), fn(k) { empire.holds[k] == i })) { return empire }
     match f.leader {
         l: map => if (rng.below(1000) < DEATH + math.div(empire.step - l.since, AGE)) { succeed(empire, i, "died") } else { empire }
-        _ => setFaction(empire, i, f copy {leader: newLeader(f, empire.step)})
+        _ => setFaction(empire, i, f + {leader: newLeader(f, empire.step)})
     }
 }
 
@@ -850,17 +850,17 @@ val siege = fn(empire0:Empire, i:num, target:str, name:str):Empire {
     val worn = (empire.sieges ?? {})[target] ?? 0
     val defence = math.div(power(empire, j, target) * (50 + rng.below(101)) * math.max(25, 200 - 25 * worn), 100)
     val won = attack > defence
-    val after = setFaction(setFaction(empire, i, f copy {strength: f.strength - math.div(f.strength, if (won) { 10 } else { 5 }), lastFight: empire.step}),
-        j, g copy {strength: g.strength - math.div(g.strength, if (won) { 5 } else { 10 }), lastFight: empire.step})
+    val after = setFaction(setFaction(empire, i, f + {strength: f.strength - math.div(f.strength, if (won) { 10 } else { 5 }), lastFight: empire.step}),
+        j, g + {strength: g.strength - math.div(g.strength, if (won) { 5 } else { 10 }), lastFight: empire.step})
     if (won) {
-        val sacked = note(after copy {
+        val sacked = note(after + {
             fixed: remove(after.fixed, target),
             fallen: after.fallen :+ {name: name, by: f.name, step: empire.step},
         }, {kind: "sacked", by: i, against: j, at: target, name: name, besieger: leaderOf(empire, i)})
         takeOver(sacked, i, j, target)
     } else {
         val sieges:map<str, num> = after.sieges ?? {}
-        note(after copy {sieges: sieges + {[target]: worn + 1}}, {kind: "held", by: j, against: i, at: target, name: name, besieger: leaderOf(empire, i)})
+        note(after + {sieges: sieges + {[target]: worn + 1}}, {kind: "held", by: j, against: i, at: target, name: name, besieger: leaderOf(empire, i)})
     }
 }
 
@@ -890,7 +890,7 @@ export val bleed = fn(empire:Empire):Empire {
                     hunters = hunters + {[h]: {kills: before.kills + n, at: territory}}
                 }
                 val f = e.factions[i]
-                recur(index + 1, setFaction(e, i, f copy {strength: math.max(0, f.strength - n * math.max(1, math.div(f.strength * KILL_COST, 1000)))}))
+                recur(index + 1, setFaction(e, i, f + {strength: math.max(0, f.strength - n * math.max(1, math.div(f.strength * KILL_COST, 1000)))}))
             } else { recur(index + 1, e) }
             _ => recur(index + 1, e)
         }
@@ -906,14 +906,14 @@ export val bleed = fn(empire:Empire):Empire {
             note(e, {kind: "deed", deed: "weakened", who: who, against: string.toInt(i) ?? 0, kills: hunt.kills, at: hunt.at})
         })
     }
-    remembered(0, bled copy {kills: {}})
+    remembered(0, bled + {kills: {}})
 }
 
 // A faction that has not fought for a long while may grow more peaceful.
 val calm = fn(empire:Empire, i:num):Empire {
     val f = empire.factions[i]
     if (empire.step - f.lastFight > 20 && rng.below(10) == 0) {
-        setFaction(empire, i, f copy {traits: f.traits copy {aggressive: clamp(f.traits.aggressive - 1)}})
+        setFaction(empire, i, f + {traits: f.traits + {aggressive: clamp(f.traits.aggressive - 1)}})
     } else { empire }
 }
 
@@ -940,7 +940,7 @@ export val step = fn(empire:Empire, seed:num, history:bool = false):Empire {
         if (i == len(e.factions)) { return e }
         recur(i + 1, rise(declare(e, i), i))
     }
-    rising(0, warred) copy {step: empire.step + 1}
+    rising(0, warred) + {step: empire.step + 1}
 }
 
 /**
@@ -952,7 +952,7 @@ export val killed = fn(empire:Empire, key:str, name:str, who:str = ""):Empire {
     // "|" separates the parts of a key; a name keeps none of its own.
     val named = string.join(string.split(who, "|"), "/")
     val k = key + "|" + name + (if (named == "") { "" } else { "|" + named })
-    empire copy {kills: empire.kills + {[k]: (empire.kills[k] ?? 0) + 1}}
+    empire + {kills: empire.kills + {[k]: (empire.kills[k] ?? 0) + 1}}
 }
 
 // ---------------------------------------------------------------------------

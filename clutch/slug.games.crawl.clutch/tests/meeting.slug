@@ -7,7 +7,7 @@ val math = import("slug.math")
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}})
 }
 
 // Two open squares side by side in the chunk player "a" is in.
@@ -229,7 +229,7 @@ val aFullPackSaysWhatIsLeftBehind = fn() {
     val s:any = game.snapshot()
     val a = game.playerOf("a")
     val key = game.chunkKey(a.cx, a.cy, a.depth)
-    game.load(s copy {levels: s.levels + {[key]: s.levels[key] copy {
+    game.load(s + {levels: s.levels + {[key]: s.levels[key] + {
         items: [{x: b.x, y: b.y, item: {kind: "potion", type: 0}}], monsters: [], characters: [],
     }}})
     game.command("a", "l", false)

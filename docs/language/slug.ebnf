@@ -86,16 +86,17 @@ prefix = ( "!" | "-" | "~" ) , prefix
 call_chain = postfix , { "/>" , postfix } ;
 
 postfix = primary , { postfix_op } ;
-postfix_op = call_suffix | type_application_call | index_suffix | dot_suffix | struct_init | struct_copy ;
+postfix_op = call_suffix | type_application_call | index_suffix | dot_suffix | struct_init ;
 call_suffix = "(" , [ call_args ] , ")" ;
 (* Type application is accepted only on an identifier. *)
 type_application_call = "<" , type_annotation , { "," , type_annotation } , ">" , call_suffix ;
 index_suffix = "[" , index_args , "]" ;
 dot_suffix = "." , identifier ;
 
-(* Struct construction and persistent copy are postfix forms. *)
+(* Struct construction is a postfix form. A struct's fields are updated with
+   `+`, as `value + { field: v }`; the removed `value copy { ... }` form is
+   parsed only to report it, with a fix. *)
 struct_init = "{" , { NEWLINE } , [ struct_init_fields ] , "}" ;
-struct_copy = "copy" , "{" , { NEWLINE } , [ struct_init_fields ] , "}" ;
 
 primary = literal
         | identifier
@@ -185,7 +186,7 @@ struct_schema_fields = struct_schema_field , { member_sep , struct_schema_field 
 (* Struct-field tags are not supported. *)
 struct_schema_field = identifier , [ ":" , type_annotation ] , [ "=" , expression ] ;
 
-(* Construction and copy fields require commas; newlines may follow a comma
+(* Construction fields require commas; newlines may follow a comma
    or precede the closing brace. *)
 init_sep = "," , { NEWLINE } ;
 struct_init_fields = struct_init_field , { init_sep , struct_init_field } , [ init_sep ] , { NEWLINE } ;

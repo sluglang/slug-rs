@@ -670,7 +670,7 @@ fn copies_structs_with_checked_replacement_fields() {
         &path,
         "val User = struct { name, active = true }\n\
          val first = User { name: \"Slug\" }\n\
-         val second = first copy { active: false }\n\
+         val second = first + { active: false }\n\
          println(first.name, first.active, second.name, second.active, first == second)\n",
     )
     .expect("write struct copy source");
@@ -686,18 +686,18 @@ fn copies_structs_with_checked_replacement_fields() {
         "Slug true Slug false false\n"
     );
 
-    fs::write(&path, "val value = 1\nvalue copy { field: 2 }\n")
-        .expect("write non-struct copy source");
+    fs::write(&path, "val value = 1\nvalue + { field: 2 }\n")
+        .expect("write non-struct merge source");
     let output = slug()
         .arg(&path)
         .output()
-        .expect("run non-struct copy source");
-    fs::remove_file(path).expect("remove non-struct copy source");
+        .expect("run non-struct merge source");
+    fs::remove_file(path).expect("remove non-struct merge source");
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .starts_with("slug: runtime error: cannot copy non-struct or map value")
+            .starts_with("slug: semantic error: operator `+` does not accept num and {field: num}")
     );
 }
 

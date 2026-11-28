@@ -78,7 +78,7 @@ fn collection_workload(size: usize) -> String {
     let updates = size.min(32);
     format!(
         "val append = fn(remaining, values) {{ if (remaining == 0) {{ values }} else {{ recur(remaining - 1, values :+ remaining) }} }}\n\
-         val update = fn(remaining, value) {{ if (remaining == 0) {{ value }} else {{ recur(remaining - 1, value copy {{ k0: remaining }}) }} }}\n\
+         val update = fn(remaining, value) {{ if (remaining == 0) {{ value }} else {{ recur(remaining - 1, value + {{ k0: remaining }}) }} }}\n\
          val read = fn(remaining, total, value) {{ if (remaining == 0) {{ total }} else {{ recur(remaining - 1, total + value[\"k0\"], value) }} }}\n\
          val values = append({size}, [])\n\
          val mapped = update({updates}, {{{entries}}})\n\
@@ -108,7 +108,7 @@ fn unique_collection_workload() -> String {
         .map(|index| format!("k{index}: {index}"))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("([{values}] :+ 64)[64]\n({{{entries}}} copy {{k0: -1}}).k0\n")
+    format!("([{values}] :+ 64)[64]\n({{{entries}}} + {{k0: -1}}).k0\n")
 }
 
 fn fannkuch_redux() -> String {

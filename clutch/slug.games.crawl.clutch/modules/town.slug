@@ -318,12 +318,12 @@ val decay = fn(built:Built):Built {
 export val build = fn(world:num, lv:level.Chunk, s:Settlement):level.Chunk {
     rng.within(rng.mix([world, 43, s.cx, s.cy]), fn() {
         // The way down moves, so the old one goes first.
-        val cleared = lv copy {map: write(lv.map, lv.down.x, lv.down.y, level.FLOOR)}
+        val cleared = lv + {map: write(lv.map, lv.down.x, lv.down.y, level.FLOOR)}
         val kind = if (s.kind == "ruin") { s.was ?? "town" } else { s.kind }
         val built = if (kind == "fort") { buildFort(cleared) } else { buildTown(cleared) }
         val ruin = s.kind == "ruin"
         val made = if (ruin) { decay(built) } else { built }
-        lv copy {
+        lv + {
             map: made.map, down: made.down, characters: made.characters, walls: made.walls,
             items: made.items, start: made.start, monsters: [],
             place: if (ruin) { {kind: "ruin", name: "the ruins of " + s.name, was: s.name} } else { {kind: s.kind, name: s.name} },

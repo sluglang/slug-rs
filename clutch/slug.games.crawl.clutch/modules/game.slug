@@ -258,7 +258,7 @@ type Dirty = {
 }
 
 val touchLevel = fn(key:str) {
-    dirty = dirty copy {levels: dirty.levels + {[key]: true}}
+    dirty = dirty + {levels: dirty.levels + {[key]: true}}
     versions = versions + {[key]: (versions[key] ?? 0) + 1}
 }
 
@@ -339,7 +339,7 @@ val actAs = fn<T>(id:str, body:fn<T>):T {
     if (outer != nil) { savePlayer(outer, player) }
     acting = id
     player = recordOf(id)
-    dirty = dirty copy {players: dirty.players + {[id]: true}}
+    dirty = dirty + {players: dirty.players + {[id]: true}}
     val result = body()
     savePlayer(id, player)
     acting = outer
@@ -390,14 +390,14 @@ val BLANK_ROWS = (fn(i:num, rows:list<str>):list<str> {
 // Sets what the acting player remembers of the chunk with `key`.
 val remember = fn(key:str, rows:list<str>) {
     if (player.memory[key] != rows) {
-        player = player copy {memory: player.memory + {[key]: rows}}
+        player = player + {memory: player.memory + {[key]: rows}}
         match noted {
             // Finding sights for `applySights`, perhaps in a fork.
             keys: map => { noted = keys + {[key]: true} }
             _ => {
                 // Remembering anything else means looking again next time.
                 seenAt = seenAt - (acting ?? "")
-                dirty = dirty copy {memories: dirty.memories + {[(acting ?? "") + " " + key]: [acting ?? "", key]}}
+                dirty = dirty + {memories: dirty.memories + {[(acting ?? "") + " " + key]: [acting ?? "", key]}}
             }
         }
     }
@@ -542,7 +542,7 @@ val indexAt = fn(list:list<level.Spot>, x:num, y:num):num {
 }
 
 val say = fn(text:str) {
-    player = player copy {messages: player.messages :+ text}
+    player = player + {messages: player.messages :+ text}
 }
 
 val setPlayer = fn(p:Player) {
@@ -642,7 +642,7 @@ val addToPack = fn(item:level.Item):str|nil {
     val s = stack(0)
     if (s >= 0) {
         val e = player.pack[s]
-        player = player copy {pack: player.pack[:s] + [e copy {count: e.count + 1}] + player.pack[s + 1:]}
+        player = player + {pack: player.pack[:s] + [e + {count: e.count + 1}] + player.pack[s + 1:]}
         e.letter
     } else if (len(player.pack) >= PACK_SIZE) {
         nil
@@ -656,7 +656,7 @@ val addToPack = fn(item:level.Item):str|nil {
             if (i == len(player.pack) || player.pack[i].letter > letter) { i } else { recur(i + 1) }
         }
         val at = place(0)
-        player = player copy {pack: player.pack[:at] + [{letter: letter, item: item, count: 1}] + player.pack[at:]}
+        player = player + {pack: player.pack[:at] + [{letter: letter, item: item, count: 1}] + player.pack[at:]}
         letter
     }
 }
@@ -667,7 +667,7 @@ val takeOne = fn(letter:str) {
     val i = packIndex(letter)
     val e = player.pack[i]
     if (e.count > 1) {
-        player = player copy {pack: player.pack[:i] + [e copy {count: e.count - 1}] + player.pack[i + 1:]}
+        player = player + {pack: player.pack[:i] + [e + {count: e.count - 1}] + player.pack[i + 1:]}
     } else {
         removeEntry(letter)
     }
@@ -675,9 +675,9 @@ val takeOne = fn(letter:str) {
 
 val removeEntry = fn(letter:str) {
     val i = packIndex(letter)
-    player = player copy {pack: player.pack[:i] + player.pack[i + 1:]}
+    player = player + {pack: player.pack[:i] + player.pack[i + 1:]}
     val p = player
-    setPlayer(p copy {
+    setPlayer(p + {
         weapon: if (p.weapon == letter) { nil } else { p.weapon },
         armour: if (p.armour == letter) { nil } else { p.armour },
     })
@@ -685,7 +685,7 @@ val removeEntry = fn(letter:str) {
 
 val setEntry = fn(letter:str, e:Entry) {
     val i = packIndex(letter)
-    player = player copy {pack: player.pack[:i] + [e] + player.pack[i + 1:]}
+    player = player + {pack: player.pack[:i] + [e] + player.pack[i + 1:]}
 }
 
 // The player's armour: the worn armour's value plus its bonus, or 0.
@@ -706,13 +706,13 @@ val pickUp = fn() {
     if (i >= 0) {
         val item = site().items[i].item
         if (item.kind == "gold") {
-            setHere(site() copy {items: site().items[:i] + site().items[i + 1:]})
-            setPlayer(player copy {gold: player.gold + (item.amount ?? 0)})
+            setHere(site() + {items: site().items[:i] + site().items[i + 1:]})
+            setPlayer(player + {gold: player.gold + (item.amount ?? 0)})
             say("You found " + (item.amount ?? 0) + " gold pieces.")
         } else {
             match addToPack(item) {
                 letter: str => {
-                    setHere(site() copy {items: site().items[:i] + site().items[i + 1:]})
+                    setHere(site() + {items: site().items[:i] + site().items[i + 1:]})
                     say(packLine(player.pack[packIndex(letter)]))
                 }
                 _ => say("Your pack is full; you leave " + nameOf(item, 1) + ".")
@@ -761,7 +761,7 @@ val strewRemains = fn() {
         }
         go(400, have)
     })
-    setHere(lv copy {remains: strewn})
+    setHere(lv + {remains: strewn})
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,8 +1093,8 @@ export val applySights = fn(found:list<Found>) {
             actAs(id, fn() { if (!player.dead) { see() } })
         } else {
             val memory = f.memory ?? []
-            players = players + {[id]: p copy {memory: reduce(memory, p.memory, fn(acc, kr) { acc + {[kr[0]]: kr[1]} })}}
-            dirty = dirty copy {memories: reduce(memory, dirty.memories, fn(acc, kr) { acc + {[id + " " + kr[0]]: [id, kr[0]]} })}
+            players = players + {[id]: p + {memory: reduce(memory, p.memory, fn(acc, kr) { acc + {[kr[0]]: kr[1]} })}}
+            dirty = dirty + {memories: reduce(memory, dirty.memories, fn(acc, kr) { acc + {[id + " " + kr[0]]: [id, kr[0]]} })}
             seenAt = seenAt + {[id]: f.stamp ?? ""}
             val sight = f.sight
             if (sight != nil) { sights = sights + {[id]: sight} }
@@ -1288,7 +1288,7 @@ val frontier = fn(cx:num, cy:num, depth:num) {
         if (levels[key] == nil && populations[key] == nil && wild(ncx, ncy, nd)) {
             val counts = rng.within(rng.mix([world.seed, 52, ncx, ncy, nd]), fn() { region.initial(nd, habitatOf(ncx, ncy, nd)) })
             populations = populations + {[key]: counts}
-            dirty = dirty copy {populations: dirty.populations + {[key]: true}}
+            dirty = dirty + {populations: dirty.populations + {[key]: true}}
         }
     })
 }
@@ -1304,7 +1304,7 @@ val withCounts = fn(lv:level.Chunk, counts:region.Counts):level.Chunk {
         val want = counts[name] ?? 0
         val got = have[name] ?? 0
         val added = fn(k:num, l:level.Chunk):level.Chunk {
-            if (k <= 0) { l } else { recur(k - 1, l copy {monsters: l.monsters :+ level.monsterIn(l, name)}) }
+            if (k <= 0) { l } else { recur(k - 1, l + {monsters: l.monsters :+ level.monsterIn(l, name)}) }
         }
         val removed = fn(k:num, l:level.Chunk):level.Chunk {
             if (k <= 0) { return l }
@@ -1312,7 +1312,7 @@ val withCounts = fn(lv:level.Chunk, counts:region.Counts):level.Chunk {
             val asleep = filter(ofKind, fn(j) { l.monsters[j].state == "asleep" })
             val pool = if (len(asleep) > 0) { asleep } else { ofKind }
             val j = pool[rng.below(len(pool))]
-            recur(k - 1, l copy {monsters: l.monsters[:j] + l.monsters[j + 1:]})
+            recur(k - 1, l + {monsters: l.monsters[:j] + l.monsters[j + 1:]})
         }
         recur(i + 1, if (want > got) { added(want - got, now) } else { removed(got - want, now) })
     }
@@ -1356,12 +1356,12 @@ val moveOn = fn(name:str, cx:num, cy:num, depth:num, busy:map<str, bool>) {
     val key = chunkKey(ncx, ncy, nd)
     val lv = levels[key]
     if (lv != nil) {
-        levels = levels + {[key]: lv copy {monsters: lv.monsters :+ level.monsterIn(lv, name)}}
+        levels = levels + {[key]: lv + {monsters: lv.monsters :+ level.monsterIn(lv, name)}}
         touchLevel(key)
     } else {
         val counts = populations[key] ?? {}
         populations = populations + {[key]: counts + {[name]: (counts[name] ?? 0) + 1}}
-        dirty = dirty copy {populations: dirty.populations + {[key]: true}}
+        dirty = dirty + {populations: dirty.populations + {[key]: true}}
     }
 }
 
@@ -1378,7 +1378,7 @@ val visitChunk = fn(key:str, busy:map<str, bool>) {
                 val r = region.visit(before, habitat, cap)
                 val loose = len(filter(lv.items, fn(i) { i.dropped != true }))
                 val stocked = if (r.counts == before) { lv } else { withCounts(lv, r.counts) }
-                val looted = if (r.loot && loose < lootCap(depth)) { stocked copy {items: stocked.items :+ level.lootIn(stocked, depth)} } else { stocked }
+                val looted = if (r.loot && loose < lootCap(depth)) { stocked + {items: stocked.items :+ level.lootIn(stocked, depth)} } else { stocked }
                 if (r.counts != before || looted.items != lv.items) {
                     levels = levels + {[key]: looted}
                     touchLevel(key)
@@ -1390,7 +1390,7 @@ val visitChunk = fn(key:str, busy:map<str, bool>) {
                 val r = region.visit(before, habitat, cap)
                 if (r.counts != before) {
                     populations = populations + {[key]: r.counts}
-                    dirty = dirty copy {populations: dirty.populations + {[key]: true}}
+                    dirty = dirty + {populations: dirty.populations + {[key]: true}}
                 }
                 val leaving = r.leaving
                 if (leaving != nil) { moveOn(leaving, cx, cy, depth, busy) }
@@ -1414,7 +1414,7 @@ val underRuin = fn(lv:level.Chunk, cx:num, cy:num, depth:num):level.Chunk {
     if (depth == 0 || depth > 3 || above == nil || above.kind != "ruin") { return lv }
     rng.within(rng.mix([world.seed, 55, cx, cy, depth]), fn() {
         val more = fn(k:num, l:level.Chunk):level.Chunk {
-            if (k == 0) { l } else { recur(k - 1, l copy {items: l.items :+ level.lootIn(l, depth + 2)}) }
+            if (k == 0) { l } else { recur(k - 1, l + {items: l.items :+ level.lootIn(l, depth + 2)}) }
         }
         more(5, lv)
     })
@@ -1437,7 +1437,7 @@ val chunk = fn(cx:num, cy:num, depth:num):level.Chunk {
             val lv = if (!wild(cx, cy, depth) || counts == nil) { built } else {
                 // Its monsters are those its counts say it has now.
                 populations = populations - key
-                dirty = dirty copy {populations: dirty.populations + {[key]: true}}
+                dirty = dirty + {populations: dirty.populations + {[key]: true}}
                 rng.within(rng.mix([world.seed, 53, cx, cy, depth]), fn() { withCounts(built, counts) })
             }
             levels = levels + {[key]: lv}
@@ -1456,10 +1456,10 @@ val enter = fn(cx:num, cy:num, depth:num, place:fn<level.Spot, level.Chunk>) {
     val arriving = player.cx != cx || player.cy != cy || player.depth != depth
     val from = empire.territoryOf(player.cx, player.cy, player.depth)
     val to = empire.territoryOf(cx, cy, depth)
-    player = player copy {cx: cx, cy: cy, depth: depth, x: spot.x, y: spot.y, sense: false}
+    player = player + {cx: cx, cy: cy, depth: depth, x: spot.x, y: spot.y, sense: false}
     // The first to come this deep is remembered.
     if (chronicled() && depth > (world.deepest ?? DESCENT_FROM)) {
-        world = world copy {deepest: depth}
+        world = world + {deepest: depth}
         chronicle({kind: "deed", deed: "descent", depth: depth})
         say("No one has come this deep before.")
     }
@@ -1488,7 +1488,7 @@ val newCharacter = fn() {
     val id = acting ?? ""
     val memories = dirty.memories
     val none:map<str, [str, str]> = {}
-    dirty = dirty copy {
+    dirty = dirty + {
         forgotten: dirty.forgotten + {[id]: true},
         memories: reduce(keys(memories), none, fn(acc, k) { if (memories[k][0] != id) { acc + {[k]: memories[k]} } else { acc } }),
     }
@@ -1777,7 +1777,7 @@ export val changes = fn():Changes {
         }),
         players: reduce(keys(dirty.players), nobody, fn(acc, id) {
             val p = all.players[id]
-            if (p == nil) { acc } else { acc + {[id]: p copy {memory: {}}} }
+            if (p == nil) { acc } else { acc + {[id]: p + {memory: {}}} }
         }),
         memories: map(keys(dirty.memories), fn(k) {
             val [id, key] = dirty.memories[k]
@@ -1830,11 +1830,11 @@ val kindOf = fn(m:level.Monster):struct<data.Monster> { bestiary.monsters[m.kind
 val hasFlag = fn(m:level.Monster, flag:str):bool { contains(kindOf(m).flags, flag) }
 
 val setMonster = fn(i:num, m:level.Monster) {
-    setHere(site() copy {monsters: site().monsters[:i] + [m] + site().monsters[i + 1:]})
+    setHere(site() + {monsters: site().monsters[:i] + [m] + site().monsters[i + 1:]})
 }
 
 val removeMonster = fn(i:num) {
-    setHere(site() copy {monsters: site().monsters[:i] + site().monsters[i + 1:]})
+    setHere(site() + {monsters: site().monsters[:i] + site().monsters[i + 1:]})
 }
 
 // An attack roll: hits when below(20) + 1 + level + bonus >= 10 + armour.
@@ -1859,11 +1859,11 @@ val counted = fn(name:str) {
     if (empire.peopleOf(name) == nil) { return nil }
     val p = player
     val territory = empire.territoryOf(p.cx, p.cy, p.depth)
-    world = world copy {empire: empire.killed(world.empire, territory, name, p.name ?? "")}
+    world = world + {empire: empire.killed(world.empire, territory, name, p.name ?? "")}
     val [rx, ry, _] = string.split(territory, ",")
     val k = rx + "," + ry + "|" + name
     val kills = p.kills ?? {}
-    setPlayer(p copy {kills: kills + {[k]: (kills[k] ?? 0) + 1}})
+    setPlayer(p + {kills: kills + {[k]: (kills[k] ?? 0) + 1}})
 }
 
 // Whether this world keeps a history: it has factions.
@@ -1876,7 +1876,7 @@ val season = fn():num { world.empire.step }
 // where it is in the acting player's land.
 val chronicle = fn(event:map) {
     if (chronicled()) {
-        world = world copy {empire: empire.record(world.empire, {who: player.name ?? "someone", at: empire.territoryOf(player.cx, player.cy, player.depth)} + event)}
+        world = world + {empire: empire.record(world.empire, {who: player.name ?? "someone", at: empire.territoryOf(player.cx, player.cy, player.depth)} + event)}
     }
 }
 
@@ -1913,11 +1913,11 @@ val die = fn(cause:str) {
     val carried:list<level.Item> = []
     val gold:list<level.Item> = if (p.gold > 0) { [{kind: "gold", amount: p.gold}] } else { [] }
     val things = reduce(p.pack, carried, fn(acc, e) { acc + map(range(e.count), fn(_) { e.item }) }) + gold
-    val spots = freeAround(lv copy {graves: (lv.graves ?? []) :+ grave}, p.x, p.y, len(things))
+    val spots = freeAround(lv + {graves: (lv.graves ?? []) :+ grave}, p.x, p.y, len(things))
     val laid = map(range(len(spots)), fn(k) { {x: spots[k].x, y: spots[k].y, item: things[k], dropped: true} })
-    setHere(lv copy {items: lv.items + laid, graves: (lv.graves ?? []) :+ grave})
+    setHere(lv + {items: lv.items + laid, graves: (lv.graves ?? []) :+ grave})
     chronicle({kind: "death", level: p.level, cause: told, depth: p.depth})
-    player = player copy {dead: true, pack: [], gold: 0}
+    player = player + {dead: true, pack: [], gold: 0}
     say("You die.")
     say(cause + " on depth " + player.depth + ".")
     say("Your grave lies here, and what you carried around it.")
@@ -1927,12 +1927,12 @@ val die = fn(cause:str) {
 // Experience: each level from 2 needs 10, 20, 40, ... points; each level
 // gained adds roll(1, 10) to hit points and their maximum.
 val gainXp = fn(xp:num) {
-    setPlayer(player copy {xp: player.xp + xp})
+    setPlayer(player + {xp: player.xp + xp})
     val up = fn(need:num) {
         val p = player
         if (p.xp >= need) {
             val gain = rng.roll(1, 10)
-            setPlayer(p copy {level: p.level + 1, hp: p.hp + gain, maxHp: p.maxHp + gain})
+            setPlayer(p + {level: p.level + 1, hp: p.hp + gain, maxHp: p.maxHp + gain})
             say("Welcome to level " + (p.level + 1) + ".")
             recur(need * 2)
         }
@@ -2019,20 +2019,20 @@ val monsterAttack = fn(i:num):bool {
     val p = player
     if (hits(kind.level, 0, armourTotal())) {
         val damage = rng.roll(kind.damage[0], kind.damage[1])
-        setPlayer(p copy {hp: p.hp - damage})
+        setPlayer(p + {hp: p.hp - damage})
         say("The " + kind.name + " hits you.")
         val loot = stealable()
         if (player.hp <= 0) {
             die("Killed by the " + kind.name)
             true
         } else if (hasFlag(m, "weakens") && player.str > 3 && rng.below(3) == 0) {
-            setPlayer(player copy {str: player.str - 1})
+            setPlayer(player + {str: player.str - 1})
             say("You feel weaker.")
             true
         } else if (hasFlag(m, "stealsGold") && player.gold > 0) {
             val take = rng.below(50 + 10 * player.depth) + 2
             val gold = player.gold
-            setPlayer(player copy {gold: if (take < gold) { gold - take } else { 0 }})
+            setPlayer(player + {gold: if (take < gold) { gold - take } else { 0 }})
             removeMonster(i)
             say("Your purse feels lighter.")
             false
@@ -2055,12 +2055,12 @@ val monsterAttack = fn(i:num):bool {
 // Returns [still on the level, distances or nil].
 val monsterAct = fn(i:num, dist:map<num, num>|nil):[bool, map<num, num>|nil] {
     val m0 = site().monsters[i]
-    val m = if (hasFlag(m0, "regenerates") && m0.hp < m0.maxHp) { m0 copy {hp: m0.hp + 1} } else { m0 }
+    val m = if (hasFlag(m0, "regenerates") && m0.hp < m0.maxHp) { m0 + {hp: m0.hp + 1} } else { m0 }
     setMonster(i, m)
     val p = player
     if (m.state == "asleep") {
         if (!hasFlag(m, "still") && near(m.x, m.y) && (hasFlag(m, "mean") || rng.below(3) == 0)) {
-            setMonster(i, m copy {state: "awake"})
+            setMonster(i, m + {state: "awake"})
         }
         [true, dist]
     } else if (hasFlag(m, "still")) {
@@ -2068,7 +2068,7 @@ val monsterAct = fn(i:num, dist:map<num, num>|nil):[bool, map<num, num>|nil] {
     } else if (hasFlag(m, "flies") && rng.below(2) == 0) {
         val d = ORDER[rng.below(8)]
         if (stepOk(m.x, m.y, d[0], d[1]) && openFor(m.x + d[0], m.y + d[1])) {
-            setMonster(i, m copy {x: m.x + d[0], y: m.y + d[1]})
+            setMonster(i, m + {x: m.x + d[0], y: m.y + d[1]})
         }
         [true, dist]
     } else {
@@ -2095,7 +2095,7 @@ val monsterAct = fn(i:num, dist:map<num, num>|nil):[bool, map<num, num>|nil] {
             }
             if (start != nil) {
                 match best(0, nil, start) {
-                    [sx, sy] => setMonster(i, m copy {x: m.x + sx, y: m.y + sy})
+                    [sx, sy] => setMonster(i, m + {x: m.x + sx, y: m.y + sy})
                     _ => nil
                 }
             }
@@ -2154,35 +2154,35 @@ val monstersAct = fn() {
 val upkeep = fn() {
     val p0 = player
     val food = p0.food - 1
-    setPlayer(p0 copy {food: food})
+    setPlayer(p0 + {food: food})
     if (food == 150) { say("You are starting to get hungry.") }
     if (food == 50) { say("You are starting to feel weak.") }
     if (food <= STARVED) {
         die("Starved to death")
     } else {
         if (food <= 0 && player.frozen == 0 && rng.below(5) == 0) {
-            setPlayer(player copy {frozen: player.frozen + rng.below(8) + 4})
+            setPlayer(player + {frozen: player.frozen + rng.below(8) + 4})
             say("You faint from lack of food.")
         }
         val p = player
         val every = if (21 - 2 * p.level < 3) { 3 } else { 21 - 2 * p.level }
         if (p.hp < p.maxHp) {
             if (p.regen + 1 >= every) {
-                setPlayer(p copy {hp: p.hp + 1, regen: 0})
+                setPlayer(p + {hp: p.hp + 1, regen: 0})
             } else {
-                setPlayer(p copy {regen: p.regen + 1})
+                setPlayer(p + {regen: p.regen + 1})
             }
         } else {
-            setPlayer(p copy {regen: 0})
+            setPlayer(p + {regen: 0})
         }
         val q = player
         if (q.confused > 0) {
-            setPlayer(q copy {confused: q.confused - 1})
+            setPlayer(q + {confused: q.confused - 1})
             if (q.confused == 1) { say("You feel less confused now.") }
         }
         val r = player
         if (r.blind > 0) {
-            setPlayer(r copy {blind: r.blind - 1})
+            setPlayer(r + {blind: r.blind - 1})
             if (r.blind == 1) { say("The darkness lifts.") }
         }
     }
@@ -2198,7 +2198,7 @@ val endTurn = fn() {
     } else {
         monstersAct()
         if (!player.dead) { upkeep() }
-        world = world copy {turn: world.turn + 1}
+        world = world + {turn: world.turn + 1}
         see()
     }
 }
@@ -2207,7 +2207,7 @@ val endTurn = fn() {
 val thaw = fn() {
     val p = player
     if (p.frozen > 0 && !player.dead) {
-        setPlayer(p copy {frozen: p.frozen - 1})
+        setPlayer(p + {frozen: p.frozen - 1})
         endTurn()
         recur()
     }
@@ -2215,7 +2215,7 @@ val thaw = fn() {
 
 // The player attacks monster i.
 val attack = fn(i:num) {
-    val m = site().monsters[i] copy {state: "awake"}
+    val m = site().monsters[i] + {state: "awake"}
     setMonster(i, m)
     val kind = kindOf(m)
     val p = player
@@ -2231,7 +2231,7 @@ val attack = fn(i:num) {
             gainXp(kind.xp)
             counted(kind.name)
         } else {
-            setMonster(i, m copy {hp: m.hp - damage})
+            setMonster(i, m + {hp: m.hp - damage})
             say("You hit the " + kind.name + ".")
         }
     } else {
@@ -2239,7 +2239,7 @@ val attack = fn(i:num) {
     }
     if (hasFlag(m, "paralyses") && p.blind == 0 && indexAt(site().monsters, m.x, m.y) >= 0) {
         say("You are frozen by the " + kind.name + "'s gaze!")
-        setPlayer(player copy {frozen: player.frozen + rng.below(4) + 2})
+        setPlayer(player + {frozen: player.frozen + rng.below(4) + 2})
     }
 }
 
@@ -2267,7 +2267,7 @@ val step = fn(dx:num, dy:num):bool {
             endTurn()
             false
         } else {
-            setPlayer(p copy {x: p.x + dx, y: p.y + dy})
+            setPlayer(p + {x: p.x + dx, y: p.y + dy})
             pickUp()
             readGrave()
             endTurn()
@@ -2333,7 +2333,7 @@ val run = fn(dx:num, dy:num) {
             || monsterVisible() || len(player.messages) > 0 || player.dead
         if (!stop) {
             // In a tick, running takes one step a tick; `keepRunning` goes on.
-            if (ticking) { player = player copy {running: [dx, dy]} } else { recur(dx, dy) }
+            if (ticking) { player = player + {running: [dx, dy]} } else { recur(dx, dy) }
         }
     }
 }
@@ -2342,7 +2342,7 @@ val run = fn(dx:num, dy:num) {
 val keepRunning = fn() {
     val way = player.running
     if (way != nil) {
-        player = player copy {running: nil}
+        player = player + {running: nil}
         if (!monsterVisible()) { run(way[0], way[1]) }
     }
 }
@@ -2354,10 +2354,10 @@ val takeStairs = fn() {
     val ground = terrain(p.x, p.y)
     if (ground == level.STAIRS) {
         enter(p.cx, p.cy, p.depth + 1, fn(lv) { lv.up ?? lv.start })
-        if (ticking) { spent = true } else { world = world copy {turn: world.turn + 1} }
+        if (ticking) { spent = true } else { world = world + {turn: world.turn + 1} }
     } else if (ground == level.UP) {
         enter(p.cx, p.cy, p.depth - 1, fn(lv) { lv.down })
-        if (ticking) { spent = true } else { world = world copy {turn: world.turn + 1} }
+        if (ticking) { spent = true } else { world = world + {turn: world.turn + 1} }
     } else {
         say("There are no stairs here.")
     }
@@ -2371,23 +2371,23 @@ val quaff = fn(type:num) {
     val p = player
     if (name == "healing") {
         val hp = p.hp + rng.roll(p.level, 4)
-        setPlayer(if (hp > p.maxHp) { p copy {hp: p.maxHp + 1, maxHp: p.maxHp + 1} } else { p copy {hp: hp} })
+        setPlayer(if (hp > p.maxHp) { p + {hp: p.maxHp + 1, maxHp: p.maxHp + 1} } else { p + {hp: hp} })
         say("You begin to feel better.")
     } else if (name == "poison") {
         val str = p.str - (rng.below(3) + 1)
-        setPlayer(p copy {str: if (str < 3) { 3 } else { str }})
+        setPlayer(p + {str: if (str < 3) { 3 } else { str }})
         say("You feel very sick now.")
     } else if (name == "confusion") {
-        setPlayer(p copy {confused: p.confused + rng.below(8) + 8})
+        setPlayer(p + {confused: p.confused + rng.below(8) + 8})
         say("Wait, what's going on here?")
     } else if (name == "blindness") {
-        setPlayer(p copy {blind: p.blind + rng.below(50) + 50})
+        setPlayer(p + {blind: p.blind + rng.below(50) + 50})
         say("A cloak of darkness falls around you.")
     } else if (name == "gain strength") {
-        setPlayer(p copy {str: p.str + 1, maxStr: if (p.str + 1 > p.maxStr) { p.str + 1 } else { p.maxStr }})
+        setPlayer(p + {str: p.str + 1, maxStr: if (p.str + 1 > p.maxStr) { p.str + 1 } else { p.maxStr }})
         say("You feel stronger.")
     } else if (len(site().monsters) > 0) {
-        player = player copy {sense: true}
+        player = player + {sense: true}
         say("You sense the presence of monsters.")
     } else {
         say("You have a strange feeling for a moment.")
@@ -2413,18 +2413,18 @@ val read = fn(type:num) {
         } else {
             val item = player.pack[i].item
             val known = player.known
-            player = player copy {
+            player = player + {
                 known: if (item.kind == "potion") {
-                    known copy {potions: known.potions :+ level.typeOf(item)}
+                    known + {potions: known.potions :+ level.typeOf(item)}
                 } else {
-                    known copy {scrolls: known.scrolls :+ level.typeOf(item)}
+                    known + {scrolls: known.scrolls :+ level.typeOf(item)}
                 },
             }
             say(packLine(player.pack[i]))
         }
     } else if (name == "teleportation") {
         val spot = level.freeSpot(site())
-        setPlayer(p copy {x: spot.x, y: spot.y})
+        setPlayer(p + {x: spot.x, y: spot.y})
         say("You are somewhere else.")
     } else if (name == "magic mapping") {
         val row = fn(y:num, rows:list<str>):list<str> {
@@ -2450,7 +2450,7 @@ val read = fn(type:num) {
             say("Your hands tingle.")
         } else {
             val e = player.pack[i]
-            setEntry(e.letter, e copy {item: e.item copy {bonus: (e.item.bonus ?? 0) + 1}})
+            setEntry(e.letter, e + {item: e.item + {bonus: (e.item.bonus ?? 0) + 1}})
             say("Your " + data.weapons[level.typeOf(e.item)].name + " glows blue for a moment.")
         }
     } else {
@@ -2459,7 +2459,7 @@ val read = fn(type:num) {
             say("Your skin crawls.")
         } else {
             val e = player.pack[i]
-            setEntry(e.letter, e copy {item: e.item copy {bonus: (e.item.bonus ?? 0) + 1}})
+            setEntry(e.letter, e + {item: e.item + {bonus: (e.item.bonus ?? 0) + 1}})
             say("Your " + data.armours[level.typeOf(e.item)].name + " glows silver for a moment.")
         }
     }
@@ -2487,21 +2487,21 @@ val useWith = fn(spec:struct<ItemCommand>, c:str, letter:str) {
                 takeOne(letter)
                 val start = if (p.food < 0) { 0 } else { p.food }
                 val food = start + 1100 + rng.below(400)
-                setPlayer(player copy {food: if (food > FOOD_MAX) { FOOD_MAX } else { food }})
+                setPlayer(player + {food: if (food > FOOD_MAX) { FOOD_MAX } else { food }})
                 say("Yum, that tasted good.")
                 endTurn()
             }
             "q" => {
                 takeOne(letter)
                 val type = level.typeOf(e.item)
-                player = player copy {known: player.known copy {potions: if (contains(player.known.potions, type)) { player.known.potions } else { player.known.potions :+ type }}}
+                player = player + {known: player.known + {potions: if (contains(player.known.potions, type)) { player.known.potions } else { player.known.potions :+ type }}}
                 quaff(type)
                 endTurn()
             }
             "r" => {
                 takeOne(letter)
                 val type = level.typeOf(e.item)
-                player = player copy {known: player.known copy {scrolls: if (contains(player.known.scrolls, type)) { player.known.scrolls } else { player.known.scrolls :+ type }}}
+                player = player + {known: player.known + {scrolls: if (contains(player.known.scrolls, type)) { player.known.scrolls } else { player.known.scrolls :+ type }}}
                 read(type)
                 endTurn()
             }
@@ -2509,20 +2509,20 @@ val useWith = fn(spec:struct<ItemCommand>, c:str, letter:str) {
                 if (p.weapon == letter) {
                     say("You are already wielding that.")
                 } else {
-                    setPlayer(p copy {weapon: letter})
+                    setPlayer(p + {weapon: letter})
                     say("You are now wielding " + nameOf(e.item, 1) + ".")
                     endTurn()
                 }
             }
             "a" => {
                 if (p.armour == letter) {
-                    setPlayer(p copy {armour: nil})
+                    setPlayer(p + {armour: nil})
                     say("You took off " + nameOf(e.item, 1) + ".")
                     endTurn()
                 } else if (p.armour != nil) {
                     say("You are already wearing armour.")
                 } else {
-                    setPlayer(p copy {armour: letter})
+                    setPlayer(p + {armour: letter})
                     say("You are now wearing " + nameOf(e.item, 1) + ".")
                     endTurn()
                 }
@@ -2534,7 +2534,7 @@ val useWith = fn(spec:struct<ItemCommand>, c:str, letter:str) {
                     say("There is no room to drop that here.")
                 } else {
                     takeOne(letter)
-                    setHere(site() copy {items: site().items :+ {x: p.x, y: p.y, item: e.item, dropped: true}})
+                    setHere(site() + {items: site().items :+ {x: p.x, y: p.y, item: e.item, dropped: true}})
                     say("Dropped " + nameOf(e.item, 1) + ".")
                     endTurn()
                 }
@@ -2567,7 +2567,7 @@ val askWith = fn(spec:struct<ItemCommand>, c:str) {
         say(spec.nothing)
     } else {
         val question = spec.verb + " which item? (space to cancel)"
-        player = player copy {prompt: c, question: question}
+        player = player + {prompt: c, question: question}
         say(question)
     }
 }
@@ -2620,15 +2620,15 @@ val beside = fn(id:str):Player|nil {
 // Opens the menu for meeting the player with `id`, as bumping into them
 // does: it takes no time.
 val meet = fn(id:str) {
-    player = player copy {menu: {with: id, page: "main"}}
+    player = player + {menu: {with: id, page: "main"}}
 }
 
-val closeMenu = fn() { player = player copy {menu: nil} }
+val closeMenu = fn() { player = player + {menu: nil} }
 
 // Opens the menu for the character with index `i` in the acting player's
 // chunk, as walking into them does: it takes no time.
 val greet = fn(i:num) {
-    player = player copy {menu: {character: i, page: "main"}}
+    player = player + {menu: {character: i, page: "main"}}
 }
 
 // The territory the acting player is in.
@@ -2746,7 +2746,7 @@ val pay = fn(cost:num, what:str):bool {
         say("You can't afford " + what + ".")
         false
     } else {
-        setPlayer(player copy {gold: player.gold - cost})
+        setPlayer(player + {gold: player.gold - cost})
         true
     }
 }
@@ -2762,12 +2762,12 @@ val deal = fn(c:level.Character, act:list) {
             } else if (addToPack(ware) == nil) {
                 say("Your pack is full; there's no room for " + wareName(ware) + ".")
             } else {
-                setPlayer(player copy {gold: player.gold - cost})
+                setPlayer(player + {gold: player.gold - cost})
                 // A ware bought is known for what it is.
                 val known = player.known
-                setPlayer(player copy {known: match ware.kind {
-                    "potion" => known copy {potions: if (contains(known.potions, ware.type)) { known.potions } else { known.potions :+ level.typeOf(ware) }}
-                    "scroll" => known copy {scrolls: if (contains(known.scrolls, ware.type)) { known.scrolls } else { known.scrolls :+ level.typeOf(ware) }}
+                setPlayer(player + {known: match ware.kind {
+                    "potion" => known + {potions: if (contains(known.potions, ware.type)) { known.potions } else { known.potions :+ level.typeOf(ware) }}
+                    "scroll" => known + {scrolls: if (contains(known.scrolls, ware.type)) { known.scrolls } else { known.scrolls :+ level.typeOf(ware) }}
                     _ => known
                 }})
                 say("You buy " + wareName(ware) + " for " + cost + " gold.")
@@ -2780,7 +2780,7 @@ val deal = fn(c:level.Character, act:list) {
                 val paid = sellPrice(item)
                 val name = nameOf(item, 1)
                 takeOne(letter)
-                setPlayer(player copy {gold: player.gold + paid})
+                setPlayer(player + {gold: player.gold + paid})
                 say("You sell " + name + " for " + paid + " gold.")
             }
         }
@@ -2794,7 +2794,7 @@ val deal = fn(c:level.Character, act:list) {
             if (here.gold > 0) {
                 val kills = player.kills ?? {}
                 val left = reduce(here.bounties, kills, fn(acc, b) { acc - (here.region + "|" + b.kind) })
-                setPlayer(player copy {gold: player.gold + here.gold, kills: left})
+                setPlayer(player + {gold: player.gold + here.gold, kills: left})
                 say(c.name + " pays you " + here.gold + " gold.")
                 // A great haul is remembered.
                 if (here.gold >= BOUNTY_DEED) {
@@ -2818,11 +2818,11 @@ val deal = fn(c:level.Character, act:list) {
             }
         }
         ["meal"] => if (pay(innPrice(town.MEAL), "a meal")) {
-            setPlayer(player copy {food: FOOD_MAX})
+            setPlayer(player + {food: FOOD_MAX})
             say("You eat a hot meal.")
         }
         ["bed"] => if (pay(innPrice(town.BED), "a bed")) {
-            setPlayer(player copy {hp: player.maxHp})
+            setPlayer(player + {hp: player.maxHp})
             say("You sleep soundly and wake refreshed.")
         }
         _ => nil
@@ -2903,7 +2903,7 @@ val rename = fn(wanted:str) {
     val name = tidy(wanted, NAME_LIMIT)
     val old = player.name
     if (name == "" || name == old) { return nil }
-    player = player copy {name: name}
+    player = player + {name: name}
     say("You are now known as " + name + ".")
     map(hearers(), fn(id) { actAs(id, fn() { say(old + " is now known as " + name + ".") }) })
 }
@@ -2933,9 +2933,9 @@ val giveGold = fn(id:str, amount:num) {
     val n = math.min(amount, player.gold)
     if (n <= 0) { return nil }
     val giver = player.name
-    setPlayer(player copy {gold: player.gold - n})
+    setPlayer(player + {gold: player.gold - n})
     actAs(id, fn() {
-        setPlayer(player copy {gold: player.gold + n})
+        setPlayer(player + {gold: player.gold + n})
         say(giver + " gives you " + n + " gold.")
     })
     say("You give " + recordOf(id).name + " " + n + " gold.")
@@ -2953,7 +2953,7 @@ val choose = fn(act:list) {
     }
     val id = m.with ?? ""
     match act {
-        ["page", page] => player = player copy {menu: m copy {page: page}}
+        ["page", page] => player = player + {menu: m + {page: page}}
         ["close"] => closeMenu()
         _ => {
             closeMenu()
@@ -2978,13 +2978,13 @@ val choose = fn(act:list) {
 val menuKey = fn(key:str):bool {
     val m = player.menu
     if (key == "space") {
-        if (m == nil || m.page == "main") { closeMenu() } else { player = player copy {menu: m copy {page: "main"}} }
+        if (m == nil || m.page == "main") { closeMenu() } else { player = player + {menu: m + {page: "main"}} }
         return true
     }
     val chosen = filter(menuOf().entries, fn(e) { e.key == key })
     if (len(chosen) > 0) {
         // Each choice's messages are its own.
-        player = player copy {messages: []}
+        player = player + {messages: []}
         choose(chosen[0].act)
         true
     } else {
@@ -3016,7 +3016,7 @@ val paginate = fn(messages:list<str>):[list<str>, list<str>] {
 
 val showMessages = fn(messages:list<str>) {
     val [shown, more] = paginate(messages)
-    player = player copy {messages: shown, more: more}
+    player = player + {messages: shown, more: more}
 }
 
 // After a command: outside a tick, the turns the player spends frozen, and
@@ -3030,16 +3030,16 @@ val finish = fn() {
 
 // Carries out one command key for the acting player; see `command`.
 val perform = fn(key:str, shift:bool, text:str = "") {
-    player = player copy {running: nil}
+    player = player + {running: nil}
     if (key == "say") {
         val words = tidy(text)
         if (!player.dead && words != "") {
-            player = player copy {messages: []}
+            player = player + {messages: []}
             speak(words)
             finish()
         }
     } else if (key == "name") {
-        player = player copy {messages: []}
+        player = player + {messages: []}
         rename(text)
         finish()
     } else if (len(player.more) > 0) {
@@ -3047,15 +3047,15 @@ val perform = fn(key:str, shift:bool, text:str = "") {
     } else if (player.dead) {
         if (key == "enter") { newCharacter() }
     } else if (player.showingPack) {
-        if (key == "space") { player = player copy {showingPack: false, messages: []} }
+        if (key == "space") { player = player + {showingPack: false, messages: []} }
     } else if (player.menu != nil && menuKey(key)) {
         finish()
     } else if (player.prompt != nil) {
         val c = player.prompt ?? ""
         if (key == "space") {
-            player = player copy {prompt: nil, messages: []}
+            player = player + {prompt: nil, messages: []}
         } else if (len(key) == 1) {
-            player = player copy {prompt: nil, messages: []}
+            player = player + {prompt: nil, messages: []}
             useItem(c, key)
             finish()
         }
@@ -3063,7 +3063,7 @@ val perform = fn(key:str, shift:bool, text:str = "") {
         val direction = DIRECTIONS[key]
         val known = key == "space" || key == "enter" || key == "i" || direction != nil || ITEM_COMMANDS[key] != nil
         if (known) {
-            player = player copy {messages: []}
+            player = player + {messages: []}
             if (key == "space") {
                 endTurn()
             } else if (key == "enter") {
@@ -3072,7 +3072,7 @@ val perform = fn(key:str, shift:bool, text:str = "") {
                 if (len(player.pack) == 0) {
                     say("You are empty-handed.")
                 } else {
-                    player = player copy {showingPack: true}
+                    player = player + {showingPack: true}
                     say("Press space to continue.")
                 }
             } else if (direction != nil) {
@@ -3210,7 +3210,7 @@ export val tick = fn(actions:list<Action>, present:list<str>, monsterEvery:num =
         }
         go(0)
     }
-    each(present, fn() { player = player copy {messages: [], more: []} })
+    each(present, fn() { player = player + {messages: [], more: []} })
     var timed:list<str> = []
     var acted:map<str, bool> = {}
     val doActions = fn(i:num) {
@@ -3234,7 +3234,7 @@ export val tick = fn(actions:list<Action>, present:list<str>, monsterEvery:num =
         if (acted[acting ?? ""] == nil && !player.dead) {
             spent = false
             if (player.frozen > 0) {
-                player = player copy {frozen: player.frozen - 1}
+                player = player + {frozen: player.frozen - 1}
                 spent = true
             } else {
                 keepRunning()
@@ -3256,11 +3256,11 @@ export val tick = fn(actions:list<Action>, present:list<str>, monsterEvery:num =
     regionTick()
     if (world.turn % world.empireEvery == 0 && world.turn > 0) {
         val e = world.empire
-        world = world copy {empire: rng.within(rng.mix([world.seed, 61, e.step]), fn() { empire.step(e, world.seed) })}
+        world = world + {empire: rng.within(rng.mix([world.seed, 61, e.step]), fn() { empire.step(e, world.seed) })}
         val comes = string.upper(empire.seasonOf(world.empire.step)[:1]) + empire.seasonOf(world.empire.step)[1:] + " comes."
         each(present, fn() { say(comes) })
     }
-    world = world copy {turn: world.turn + 1}
+    world = world + {turn: world.turn + 1}
     if (look) { each(present, fn() { if (!player.dead) { see() } }) }
     ticking = false
 }

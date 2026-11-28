@@ -14,7 +14,7 @@ val chunkAt = fn(key:str):any|nil { game.current().levels[key] }
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}})
 }
 
 val OPEN = [level.FLOOR, level.SCRUB, level.TREE, level.ROAD, level.DOOR, level.STAIRS]
@@ -144,7 +144,7 @@ val newCharactersStartOutsideTheWallsWhenTheTownIsFull = fn() {
         val [x, y] = streets[i]
         acc + {["c" + i]: s.players.a + {name: "c" + i, x: x, y: y}}
     })
-    game.load(s copy {players: crowd})
+    game.load(s + {players: crowd})
     game.join("b", "Bo")
     game.join("d", "Di")
     val b = game.playerOf("b")
@@ -293,6 +293,6 @@ val noMonstersComeToATown = fn() {
 val aWorldSavedBeforeSettlementsGainsThem = fn() {
     game.newGame(11)
     val s:any = game.snapshot()
-    game.load(s copy {world: s.world copy {settlements: nil}})
+    game.load(s + {world: s.world + {settlements: nil}})
     assertEqual(game.current().world.settlements, s.world.settlements)
 }

@@ -15,6 +15,8 @@ mod assets;
 mod ast;
 #[path = "lowering/compiler.rs"]
 mod compiler;
+#[path = "syntax/copy_removal.rs"]
+mod copy_removal;
 #[path = "semantics/environment.rs"]
 pub(crate) mod environment;
 #[path = "semantics/forks.rs"]
@@ -86,6 +88,7 @@ pub enum SourceErrorCode {
     InvalidNumber,
     InvalidByteLiteral,
     ExpectedSyntax,
+    RemovedSyntax,
     InvalidDocumentation,
     TopLevelOnly,
     InvalidParameters,
@@ -128,6 +131,7 @@ impl SourceErrorCode {
         Self::InvalidNumber,
         Self::InvalidByteLiteral,
         Self::ExpectedSyntax,
+        Self::RemovedSyntax,
         Self::InvalidDocumentation,
         Self::TopLevelOnly,
         Self::InvalidParameters,
@@ -171,6 +175,7 @@ impl SourceErrorCode {
             Self::InvalidNumber => "invalid_number",
             Self::InvalidByteLiteral => "invalid_byte_literal",
             Self::ExpectedSyntax => "expected_syntax",
+            Self::RemovedSyntax => "removed_syntax",
             Self::InvalidDocumentation => "invalid_documentation",
             Self::TopLevelOnly => "top_level_only",
             Self::InvalidParameters => "invalid_parameters",

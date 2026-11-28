@@ -121,7 +121,7 @@ val unwrapOr = fn<T>(r:Result<T, str>, fallback:T):T {
   [Structs](structs.md) for types, defaults, and required fields; its
   defaults are evaluated once, when the enum is declared. `Result.Ok` is that
   schema, so `Result.Ok { value: 3 }` constructs a struct of it, and field
-  reads, `copy`, equality, and record-type conformance are a struct's. An
+  reads, field updates with `+`, equality, and record-type conformance are a struct's. An
   enum may mix fieldless and payload cases.
 - **Types.** A value of a payload case is a value of its enum: `Result.Ok {
   value: 3 }` conforms to `Result<num, str>`. `Result<T, E>` takes one type

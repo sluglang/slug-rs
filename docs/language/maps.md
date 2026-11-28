@@ -74,15 +74,15 @@ existing key. Removing a missing key leaves the map unchanged.
 Two maps are equal when they have the same keys with equal values, regardless
 of construction or enumeration order.
 
-`map copy { key: value }` is a convenient persistent update for string keys.
-It replaces existing keys and adds missing keys. Each key may occur only once
-in the copy body.
+A map literal may give each constant key only once, so `{a: 1, a: 2}` is a
+compile error. The same `+` sets a struct's fields; see
+[Structs](structs.md#updating-fields).
 
 ```slug
 val base = {name: "Slug", status: "ready"}
 val updated = base + {status: "done", version: 1}
 val withoutName = updated - "name"
-val configured = withoutName copy { timeout: 5000, mode: "fast" }
+val configured = withoutName + { timeout: 5000, mode: "fast" }
 ```
 
 Maps are unordered. Map construction still evaluates entries in source order,

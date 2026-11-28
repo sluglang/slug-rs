@@ -371,9 +371,9 @@ fn compiled_appends_slices_structs_and_copies_match_the_interpreter() {
          val front = fn(n, acc) { if (n == 0) { acc } else { recur(n - 1, n +: acc) } }\n\
          val slices = fn(items) { [items[1:3], items[2:], items[:2], \"hello\"[1:4]] }\n\
          val point = fn(n) { Point { x: n, y: n * 2 } }\n\
-         val moved = fn(p, n) { p copy { x: p.x + n } }\n\
+         val moved = fn(p, n) { p + { x: p.x + n } }\n\
          val award = fn(n) {\n\
-             player = player copy { score: n }\n\
+             player = player + { score: n }\n\
              player.score\n\
          }\n\
          val gather = fn(n) {\n\
@@ -395,7 +395,7 @@ fn compiled_appends_slices_structs_and_copies_match_the_interpreter() {
     for (kind, body) in [
         ("append-not-a-list", "build(3, \"x\")"),
         ("slice-not-a-collection", "slices(5)"),
-        ("struct-bad-field", "point(\"a\") copy { z: 1 }"),
+        ("struct-bad-field", "point(\"a\") + { z: 1 }"),
         ("copy-unknown-field", "moved(7, 1)"),
     ] {
         same_with_and_without_native_code(
@@ -405,7 +405,7 @@ fn compiled_appends_slices_structs_and_copies_match_the_interpreter() {
                  val build = fn(n, acc) {{ if (n == 0) {{ acc }} else {{ recur(n - 1, acc :+ n) }} }}\n\
                  val slices = fn(items) {{ items[1:3] }}\n\
                  val point = fn(n) {{ Point {{ x: n, y: n }} }}\n\
-                 val moved = fn(p, n) {{ p copy {{ x: p.x + n }} }}\n\
+                 val moved = fn(p, n) {{ p + {{ x: p.x + n }} }}\n\
                  val main = fn() {{ println({body}) }}\n"
             ),
         );
@@ -881,8 +881,8 @@ fn compiled_module_variable_updates_match_the_interpreter() {
              total = total + i\n\
              seen = seen + {[\"k\" + i % 13]: i}\n\
              log = log :+ (i % 7)\n\
-             player = player copy {memory: player.memory + {[\"m\" + i % 5]: i}}\n\
-             record = record copy {tags: record.tags :+ (i % 3)}\n\
+             player = player + {memory: player.memory + {[\"m\" + i % 5]: i}}\n\
+             record = record + {tags: record.tags :+ (i % 3)}\n\
              total\n\
          }\n\
          val loop = fn(i, acc) { if (i == 0) { acc } else { recur(i - 1, acc + tick(i)) } }\n\

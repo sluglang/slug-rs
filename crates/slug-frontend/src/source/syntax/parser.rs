@@ -349,6 +349,7 @@ impl Parser {
             }
             self.separators();
         }
+        super::copy_removal::reject_copies(&expressions, &self.tokens)?;
         Ok(expressions)
     }
 
@@ -1580,7 +1581,7 @@ impl Parser {
     fn prefix_copy(&mut self, copy: &Token) -> SourceError {
         let error = SourceError::at_token(
             SourceErrorCode::ExpectedSyntax,
-            "`copy` follows the value it copies, as in `value copy { field: new }`",
+            "`copy` is removed; `value + { field: new }` sets a struct's fields",
             copy,
         );
         let start = self.peek().span.clone();
@@ -1592,7 +1593,7 @@ impl Parser {
             return error;
         };
         error.with_fix_edits(
-            "move `copy` after the value",
+            "write `value + { ... }`",
             vec![
                 SourceEdit {
                     range: SourceRange {
@@ -1612,7 +1613,7 @@ impl Parser {
                         start: schema.end,
                         end: schema.end,
                     },
-                    text: " copy".into(),
+                    text: " +".into(),
                 },
             ],
         )

@@ -73,7 +73,7 @@ impl Vm {
     /// last of them `operator` applied to the two values on top, assigns the
     /// copy to the module-level `id`, and pushes it.
     ///
-    /// In `player = player copy {memory: player.memory + entry}` both the
+    /// In `player = player + {memory: player.memory + entry}` both the
     /// binding and the copied value hold `player.memory` while the merge
     /// runs. When nothing can fail, the binding's value is dropped, and if
     /// that leaves the copied value unshared, the field is taken out of it:

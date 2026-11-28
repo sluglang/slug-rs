@@ -1270,10 +1270,22 @@ pub(super) fn copy_value(
                 .copy_string_fields(names, replacements)
                 .map_err(|message| (RuntimeErrorKind::Type, message))?,
         )),
-        _ => Err((
-            RuntimeErrorKind::Type,
-            "cannot copy non-struct or map value".into(),
-        )),
+        // `value + {field: v}` is compiled to this copy, so anything else
+        // adds the literal as `+` would, as `"s" + {a: 1}` appends it.
+        value => {
+            let entries = names
+                .iter()
+                .zip(replacements)
+                .map(|(name, replacement)| (Value::string(name.clone()), replacement.clone()))
+                .collect();
+            let map = Map::from_literal(entries).map_err(|key| {
+                (
+                    RuntimeErrorKind::Type,
+                    format!("map literal repeats key {key}"),
+                )
+            })?;
+            add(value, Value::Map(map))
+        }
     }
 }
 

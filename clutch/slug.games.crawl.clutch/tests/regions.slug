@@ -85,7 +85,7 @@ val oneThatLeavesIsTakenFromTheCounts = fn() {
 // Changes the player with `id` by `fields`.
 val setPlayer = fn(id:str, fields:map) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}})
 }
 
 // Player "a" in a world with seed `seed`, gone down the start town's stairs.
@@ -113,7 +113,7 @@ val aChunkIsMadeWithTheMonstersItsCountsSay = fn() {
     val p = game.playerOf("a")
     val key = game.chunkKey(p.cx, p.cy, 2)
     val s:any = game.snapshot()
-    game.load(s copy {populations: s.populations + {[key]: {orc: 2, kobold: 1}}})
+    game.load(s + {populations: s.populations + {[key]: {orc: 2, kobold: 1}}})
     setPlayer("a", {x: game.here("a").down.x, y: game.here("a").down.y})
     game.command("a", "enter", false)
     assertEqual(region.tally(game.here("a").monsters), {orc: 2, kobold: 1})
@@ -126,7 +126,7 @@ val anEmptiedChunkFillsAgainInTime = fn() {
     val p = game.playerOf("a")
     val key = game.chunkKey(p.cx, p.cy, 1)
     val s:any = game.snapshot()
-    game.load(s copy {levels: s.levels + {[key]: s.levels[key] copy {monsters: []}}})
+    game.load(s + {levels: s.levels + {[key]: s.levels[key] + {monsters: []}}})
     // Ann goes back up, so no one is there.
     val up:any|nil = game.here("a").up
     setPlayer("a", {x: up.x, y: up.y})

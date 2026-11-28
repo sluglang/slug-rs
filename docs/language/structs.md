@@ -32,7 +32,7 @@ annotation. An unannotated field's type is set by its default, as a `var`'s is
 by its initializer: `count = 0` accepts only numbers, while a `nil` default,
 `error = nil`, declares `any|nil`, so construction and copying may give the
 field any value. A field with neither has no static type. Known local, aliased, and imported schema bindings retain their
-field metadata for construction, copy, and direct field-access checks;
+field metadata for construction, field updates, and direct field-access checks;
 annotations do not coerce runtime values.
 
 In a `struct<S>` annotation, `S` must be a lexical schema binding. The
@@ -81,7 +81,7 @@ Applying a schema to a brace-delimited field list constructs a value:
 
     val user = User {name: "Slug"}
 
-Construction and copy fields require commas, with an optional trailing comma;
+Construction and field-update fields require commas, with an optional trailing comma;
 newlines may follow a comma or precede the closing brace. A missing comma is a
 parse error: `expected comma between struct fields`.
 
@@ -112,17 +112,26 @@ they have the same schema identity and their field values compare equal in
 schema order. Values created from distinct schema evaluations are unequal even
 when their field names and values are otherwise identical.
 
-## Copying
+## Updating fields
 
-`value copy { field: replacement }` creates a new struct value with the same
-schema identity as `value`. It evaluates `value` first and replacement
-expressions left to right. Each named field is replaced; fields not named in
-the copy retain their original values. This form also copies maps; see
-[Maps](maps.md) for map-key behavior. Copying a value that is neither a struct
-nor a map, naming an unknown struct field, or naming a field more than once is
-a checked runtime type error.
-During compilation, a known `struct<S>` additionally checks replacement value
-types and infers direct field reads from `S`'s field metadata.
+`value + { field: replacement }` creates a new struct value with the same
+schema identity as `value`, with the named fields replaced; fields it does not
+name keep their values. It evaluates `value` first and the replacements left to
+right. On a map, the same expression is a map merge; see [Maps](maps.md).
+
+For a known `struct<S>`, the compiler checks each named field against `S`: an
+unknown field, a replacement of the wrong type, and a key given twice are
+errors, and the result is a `struct<S>`. A key computed when it runs, as
+`p + {[name]: v}`, or a map built at run time, as `p + changes`, must be a
+string, and is checked against the schema when it runs. A key the struct lacks
+is then a runtime error.
+
+`+` binds less tightly than `.field`, so a field of the result needs
+parentheses: `(p + { x: 1 }).x`.
+
+Earlier versions wrote this `value copy { field: replacement }`. `copy` is
+now a compile error (`removed_syntax`) whose fix rewrites it as `+`, adding
+parentheses where `+` would group differently.
 
 ## Patterns
 

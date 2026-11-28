@@ -69,7 +69,9 @@ ends that `if`.
 These words are reserved and cannot be used as names: `copy`, `defer`, `else`,
 `enum`, `export`, `false`, `fn`, `foreign`, `fork`, `if`, `match`, `nil`,
 `nursery`, `onerror`, `onsuccess`, `recur`, `resource`, `return`, `select`,
-`spawn`, `struct`, `throw`, `true`, `val`, and `var`. `limit` is a keyword only
+`spawn`, `struct`, `throw`, `true`, `val`, and `var`. `copy` is no longer
+syntax, but stays reserved so that a program still using it is told to write
+`+`. `limit` is a keyword only
 directly after `nursery`, and `task` only directly before `var` or `val` at the
 start of a statement; both are ordinary names elsewhere. A reserved word may still
 be a map key, a property name after `.`, or a struct field name, none of which
@@ -287,7 +289,7 @@ Operator precedence, from lowest to highest, is:
 | `+:` | right |
 | prefix `!` `-` `~` | right |
 | pipeline `/>` | left |
-| calls, indexing, dot access, struct initialization and copy | left |
+| calls, indexing, dot access, and struct initialization | left |
 
 `a ?? b` is `a` unless `a` is `nil`, in which case it evaluates and is `b`;
 `b` is not evaluated otherwise. Only `nil` selects `b`: `false ?? true`,
@@ -333,7 +335,12 @@ error. `==` and `!=` compare strings by content.
 collection type, and merges two maps into a new unordered map. In a map merge,
 right-hand values overwrite matching left-hand keys. A struct merged with a map,
 `struct + {k: v}`, is a copy of the struct with the map's string keys' fields
-replaced, as `copy` makes; a key the struct lacks is a runtime error. `map - key` returns a new
+replaced, keeping its schema identity. For a known `struct<S>`, a literal's keys
+are checked against `S`'s fields and their values against the fields' types; a
+key that is computed, or comes from a map built at run time, must be a string,
+and one the struct lacks is a runtime error. For a record type, a literal may
+set only the fields the type lists, since the value may be a struct without
+the field. `map - key` returns a new
 map without that key, leaving the map unchanged when the key is absent. It also concatenates
 a string with any value, converting the right operand to its display form. The
 directional collection operators also
@@ -519,11 +526,11 @@ A struct expression defines a schema and produces a value of type `schema`.
 Applying a schema to `{...}` creates a struct value. When the schema expression
 is a direct, statically known binding `S`, construction has type `struct<S>`;
 otherwise it has the less precise type `struct`. Struct fields can have type
-annotations and defaults. `copy` creates a new struct or map value with
-replacement fields or string keys. Tags on struct fields are not syntax.
+annotations and defaults. `value + { field: v }` creates a new struct with
+replaced fields. Tags on struct fields are not syntax.
 
 During compilation, a directly known schema binding also checks supplied and
-required fields and their values. Direct string field access and copies through
+required fields and their values. Direct string field access and field updates through
 a known `struct<S>` use the declared field types. Aliased and imported schema
 bindings retain this precision; dynamically selected schemas remain generic
 `struct` values and use their ordinary checked runtime behavior.
@@ -548,7 +555,7 @@ val User = struct {
 }
 
 val first = User { name: "Slug" }
-val second = first copy { active: false }
+val second = first + { active: false }
 ```
 
 Each evaluation of a struct expression creates a distinct schema identity.
@@ -1421,7 +1428,7 @@ So does one that is an element of a list literal checked against a list of
 tuples, as `[[1, 2]]` for a `list<[num, num]>`, a value of a map literal
 checked against, or added to, a map of tuples, one appended or prepended to
 a list of tuples, as `pairs :+ [x, y]`, and a tuple field's value in a
-`copy`. An empty `[]` or `{}` is of any list or map type expected of it, and
+field update, `s + { field: [x, y] }`. An empty `[]` or `{}` is of any list or map type expected of it, and
 `xs ?? []`, for `xs` a `list<T>|nil`, is a `list<T>`.
 A tuple is assignable to a tuple of the same length whose elements its own
 are assignable to, and to a list whose element type its elements are; it takes

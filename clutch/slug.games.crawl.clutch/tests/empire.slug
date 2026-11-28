@@ -70,7 +70,7 @@ val playersKillsWeakenTheFactionHoldingTheLand = fn() {
 
 @test
 val theHolderDecidesWhichPeoplesKindsThrive = fn() {
-    val e = created(4) copy {holds: {"1,1,2": 4, "2,2,1": 0}}
+    val e = created(4) + {holds: {"1,1,2": 4, "2,2,1": 0}}
     val base = ["kobold", "jackal", "bat", "snake", "hobgoblin", "floating eye", "orc"]
     val orcLand = empire.habitatAt(e, "1,1,2", base)
     assertTrue(contains(orcLand, "orc") && contains(orcLand, "hobgoblin") && contains(orcLand, "bat"))
@@ -81,9 +81,9 @@ val theHolderDecidesWhichPeoplesKindsThrive = fn() {
 
 @test
 val fortsPostBountiesOnThePeoplesBelowThem = fn() {
-    val e = created(5) copy {holds: {"2,3,0": 0, "2,3,1": 3, "2,3,2": 4}}
-    val generous = e copy {factions: e.factions[:0] + [e.factions[0] copy {traits: e.factions[0].traits copy {greedy: -2}}] + e.factions[1:]}
-    val greedy = e copy {factions: e.factions[:0] + [e.factions[0] copy {traits: e.factions[0].traits copy {greedy: 2}}] + e.factions[1:]}
+    val e = created(5) + {holds: {"2,3,0": 0, "2,3,1": 3, "2,3,2": 4}}
+    val generous = e + {factions: e.factions[:0] + [e.factions[0] + {traits: e.factions[0].traits + {greedy: -2}}] + e.factions[1:]}
+    val greedy = e + {factions: e.factions[:0] + [e.factions[0] + {traits: e.factions[0].traits + {greedy: 2}}] + e.factions[1:]}
     assertEqual(map(empire.bounties(generous, 2, 3), fn(b) { b.kind }), ["kobold", "orc", "hobgoblin", "goblin"])
     assertTrue(empire.bounties(generous, 2, 3)[1].price > empire.bounties(greedy, 2, 3)[1].price)
     assertEqual(empire.bounties(e, 0, 0), [])
@@ -91,10 +91,10 @@ val fortsPostBountiesOnThePeoplesBelowThem = fn() {
 
 @test
 val marketsChargeMoreAtWarAndUnderGreed = fn() {
-    val e = created(6) copy {holds: {"0,0,0": 0}, step: 10}
-    val f = e.factions[0] copy {traits: e.factions[0].traits copy {greedy: 0}, lastFight: -100}
-    val peace = e copy {factions: [f] + e.factions[1:]}
-    val war = e copy {factions: [f copy {lastFight: 8}] + e.factions[1:]}
+    val e = created(6) + {holds: {"0,0,0": 0}, step: 10}
+    val f = e.factions[0] + {traits: e.factions[0].traits + {greedy: 0}, lastFight: -100}
+    val peace = e + {factions: [f] + e.factions[1:]}
+    val war = e + {factions: [f + {lastFight: 8}] + e.factions[1:]}
     assertEqual(empire.priceFactor(peace, "0,0,0"), 100)
     assertEqual(empire.priceFactor(war, "0,0,0"), 125)
     assertEqual(empire.priceFactor(peace, "5,5,0"), 100)
@@ -104,7 +104,7 @@ val marketsChargeMoreAtWarAndUnderGreed = fn() {
 
 val setPlayer = fn(id:str, fields:map) {
     val s:any = game.snapshot()
-    game.load(s copy {players: s.players + {[id]: s.players[id] + fields}})
+    game.load(s + {players: s.players + {[id]: s.players[id] + fields}})
 }
 
 @test
@@ -119,7 +119,7 @@ val theEmpireTakesAStepEverySoManyTicks = fn() {
 val aWorldSavedBeforeEmpiresGainsOne = fn() {
     game.newGame(8)
     val s:any = game.snapshot()
-    game.load(s copy {world: s.world copy {empire: nil}})
+    game.load(s + {world: s.world + {empire: nil}})
     assertEqual(game.current().world.empire, s.world.empire)
 }
 
@@ -134,13 +134,13 @@ val aCaptainPaysForKillsUnderTheirRegion = fn() {
     val s:any = game.snapshot()
     // Orcs hold the depths under the start town, and a captain stands
     // beside Ann.
-    val e = s.world.empire copy {holds: s.world.empire.holds + {["" + rx + "," + ry + ",2"]: 4}}
+    val e = s.world.empire + {holds: s.world.empire.holds + {["" + rx + "," + ry + ",2"]: 4}}
     val lv:any|nil = s.levels[key]
     val spot = filter(range(lv.walls.left + 1, lv.walls.right), fn(x) { lv.map[10][x] == "=" && lv.map[10][x + 1] == "=" })[0]
-    game.load(s copy {
-        world: s.world copy {empire: e},
-        levels: s.levels + {[key]: lv copy {characters: lv.characters :+ {x: spot + 1, y: 10, role: "captain", name: "Gil"}}},
-        players: s.players + {a: s.players.a copy {x: spot, y: 10, gold: 0, kills: {["" + rx + "," + ry + "|orc"]: 3, ["" + rx + "," + ry + "|bat"]: 2, "0,0|orc": 1}}},
+    game.load(s + {
+        world: s.world + {empire: e},
+        levels: s.levels + {[key]: lv + {characters: lv.characters :+ {x: spot + 1, y: 10, role: "captain", name: "Gil"}}},
+        players: s.players + {a: s.players.a + {x: spot, y: 10, gold: 0, kills: {["" + rx + "," + ry + "|orc"]: 3, ["" + rx + "," + ry + "|bat"]: 2, "0,0|orc": 1}}},
     })
     game.command("a", "l", false)
     val m = match game.menu("a") {
@@ -164,9 +164,9 @@ val killingAPeoplesMonsterCountsForTheEmpireAndForBounties = fn() {
     val s:any = game.snapshot()
     val lv:any|nil = s.levels[key]
     val spot = filter(range(lv.walls.left + 1, lv.walls.right), fn(x) { lv.map[10][x] == "=" && lv.map[10][x + 1] == "=" })[0]
-    game.load(s copy {
-        levels: s.levels + {[key]: lv copy {monsters: [{x: spot + 1, y: 10, kind: 0, hp: 1, maxHp: 1, state: "awake"}]}},
-        players: s.players + {a: s.players.a copy {x: spot, y: 10, str: 18, level: 10}},
+    game.load(s + {
+        levels: s.levels + {[key]: lv + {monsters: [{x: spot + 1, y: 10, kind: 0, hp: 1, maxHp: 1, state: "awake"}]}},
+        players: s.players + {a: s.players.a + {x: spot, y: 10, str: 18, level: 10}},
     })
     val hit = fn(n:num) { if (n > 0 && len(game.here("a").monsters) > 0) { game.command("a", "l", false); recur(n - 1) } }
     hit(20)
@@ -224,9 +224,9 @@ val aBrokenFactionRisesAgain = fn() {
     // The trolls lose everything, long enough ago.
     val trolls = filter(range(len(e0.factions)), fn(i) { e0.factions[i].people == "trolls" })[0]
     val lost = reduce(heldBy(e0, trolls), e0.holds, fn(h, k) { h - k })
-    val broken = e0 copy {
+    val broken = e0 + {
         holds: lost,
-        factions: e0.factions[:trolls] + [e0.factions[trolls] copy {strength: 5, brokenAt: e0.step - 10}] + e0.factions[trolls + 1:],
+        factions: e0.factions[:trolls] + [e0.factions[trolls] + {strength: 5, brokenAt: e0.step - 10}] + e0.factions[trolls + 1:],
     }
     val later = steps(broken, 2, 60)
     val risen = filter(later.annals, fn(a) { a.kind == "rose" && a.by == trolls })
@@ -240,12 +240,12 @@ val killsCostAShareOfAFactionsStrength = fn() {
     val e = created(3)
     val orcs = filter(range(len(e.factions)), fn(i) { e.factions[i].people == "orcs" })[0]
     val k = heldBy(e, orcs)[0]
-    val strong = e copy {factions: e.factions[:orcs] + [e.factions[orcs] copy {strength: 1000}] + e.factions[orcs + 1:]}
+    val strong = e + {factions: e.factions[:orcs] + [e.factions[orcs] + {strength: 1000}] + e.factions[orcs + 1:]}
     val hit = reduce(range(10), strong, fn(x, _) { empire.killed(x, k, "orc", "Mara") })
     // Each kill costs half a percent of what is left: five of a thousand.
     assertEqual(empire.bleed(hit).factions[orcs].strength, 950)
     // A weak faction still loses at least one a kill.
-    val weak = e copy {factions: e.factions[:orcs] + [e.factions[orcs] copy {strength: 100}] + e.factions[orcs + 1:]}
+    val weak = e + {factions: e.factions[:orcs] + [e.factions[orcs] + {strength: 100}] + e.factions[orcs + 1:]}
     assertEqual(empire.bleed(reduce(range(3), weak, fn(x, _) { empire.killed(x, k, "orc") })).factions[orcs].strength, 97)
 }
 

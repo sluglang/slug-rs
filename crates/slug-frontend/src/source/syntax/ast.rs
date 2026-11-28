@@ -28,6 +28,26 @@ impl Clone for Expr {
 }
 
 impl Expr {
+    /// The field names of a map literal whose keys are all string
+    /// constants, as `{hp: 1, "name": n}`, which `value + {...}` sets as a
+    /// struct's copy does. `None` for an empty literal, one with a computed
+    /// key, or anything else.
+    pub(crate) fn field_merge_names(&self) -> Option<Vec<String>> {
+        let ExprKind::Map(entries) = &self.kind else {
+            return None;
+        };
+        if entries.is_empty() {
+            return None;
+        }
+        entries
+            .iter()
+            .map(|(key, _)| match &key.kind {
+                ExprKind::Value(Value::Str(name)) => Some(name.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn new(kind: ExprKind, span: SourceSpan, end: SourcePosition) -> Self {
         let mut expression = Self {
             kind,
