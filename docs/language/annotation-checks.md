@@ -118,15 +118,16 @@ values that came from its own arguments or from the literal's results. So a
 literal given to it, when the other arguments are proven and the literal's
 result is too, as `reduce(xs, state, fn(s, x) { step(s, x) })` for a proven
 `state`, has no entry checks: its parameters are proven by the call.
-`slug.std`'s `map`, `filter`, `reduce`, and `each` are parametric. A named
-function passed as a value, as `reduce(xs, state, step)`, is called through
-its entry, which checks its parameters each time; passing
-`fn(s, x) { step(s, x) }` instead calls `step` by name, past them.
+`slug.std`'s `map`, `filter`, `reduce`, and `each` are parametric. So is a
+named function given to one in its place, as `reduce(xs, state, step)`, when
+one of its parameters is checked deeply: it is called through a literal that
+calls it by name, past its checks.
 
-**Start a fold from a typed empty value.** `reduce(xs, [], f)` gives its
-accumulator, and so its result, a bare `list`, which a typed result is then
-checked to be on each return. `val none:list<T> = []` and `reduce(xs, none,
-f)` keep the type.
+**A fold from an empty start is of what it builds.** In
+`reduce(xs, [], fn(acc, x) { acc :+ x })` the accumulator, and the result,
+are the `list<T>` the literal builds, not a bare `list`, so a typed result
+is not checked on each return. A literal that returns a different type than
+it was given leaves the start bare.
 
 **A dynamic call to an overload set selects by type.** A call the checker
 could not resolve, as one through an overload set passed as a value, takes

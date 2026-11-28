@@ -31,6 +31,7 @@ pub(super) struct Compiler {
     selected_calls: HashMap<SourceSpan, CallableIdentity>,
     proven_calls: HashSet<SourceSpan>,
     trusted_closures: HashSet<SourceSpan>,
+    trusted_references: HashMap<SourceSpan, usize>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -118,6 +119,7 @@ impl Compiler {
             selected_calls: analysis.selected_calls.clone(),
             proven_calls: analysis.proven_calls.clone(),
             trusted_closures: analysis.trusted_closures.clone(),
+            trusted_references: analysis.trusted_references.clone(),
             function_identities: analysis.function_identities.clone(),
             foreign_identities: analysis.foreign_identities.clone(),
             foreign_resource_signatures: analysis.foreign_resource_signatures.clone(),
@@ -590,6 +592,11 @@ impl Compiler {
 
     fn expression(&mut self, state: &mut State, expression: &Expr) -> Result<(), SourceError> {
         super::stack::grow(|| {
+            if let ExprKind::Name(name) = &expression.kind
+                && let Some(arity) = self.trusted_references.get(&expression.span).copied()
+            {
+                return self.trusted_reference(state, expression, name, arity);
+            }
             self.expression_inner(state, expression)
                 .map_err(|error| error.claimed_by(expression))?;
             if matches!(expression.kind, ExprKind::Call { .. }) {
@@ -599,6 +606,55 @@ impl Compiler {
             }
             Ok(())
         })
+    }
+
+    /// A named function given to a parametric function, as a literal that
+    /// calls it by name past its checks, `fn(a, b) { insert(a, b) }`: the
+    /// function passes it only values its other arguments and results prove,
+    /// as it would a literal of its own.
+    fn trusted_reference(
+        &mut self,
+        state: &mut State,
+        expression: &Expr,
+        name: &str,
+        arity: usize,
+    ) -> Result<(), SourceError> {
+        let span = expression.span.clone();
+        let names = (0..arity)
+            .map(|index| format!(" {name} {index}"))
+            .collect::<Vec<_>>();
+        let at = |kind: ExprKind| Expr::new(kind, span.clone(), expression.end);
+        let call = at(ExprKind::Call {
+            callee: Box::new(at(ExprKind::Name(name.to_string()))),
+            arguments: names
+                .iter()
+                .map(|parameter| CallArgument::Positional(at(ExprKind::Name(parameter.clone()))))
+                .collect(),
+        });
+        let literal = at(ExprKind::Function {
+            type_parameters: Vec::new(),
+            parameters: names
+                .into_iter()
+                .map(|parameter| Parameter {
+                    name: parameter,
+                    discard: false,
+                    tags: Vec::new(),
+                    annotation: None,
+                    default: None,
+                    variadic: false,
+                })
+                .collect(),
+            return_annotation: None,
+            body: Box::new(call),
+        });
+        self.trusted_closures.insert(span.clone());
+        self.proven_calls.insert(span.clone());
+        // The literal and its call share the name's place, which the
+        // reference is compiled once for.
+        self.trusted_references.remove(&span);
+        let result = self.expression_inner(state, &literal);
+        self.trusted_references.insert(span, arity);
+        result
     }
 
     /// Emits the runtime checks the checker recorded at `site` whose places

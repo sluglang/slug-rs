@@ -506,7 +506,7 @@ val packView = fn(id:str, p:game.Player):map {
             use: if (asking) { nil } else { {verb: useLabel(p, e), drop: e.letter != p.armour} },
         }
     }
-    {asking: asking, count: len(p.pack), size: 22, items: map(p.pack, fn(e) { item(e) })}
+    {asking: asking, count: len(p.pack), size: 22, items: map(p.pack, item)}
 }
 
 // How many of the other players in view the list names, the nearest; the
@@ -537,8 +537,7 @@ val nearest = fn(p:game.Player, people:list<[str, game.Player]>):list<[str, game
         if (len(kept) == NEAREST && !before(o, d, kept[NEAREST - 1])) { kept } else { go(0) }
     }
     val none:list<[str, game.Player]> = []
-    // A literal, which checks nothing on entry; `insert` would check `kept`.
-    reduce(people, none, fn(kept, o) { insert(kept, o) })
+    reduce(people, none, insert)
 }
 
 // `people` ([id, player] pairs) in id order.

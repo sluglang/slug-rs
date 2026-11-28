@@ -837,17 +837,35 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     types, as functions are.
   - [x] A type named through an import whose module did not compile said
     `unknown module binding`; it names the module now.
-  - [ ] An empty start gives a generic's type parameter no element type:
-    `reduce(xs, [], fn(acc, x) { acc :+ x })` gives a bare `list`, which a
-    typed result then checks deeply on each return. Crawl names typed
-    starts, as `val none:list<Found> = []`. Inferring the parameter from the
-    function literal's result, or from the call's expected type, would make
-    that unnecessary.
-  - [ ] A named function passed as a value, as `reduce(people, none,
-    insert)`, enters at its checks on every call; a function literal is
-    trusted. Crawl passes `fn(kept, o) { insert(kept, o) }`; the checks were
-    3% of `crawl-crowd`. A parametric callee could be given the function's entry
-    past its checks.
+  - [x] An empty start gave a generic's type parameter no element type:
+    `reduce(xs, [], fn(acc, x) { acc :+ x })` gave a bare `list`, which a
+    typed result then checked deeply on each return, so Crawl named typed
+    starts. Now, where a generic returns a type parameter for which an
+    empty literal is the only argument, and nothing says what the call
+    should give, the arguments are checked in two trials: with the start a
+    collection of nothing, `list<never>`, which gives what the function
+    literal makes of it, and then with that, which the literal must keep.
+    The call is then checked as if its result were annotated with it, and
+    the empty start counts as proven. A literal that does not keep it, or
+    one whose result is unknown, leaves the start bare, as before. It costs
+    `crawl-crowd`'s compile about 6%, 160 to 170 ms. Typing these folds
+    found two nilable reads in Crawl, `crowd[k]` and `things[k]`; the
+    second was over a `task var`, which the keys rule did not cover, so a
+    `val` of a `var`'s value no longer keeps the `var`'s declared type and
+    is a stable path.
+  - [x] A named function passed as a value, as `reduce(people, none,
+    insert)`, entered at its checks on every call, where a function literal
+    was trusted; the checks were 3% of `crawl-crowd`. Now one given to a
+    parametric function, as a literal would be trusted, with one signature
+    taking just the values the callee passes it and one of them checked
+    deeply, is compiled as a literal that calls it by name past its checks,
+    `fn(a, b) { insert(a, b) }`. One whose parameters are checked only by
+    kind is passed as it is, since a call through a literal costs more than
+    such a check.
+
+  With both, Crawl's hot folds start from `[]` and `{}` again and its web
+  front end passes `insert` and `item` by name, and the five Crawl
+  workloads run at 0.98x to 1.00x of untyped.
   - [ ] Matching a record's string field does not narrow its others: in
     `match item.kind { "potion" => data.potions[item.type] ... }`, `type`
     stays `num|nil`. `level.typeOf` takes it out or throws. A tagged union

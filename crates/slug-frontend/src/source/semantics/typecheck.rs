@@ -2954,6 +2954,12 @@ fn check_expression_inner(
                     if let Some(declared) = declared {
                         binding.value_type = declared;
                     }
+                    // A `val` read from a `var` holds its value, not its
+                    // place: nothing assigns it.
+                    if !*mutable {
+                        binding.declared = None;
+                        binding.nil_start = None;
+                    }
                     if !*mutable && matches!(pattern, Pattern::Binding(_)) {
                         binding.keys_of = keys_source(value, environment).map(Rc::new);
                         // An element of a list of a map's keys is one of them.
@@ -5845,10 +5851,20 @@ fn check_call(
                 }
             }),
         };
-        let expected_result = environment.expected_result(&expression.span);
         if let Some(signature) = &sole_signature {
             note_key_parameters(signature, arguments, environment);
         }
+        let expected_result = environment.expected_result(&expression.span).or_else(|| {
+            sole_signature.as_ref().and_then(|signature| {
+                accumulator_seed(
+                    signature,
+                    arguments,
+                    piped.as_ref(),
+                    environment,
+                    type_parameters,
+                )
+            })
+        });
         let mut actuals = piped.into_iter().collect::<Vec<_>>();
         let piped_count = actuals.len();
         for (position, argument) in arguments.iter().enumerate() {
@@ -6119,23 +6135,95 @@ fn trust_closures(
                 _ => None,
             })
     };
+    // A named function of one signature, taking just the values the callee
+    // passes it, one of them checked deeply on entry: called through a
+    // literal that calls it by name, it is not checked.
+    let reference = |index: usize, expected: &Type| -> Option<(&Expr, usize)> {
+        let CallArgument::Positional(value) = arguments.get(index.checked_sub(piped_count)?)?
+        else {
+            return None;
+        };
+        let ExprKind::Name(name) = &value.kind else {
+            return None;
+        };
+        let binding = environment.lookup(name)?;
+        let [signature] = binding.callables.as_slice() else {
+            return None;
+        };
+        let Type::Function(Some(passed)) = expected else {
+            return None;
+        };
+        let arity = passed.len().checked_sub(1)?;
+        let fits = !binding.implicit
+            && !matches!(
+                binding.function_kind,
+                super::environment::FunctionKind::Foreign
+            )
+            && signature.parameters.len() == arity
+            && signature
+                .parameters
+                .iter()
+                .all(|parameter| !parameter.variadic && !parameter.has_default)
+            && signature
+                .parameters
+                .iter()
+                .any(|parameter| checked_deeply(&parameter.value_type));
+        fits.then_some((value, arity))
+    };
     let others_proven = actuals
         .iter()
         .zip(&candidate.bound_types)
         .enumerate()
-        .filter(|(index, _)| literal(*index).is_none())
-        .all(|(_, (actual, expected))| actual.is_proven_assignable_to(expected));
+        .filter(|(index, expected)| {
+            literal(*index).is_none() && reference(*index, expected.1).is_none()
+        })
+        .all(|(index, (actual, expected))| {
+            // An empty start is of whatever collection the call made it.
+            let empty = index
+                .checked_sub(piped_count)
+                .and_then(|index| arguments.get(index))
+                .is_some_and(|argument| match argument {
+                    CallArgument::Positional(value) => as_expected_empty(expected, value).is_some(),
+                    _ => false,
+                });
+            empty || actual.is_proven_assignable_to(expected)
+        });
     for (index, (actual, expected)) in actuals.iter().zip(&candidate.bound_types).enumerate() {
+        if let Some((value, arity)) = reference(index, expected) {
+            let trusted = others_proven && function_result_proven(actual, expected);
+            environment.record_trusted_reference(value.span.clone(), trusted.then_some(arity));
+            continue;
+        }
         let Some(value) = literal(index) else {
             continue;
         };
-        let result_proven = match (actual, expected) {
-            (Type::Function(Some(actual)), Type::Function(Some(expected))) => {
-                actual.len() == expected.len() && actual[0].is_proven_assignable_to(&expected[0])
-            }
-            _ => false,
-        };
+        let result_proven = function_result_proven(actual, expected);
         environment.record_trusted_closure(value.span.clone(), others_proven && result_proven);
+    }
+}
+
+/// Whether a function of type `actual` returns what `expected`, the function
+/// type a parameter takes, says it returns.
+fn function_result_proven(actual: &Type, expected: &Type) -> bool {
+    match (actual, expected) {
+        (Type::Function(Some(actual)), Type::Function(Some(expected))) => {
+            actual.len() == expected.len() && actual[0].is_proven_assignable_to(&expected[0])
+        }
+        _ => false,
+    }
+}
+
+/// Whether a parameter of `value_type` is checked on entry by more than its
+/// kind: a collection with elements, a record, a tuple, or a function type.
+fn checked_deeply(value_type: &Type) -> bool {
+    match value_type.unfolded() {
+        Type::Union(members) => members.iter().any(checked_deeply),
+        Type::List(Some(_))
+        | Type::Map(Some(_))
+        | Type::Record { .. }
+        | Type::Tuple(_)
+        | Type::Function(Some(_)) => true,
+        _ => false,
     }
 }
 
@@ -6592,6 +6680,110 @@ fn expect_function_argument(
     {
         environment.expect_parameters(value.span.clone(), parameters.to_vec());
     }
+}
+
+/// The result a call of `signature` gives when an empty literal stands for
+/// the type parameter it returns, as the start of `reduce(xs, [], fn(acc, x)
+/// { acc :+ x })`: what the function literal argument makes of it, so the
+/// accumulator is the `list<T>` it builds rather than a bare `list`. Found
+/// by checking the arguments twice in trials, with the empty start and then
+/// with what that gave, which the literal must keep; `None` otherwise, and
+/// inside a trial, so nested folds are not checked again for each.
+fn accumulator_seed(
+    signature: &CallableSignature,
+    arguments: &[CallArgument],
+    piped: Option<&Type>,
+    environment: &Environment,
+    type_parameters: &[String],
+) -> Option<Type> {
+    if environment.in_trial() || signature.generic_arity == 0 {
+        return None;
+    }
+    let Type::Generic(returned) = signature.result else {
+        return None;
+    };
+    let offset = usize::from(piped.is_some());
+    let positional = arguments
+        .iter()
+        .map(|argument| match argument {
+            CallArgument::Positional(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    // The empty start as a collection of nothing, which what is added to it
+    // then says the elements of.
+    let empty_start = positional.iter().enumerate().find_map(|(index, value)| {
+        let start = match &value.kind {
+            ExprKind::List(items) if items.is_empty() => {
+                Type::List(Some(Box::new(Type::Never)))
+            }
+            ExprKind::Map(entries) if entries.is_empty() => {
+                Type::Map(Some((Box::new(Type::Never), Box::new(Type::Never))))
+            }
+            _ => return None,
+        };
+        signature
+            .parameters
+            .get(index + offset)
+            .is_some_and(|parameter| matches!(parameter.value_type, Type::Generic(index) if index == returned))
+            .then_some(start)
+    });
+    let literal = positional
+        .iter()
+        .any(|value| matches!(value.kind, ExprKind::Function { .. }));
+    let start = empty_start.filter(|_| literal)?;
+    // What the function literal given a parameter that returns the
+    // accumulator, `fn<A, ...>`, returns, checked with `seed` for it.
+    let result_with = |seed: &Type| -> Option<Type> {
+        let mut trial = environment.trial(HashMap::new());
+        let mut actuals = piped.into_iter().cloned().collect::<Vec<_>>();
+        let mut made = None;
+        for (position, argument) in arguments.iter().enumerate() {
+            expect_function_argument(
+                signature,
+                offset + position,
+                argument,
+                &actuals,
+                Some(seed),
+                &trial,
+            );
+            let actual = check_argument(argument, &mut trial, type_parameters).ok()?;
+            if let Some(Type::Function(Some(types))) = signature
+                .parameters
+                .get(offset + position)
+                .map(|parameter| &parameter.value_type)
+                && matches!(types.first(), Some(Type::Generic(index)) if *index == returned)
+                && let Type::Function(Some(returns)) = &actual
+            {
+                made = returns.first().cloned();
+            }
+            actuals.push(actual);
+        }
+        made
+    };
+    let first = result_with(&start)?;
+    if mentions(&first, &|part| {
+        is_undetermined(part) || is_dynamic_operation_type(part) || matches!(part, Type::Never)
+    }) {
+        return None;
+    }
+    let kept = result_with(&first)?;
+    kept.is_proven_assignable_to(&first).then_some(first)
+}
+
+/// Whether `value_type` or a list, map, tuple, or union member in it is
+/// `what`: `never`, as a collection of nothing holds, or unknown, which an
+/// accumulator gains nothing from.
+fn mentions(value_type: &Type, what: &dyn Fn(&Type) -> bool) -> bool {
+    what(value_type)
+        || match value_type {
+            Type::List(Some(element)) => mentions(element, what),
+            Type::Map(Some((key, value))) => mentions(key, what) || mentions(value, what),
+            Type::Tuple(elements) | Type::Union(elements) => {
+                elements.iter().any(|element| mentions(element, what))
+            }
+            _ => false,
+        }
 }
 
 /// The type arguments the type an annotation gives a call's result
@@ -7946,6 +8138,63 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn a_fold_from_an_empty_start_is_of_what_its_function_makes() {
+        // `reduce`'s accumulator, from `[]` or `{}`, is what the literal
+        // makes of it, so a typed result needs no check.
+        const REDUCE: &str = "val reduce = fn<T, A>(vs:list<T>, v:A, f:fn<A, A, T>):A match {\n\
+              [[], ...] => v\n\
+              [[h, ...t], ...] => recur(t, f(v, h), f)\n\
+            }\n";
+        let fold = |start: &str, body: &str, result: &str| {
+            format!(
+                "{REDUCE}val f = fn():{result} {{ reduce([1, 2], {start}, fn(acc, x) {{ {body} }}) }}\n"
+            )
+        };
+        assert_eq!(check_count(&fold("[]", "acc :+ x", "list<num>")), 0);
+        assert_eq!(
+            check_count(&fold("{}", "acc + {[\"k\" + x]: x}", "map<str, num>")),
+            0
+        );
+        // The type it infers holds where it is used.
+        let error = super::super::compile(
+            "test.slug",
+            &format!(
+                "{REDUCE}val r = reduce([1, 2], [], fn(acc, x) {{ acc :+ x }})\nval s:str = r\n"
+            ),
+        )
+        .expect_err("a list<num> is not a str");
+        assert!(error.message.contains("got list<num>"), "{}", error.message);
+        // A literal that does not keep what it first makes leaves the start
+        // a bare list, as before.
+        assert!(
+            super::super::compile(
+                "test.slug",
+                &fold("[]", "if (x > 1) { [\"s\"] } else { acc :+ x }", "list"),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_val_of_a_vars_value_ranges_over_its_keys() {
+        // A `val` holding a `var`'s map is no `var`: its keys read values.
+        super::super::compile(
+            "test.slug",
+            "val filter = fn<T>(vs:list<T>, f:fn<bool, T>, acc:list<T> = []):list<T> match {\n\
+               [[], ...] => acc\n\
+               [[h, ...t], ...] if h /> f() => recur(t, f, acc :+ h)\n\
+               [[h, ...t], ...] => recur(t, f, acc)\n\
+             }\n\
+             var things:map<str, list<num>> = {}\n\
+             val f = fn():list<str> {\n\
+               val now = things\n\
+               filter(keys(now), fn(k) { len(now[k]) > 0 })\n\
+             }\n",
+        )
+        .unwrap_or_else(|error| panic!("{}", error.message));
     }
 
     #[test]

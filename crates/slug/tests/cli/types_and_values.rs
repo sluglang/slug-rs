@@ -3668,3 +3668,34 @@ fn a_type_from_a_module_that_does_not_compile_names_that_module() {
         "{stderr}"
     );
 }
+
+#[test]
+fn a_named_function_given_to_a_parametric_function_is_checked_only_when_unproven() {
+    let run = |start: &str| {
+        let path = fixture_path("named-fold");
+        fs::write(
+            &path,
+            format!(
+                "val {{reduce}} = import(\"slug.std\")\n\
+                 val step = fn(acc:list<num>, x:num):list<num> {{ acc :+ (x * 2) }}\n\
+                 val dyn = fn(x) {{ x }}\n\
+                 val start:list<num> = []\n\
+                 println(reduce([1, 2, 3], {start}, step))\n"
+            ),
+        )
+        .expect("write named fold");
+        let output = slug().arg(&path).output().expect("run named fold");
+        fs::remove_file(&path).expect("remove named fold");
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // A proven start: `step` is called past its checks, by name.
+    let (stdout, stderr) = run("start");
+    assert_eq!(stdout, "[2, 4, 6]\n", "{stderr}");
+    // An unproven one is checked when `step` takes it.
+    let (stdout, stderr) = run("dyn(\"no\")");
+    assert_eq!(stdout, "", "{stderr}");
+    assert!(stderr.contains("list<num>"), "{stderr}");
+}

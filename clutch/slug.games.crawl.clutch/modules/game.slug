@@ -438,8 +438,7 @@ val crowdIn = fn(key:str):map<num, list<[str, Player]>> {
         val crowd = cached[key]
         if (crowd != nil) { return crowd }
     }
-    val none:map<num, list<[str, Player]>> = {}
-    val crowd = reduce(companyIn(key), none, fn(acc, o) {
+    val crowd = reduce(companyIn(key), {}, fn(acc, o) {
         val k = viewKey(o[1].x, o[1].y)
         acc + {[k]: (acc[k] ?? []) :+ o}
     })
@@ -844,9 +843,8 @@ val peopleInSight = fn():list<[str, Player]> {
     val crowd = crowdIn(key)
     // Each square once, though `sightKeys` may give it twice.
     val unique = reduce(squares, {}, fn(acc, k) { if (crowd[k] == nil) { acc } else { acc + {[k]: true} } })
-    val none:list<[str, Player]> = []
-    reduce(keys(unique), none, fn(acc, k) {
-        reduce(crowd[k], acc, fn(found, o) { if (o[0] == me) { found } else { found :+ o } })
+    reduce(keys(unique), [], fn(acc, k) {
+        reduce(crowd[k] ?? [], acc, fn(found, o) { if (o[0] == me) { found } else { found :+ o } })
     })
 }
 
@@ -1066,14 +1064,14 @@ export val sightsOf = fn(ids:list<str>):list<Found> {
             {id: id, stamp: stamp, memory: changed, sight: sights[id]}
         })
     }
-    val none:list<Found> = []
-    val found = reduce(ids, none, fn(acc, id) {
+    val found = reduce(ids, [], fn(acc, id) {
         val p = players[id]
         if (p == nil || p.dead) { return acc }
         val seen = one(id)
         if (seen != nil) { acc :+ seen } else { acc }
     })
-    val made = reduce(keys(things), {}, fn(acc, k) { if (things[k] != before[k]) { acc + {[k]: things[k]} } else { acc } })
+    val after = things
+    val made = reduce(keys(after), {}, fn(acc, k) { if (after[k] != before[k]) { acc + {[k]: after[k]} } else { acc } })
     if (len(made) == 0) { found } else { found :+ {things: made} }
 }
 

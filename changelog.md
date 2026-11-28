@@ -72,6 +72,16 @@
   value in a `copy`. An empty `[]` or `{}` is one of any list or map type
   expected of it, and `xs ?? []` for a `list<T>|nil` is a `list<T>`; none of
   these is checked when the program runs.
+- A fold from an empty start, as `reduce(xs, [], fn(acc, x) { acc :+ x })`
+  or `reduce(ks, {}, fn(m, k) { m + {[k]: v} })`, has the type its function
+  literal builds rather than a bare `list` or `map`, so a typed result is not
+  checked on each return. A named function given to `map`, `filter`,
+  `reduce`, or another parametric function in place of a literal, as
+  `reduce(xs, start, step)`, is called past its checks when its other
+  arguments are proven, as a literal would be. A `val` holding a `var`'s map
+  ranges over its keys, as `filter(keys(m), fn(k) { m[k] ... })` does.
+  Crawl's hot folds start from `[]` and `{}` again, and pass `insert` and
+  `item` by name.
 - A function reads a module's annotated value or `var` declared after it as
   its annotated type, not as unknown, so a cache declared below the function
   that reads it is not checked on every read.

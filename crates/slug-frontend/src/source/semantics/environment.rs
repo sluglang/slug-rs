@@ -397,6 +397,11 @@ pub(super) struct SemanticAnalysis {
     /// arguments and a proven result: they do not check their parameters,
     /// whose values the function passes them only from those.
     pub(super) trusted_closures: HashSet<SourceSpan>,
+    /// The named functions given to a parametric function as function
+    /// literals would be trusted, by how many parameters it passes them:
+    /// each is called through a literal that calls it by name, past its
+    /// checks.
+    pub(super) trusted_references: HashMap<SourceSpan, usize>,
     pub(super) function_identities: HashMap<SourceSpan, CallableIdentity>,
     pub(super) foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     pub(crate) foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -436,6 +441,9 @@ struct SemanticRecords {
     /// Whether each function literal given to a parametric function was
     /// found to need no checks of its parameters every time it was checked.
     trusted_closures: HashMap<SourceSpan, bool>,
+    /// Whether each named function given to a parametric function was found
+    /// trusted, with the number of parameters passed it, every time.
+    trusted_references: HashMap<SourceSpan, Option<usize>>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -1244,6 +1252,17 @@ impl Environment {
         *entry &= trusted;
     }
 
+    /// Notes whether the named function at `span`, given to a parametric
+    /// function that passes it `arity` values, would be trusted as a literal
+    /// is, this time it is checked; `None` when not.
+    pub(super) fn record_trusted_reference(&self, span: SourceSpan, arity: Option<usize>) {
+        let mut records = self.records.borrow_mut();
+        let entry = records.trusted_references.entry(span).or_insert(arity);
+        if *entry != arity {
+            *entry = None;
+        }
+    }
+
     /// Notes whether the call at `span` was proven, this time it is checked,
     /// to pass every one of its callee's entry checks.
     pub(super) fn record_proven_call(&self, span: SourceSpan, proven: bool) {
@@ -1417,6 +1436,11 @@ impl Environment {
                 .iter()
                 .filter(|(_, trusted)| **trusted)
                 .map(|(span, _)| span.clone())
+                .collect(),
+            trusted_references: records
+                .trusted_references
+                .iter()
+                .filter_map(|(span, arity)| arity.map(|arity| (span.clone(), arity)))
                 .collect(),
             function_identities: records.function_identities.clone(),
             foreign_identities: records.foreign_identities.clone(),
