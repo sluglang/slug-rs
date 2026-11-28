@@ -69,6 +69,14 @@ the target language semantics.
 
 ## Using slug-rs
 
+### Install a release
+
+[Releases](https://github.com/babyman/slug-rs/releases) carry an archive for
+macOS (Apple silicon), Linux (x86_64), and Windows (x86_64). Unpack it and run
+`bin/slug` or `bin/slug-repl`; the unpacked directory is the Slug home, holding
+the library and clutches, so `$SLUG_HOME` needs no setting. See
+[releasing](docs/engineering/releasing.md) for what an archive holds.
+
 ### Compile and run a closed artifact
 
 `.cslug` stores a complete, validated compiled program. It runs without
@@ -117,7 +125,8 @@ optional native code. `clutch/` holds them, indexed by `clutch/manifest.toml`:
 `slug.io.fs`, `slug.net.tcp`, `slug.net.http`, `slug.db.sqlite`,
 `slug.crypto.hash`, `slug.crypto.schnorr`, `slug.text.mustache`, and
 `slug.text.markdown`. The runner finds installed
-clutches through `$SLUG_HOME/clutch/manifest.toml`, and a project may index its
+clutches through `$SLUG_HOME/clutch/manifest.toml` (an installed `slug` uses
+the directory above its `bin/` when `$SLUG_HOME` is unset), and a project may index its
 own in `clutch/manifest.toml` at its root. Native calls are generated from
 typed manifests. This checkout is also the clutches' development repository,
 so stage their native libraries before a program imports one:

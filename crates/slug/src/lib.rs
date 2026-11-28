@@ -16,6 +16,7 @@ pub use conformance::FixtureRunner;
 pub use fixture::{FixtureMetadata, FixtureMetadataError, FixtureOutcome};
 pub use host::{
     DesktopLoader, PROJECT_MARKER, ProgramLayout, build_default_host_vm, default_library_root,
+    slug_home,
 };
 pub use report::capability_report_json;
 pub use server::run_server;

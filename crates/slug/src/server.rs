@@ -40,7 +40,7 @@ pub fn run_server() -> ExitCode {
             }
         },
     };
-    let slug_home = env::var_os("SLUG_HOME").map(PathBuf::from);
+    let slug_home = crate::slug_home();
     let (vm, loader) =
         match build_default_host_vm(&layout, slug_home.as_deref(), &[], "interactive") {
             Ok(host) => host,
