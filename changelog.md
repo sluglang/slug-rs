@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `slug.io.fs` adds native macOS directory watching with recursive subscriptions,
+  subtree exclusions, selectable readiness, bounded invalidation batches,
+  explicit rescan on event loss, and idempotent cancellation. Other platforms
+  return a checked unsupported-watch error.
+  Fixed a type-checker panic when a named argument skips an earlier defaulted
+  parameter, such as `fs.watch(".", exclude = ["dist"])`.
+
 - `slug.text.markdown` adds a fully parsed typed document tree with original
   source spans, resolved reference links, post-order transformations, safe
   document rendering, plain-text extraction, and application-assigned heading

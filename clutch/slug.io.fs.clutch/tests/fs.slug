@@ -221,3 +221,127 @@ val pathsLongerThanWindowsOldLimitWork = fn() {
     })
 }
 
+// Only the checked unsupported result is skipped on hosts without a backend.
+val withWatch = fn(root:str, recursive:bool, exclude:list<str>, work:fn) {
+    defer onerror(err) {
+        if (err.type == "native.io" && err.data.code == "unsupported") { return nil }
+        throw err
+    }
+    val watcher = fs.watch(root, recursive, exclude)
+    defer fs.close(watcher)
+    work(watcher)
+}
+
+val awaitPath = fn(watcher:fs.Watcher, path:str) {
+    val deadline = time.nowMs() + 5000
+    val receive = fn() {
+        val remaining = deadline - time.nowMs()
+        assertTrue(remaining > 0, "watch did not report " + path)
+        val notified = select {
+            recv fs.ready(watcher) /> fn(_) { true }
+            after remaining /> fn(_) { false }
+        }
+        assertTrue(notified, "watch timed out waiting for " + path)
+        val batch = fs.drain(watcher)
+        assertTrue(batch != nil, "watch closed unexpectedly")
+        match batch {
+            value:fs.WatchBatch => {
+                val contains = fn(i:num):bool {
+                    if (i == len(value.paths)) { return false }
+                    if (value.paths[i] == path) { return true }
+                    recur(i + 1)
+                }
+                if (!value.rescan && !contains(0)) { recur() }
+            }
+            nil => nil
+        }
+    }
+    receive()
+}
+
+@test
+val watchClosesAndDrainsWithoutWaiting = fn() {
+    inDirectory(fn(root) {
+        withWatch(root, false, [], fn(watcher:fs.Watcher) {
+            val empty = fs.drain(watcher)
+            assertTrue(empty != nil)
+            assertEqual(fs.ready(watcher), fs.ready(watcher))
+            fs.close(watcher)
+            fs.close(watcher)
+            // Closing preserves an already buffered readiness tick.
+            if (select { recv fs.ready(watcher) } != nil) {
+                assertEqual(select { recv fs.ready(watcher) }, nil)
+            }
+            assertEqual(fs.drain(watcher), nil)
+        })
+    })
+}
+
+@test
+val watchReportsEditsReplacementAndNewDescendants = fn() {
+    inDirectory(fn(root) {
+        withWatch(root, true, [], fn(watcher:fs.Watcher) {
+            val write = fn(path:str, text:str) {
+                val out = fs.openWrite(path)
+                defer fs.close(out)
+                fs.write(out, text)
+            }
+            write(root + "/page.md", "first")
+            awaitPath(watcher, "page.md")
+            write(root + "/page.md", "edit")
+            awaitPath(watcher, "page.md")
+            write(root + "/partial", "replacement")
+            fs.rename(root + "/partial", root + "/page.md")
+            awaitPath(watcher, "page.md")
+            fs.makeDirectory(root + "/new/nested", true)
+            write(root + "/new/nested/page.md", "nested")
+            awaitPath(watcher, "new/nested/page.md")
+            fs.remove(root + "/page.md")
+            awaitPath(watcher, "page.md")
+        })
+    })
+}
+
+@test
+val watchValidatesExclusionsBeforeOpening = fn() {
+    val bad = ["", "/dist", "dist/", "dist//nested", ".", "..", "a/../b", "a/./b", "a\\b"]
+    val check = fn(i:num) {
+        if (i == len(bad)) { return nil }
+        val result = attempt(fn() { fs.watch(".", exclude = [bad[i]]) })
+        assertEqual(result.value.type, "native.io")
+        assertEqual(result.value.data.code, "invalid")
+        recur(i + 1)
+    }
+    check(0)
+}
+
+@test
+val watchRetainsRootReplacementErrorsAfterClose = fn() {
+    inDirectory(fn(root) {
+        withWatch(root, true, [], fn(watcher:fs.Watcher) {
+            val moved = root + "-moved"
+            defer fs.removeAll(moved)
+            fs.rename(root, moved)
+            val deadline = time.nowMs() + 5000
+            val receive = fn() {
+                val remaining = deadline - time.nowMs()
+                assertTrue(remaining > 0, "watch did not report root removal")
+                val notified = select {
+                    recv fs.ready(watcher) /> fn(_) { true }
+                    after remaining /> fn(_) { false }
+                }
+                assertTrue(notified, "watch timed out after root removal")
+                val result = attempt(fn() { fs.drain(watcher) })
+                if (!result.threw) { return recur() }
+                assertEqual(result.value.type, "native.io")
+                assertEqual(result.value.data.code, "watch_lost")
+            }
+            receive()
+            fs.close(watcher)
+            val again = attempt(fn() { fs.drain(watcher) })
+            assertTrue(again.threw)
+            assertEqual(again.value.data.code, "watch_lost")
+        })
+    })
+}
+

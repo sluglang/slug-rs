@@ -814,10 +814,10 @@ impl ParameterConstraints {
                             .inferred_alternatives
                             .is_empty()
                             .then(|| {
-                                bound
-                                    .values
+                                signature
+                                    .parameters
                                     .iter()
-                                    .map(|(_, parameter, _)| parameter.value_type.clone())
+                                    .map(|parameter| parameter.value_type.clone())
                                     .collect::<Vec<_>>()
                             })
                             .or_else(|| {

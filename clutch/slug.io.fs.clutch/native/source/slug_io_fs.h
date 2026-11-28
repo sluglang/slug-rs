@@ -101,4 +101,17 @@ int32_t slug_fs_temporary_directory(const char *prefix, slug_producer *reply);
 /* The system's path separator: "\\" on Windows, "/" elsewhere. */
 const char *slug_fs_separator(void);
 
+/* Watch readiness is a coalesced boolean, not an event count. Start owns its
+ * reply and acknowledges only once monitoring is established. Drain replies
+ * [OK, rescan, paths...], [END], or a failure. Stop is idempotent but leaves
+ * the resource valid for drain, including a retained terminal failure. */
+typedef struct slug_fs_watch slug_fs_watch;
+int32_t slug_fs_watch_create(const char *path, int64_t recursive,
+                             slug_producer *ready, slug_fs_watch **watch);
+int32_t slug_fs_watch_exclude(slug_fs_watch *watch, const char *path);
+int32_t slug_fs_watch_start(slug_fs_watch *watch, slug_producer *reply);
+int32_t slug_fs_watch_drain(slug_fs_watch *watch, slug_producer *reply);
+void slug_fs_watch_stop(slug_fs_watch *watch);
+void slug_fs_watch_release(slug_fs_watch *watch);
+
 #endif

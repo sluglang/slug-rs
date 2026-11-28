@@ -6,8 +6,9 @@
  * a file; resource destruction is fallback cleanup, not a replacement for
  * explicit close. Path functions inspect and change directories.
  *
- * Every operation runs on a native I/O thread, so waiting for the disk parks
- * only the calling task while the program's other tasks run.
+ * File and path I/O runs on a native I/O thread, so waiting for the disk parks
+ * only the calling task while the program's other tasks run. Directory watches
+ * deliver native event readiness through channels.
  *
  * ```slug
  * val fs = import("slug.io.fs")
@@ -39,6 +40,19 @@
  */
 
 export resource File
+resource WatchHandle
+
+val WatcherSchema = struct {handle: WatchHandle, ready: chan<bool>}
+
+/**
+ * A directory subscription. Close it explicitly, normally with `defer`.
+ */
+export type Watcher = struct<WatcherSchema>
+
+/**
+ * Paths may have changed; `rescan` means all detail must be rediscovered.
+ */
+export type WatchBatch = {paths: list<str>, rescan: bool}
 
 // Typed native bindings, declared in this clutch's manifest. Each queues work
 // for the I/O thread, which sends one reply list through `reply`.
@@ -57,6 +71,11 @@ foreign removeRaw = fn(path:str, reply:chan<list>):num
 foreign removeAllRaw = fn(path:str, reply:chan<list>):num
 foreign temporaryDirectoryRaw = fn(prefix:str, reply:chan<list>):num
 foreign separatorRaw = fn():str
+foreign watchCreateRaw = fn(path:str, recursive:num, ready:chan<bool>):list
+foreign watchExcludeRaw = fn(watch:WatchHandle, path:str):num
+foreign watchStartRaw = fn(watch:WatchHandle, reply:chan<list>):num
+foreign watchDrainRaw = fn(watch:WatchHandle, reply:chan<list>):num
+foreign watchStopRaw = fn(watch:WatchHandle):nil
 
 val READ = 0
 val WRITE = 1
@@ -189,11 +208,15 @@ export val sync = fn(file:File):nil {
 }
 
 /**
- * Closes a file resource. Closing is idempotent; later operations on the
- * handle report a checked resource-closed error.
+ * Closes a file or directory subscription. Closing is idempotent. Later file
+ * operations report a checked resource-closed error; watcher readiness closes
+ * and `drain` returns nil, or throws the watcher's retained terminal error.
  */
-export val close = fn(file:File):nil {
-    closeRaw(file)
+export val close = fn(file:File|Watcher):nil {
+    match file {
+        handle:File => closeRaw(handle)
+        watcher:Watcher => watchStopRaw(watcher.handle)
+    }
 }
 
 /**
@@ -308,4 +331,89 @@ export val join = fn(parts:list<str>):str {
         recur(i + 1, path + separator + part)
     }
     go(0, "")
+}
+
+/**
+ * Watches an existing directory using native filesystem events (currently
+ * macOS). Other hosts throw `native.io` with `data.code = "unsupported"`.
+ * Monitoring is established before this returns; watch before scanning.
+ *
+ * `exclude` contains nonempty directory-relative subtree paths with `/`
+ * separators, no empty, `.` or `..` components, and no trailing slash.
+ * Descendant symbolic links are never traversed; the final root must not be
+ * a link. Ancestor links follow ordinary filesystem resolution.
+ *
+ * `recursive` includes new directories. Notifications are invalidation hints,
+ * not an ordered operation log. Removed/replaced roots terminate the watch.
+ * See docs/reference/filesystem-watch.md for the complete contract.
+ */
+export val watch = fn(directory:str, recursive:bool = false, exclude:list<str> = []):Watcher {
+    val validate = fn(i:num) {
+        if (i == len(exclude)) { return nil }
+        val path = exclude[i]
+        val valid = fn(j:num, component:str):bool {
+            if (j == len(path)) { return component != "" && component != "." && component != ".." }
+            if (path[j] == "\\") { return false }
+            if (path[j] == "/") {
+                if (component == "" || component == "." || component == "..") { return false }
+                return recur(j + 1, "")
+            }
+            recur(j + 1, component + path[j])
+        }
+        if (!valid(0, "")) {
+            throw Error {type: "native.io", msg: "invalid watch exclusion: " + path, data: {code: "invalid", errno: 0}}
+        }
+        recur(i + 1)
+    }
+    validate(0)
+    val ready:chan<bool> = chan(1)
+    val flag = if (recursive) { 1 } else { 0 }
+    val [status, value] = watchCreateRaw(directory, flag, ready)
+    if (status == 8) {
+        throw Error {type: "native.io", msg: "filesystem watching is unsupported on this platform", data: {code: "unsupported", errno: 0}}
+    }
+    match value {
+        handle:WatchHandle => {
+            defer onerror(err) { watchStopRaw(handle); throw err }
+            val add = fn(i:num) {
+                if (i == len(exclude)) { return nil }
+                if (watchExcludeRaw(handle, exclude[i]) != 0) {
+                    throw Error {type: "native.alloc", msg: "watch exclusions exceed available storage"}
+                }
+                recur(i + 1)
+            }
+            add(0)
+            val reply = replies()
+            check("watch " + directory, wait(watchStartRaw(handle, reply), reply))
+            WatcherSchema {handle: handle, ready: ready}
+        }
+        _ => throw Error {type: "native.alloc", msg: "cannot create filesystem watch"}
+    }
+}
+
+/**
+ * A coalesced wakeup channel for `select`. Receive, then call `drain`, even
+ * when the receive returns nil: closure may carry a retained terminal error.
+ * One consumer owns receiving and draining; do not send to this channel.
+ */
+export val ready = fn(watcher:Watcher):chan<bool> { watcher.ready }
+
+/**
+ * Takes the currently accumulated changes without waiting for an event.
+ * Returns nil after close, or throws a retained terminal `native.io` error.
+ * An open subscription can return an empty batch after a redundant wakeup.
+ * Paths are relative to the root; "" identifies the root itself. A directory
+ * path invalidates its subtree. Ordering and rename pairing are unspecified.
+ *
+ * Pending detail is bounded to 1024 paths and 1 MiB. Lost detail, including
+ * OS overflow or an unrepresentable path, produces `rescan: true`, retained
+ * until drained even when no further events arrive. Ignore paths on rescan.
+ */
+export val drain = fn(watcher:Watcher):WatchBatch|nil {
+    val reply = replies()
+    match wait(watchDrainRaw(watcher.handle, reply), reply) {
+        [0, rescan, ...paths] => {paths: paths, rescan: rescan}
+        [1] => nil
+        failure => fail("drain filesystem watch", failure)
+    }
 }

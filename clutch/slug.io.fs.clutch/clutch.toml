@@ -9,7 +9,11 @@ files = ["tests/fs.slug"]
 [native]
 profile = "events"
 headers = ["native/source/slug_io_fs.h"]
-sources = ["native/source/fs.c"]
+sources = ["native/source/fs.c", "native/source/watch.c"]
+
+[native.link_args]
+"macos-aarch64" = ["-Wl,-framework,CoreServices", "-Wl,-framework,CoreFoundation"]
+"macos-x86_64" = ["-Wl,-framework,CoreServices", "-Wl,-framework,CoreFoundation"]
 
 [native.libraries]
 "macos-aarch64" = "native/macos-aarch64/libslug_io_fs.dylib"
@@ -22,6 +26,11 @@ type = "slug_fs_file"
 release = { symbol = "slug_fs_release", signature = "(handle<File> file) -> void" }
 
 [native.functions."slug.io.fs"]
+watchCreateRaw = { symbol = "slug_fs_watch_create", signature = "(cstr path, i64 recursive, producer ready, out handle<WatchHandle> watch) -> i32" }
+watchExcludeRaw = { symbol = "slug_fs_watch_exclude", signature = "(handle<WatchHandle> watch, cstr path) -> i32" }
+watchStartRaw = { symbol = "slug_fs_watch_start", signature = "(handle<WatchHandle> watch, producer reply) -> i32" }
+watchDrainRaw = { symbol = "slug_fs_watch_drain", signature = "(handle<WatchHandle> watch, producer reply) -> i32" }
+watchStopRaw = { symbol = "slug_fs_watch_stop", signature = "(handle<WatchHandle> watch) -> void" }
 openRaw = { symbol = "slug_fs_open", signature = "(cstr path, i64 mode, producer reply, out handle<File> file) -> i32" }
 readRaw = { symbol = "slug_fs_read", signature = "(handle<File> file, i64 max_bytes, producer reply) -> i32" }
 readLineRaw = { symbol = "slug_fs_read_line", signature = "(handle<File> file, producer reply) -> i32" }
@@ -37,3 +46,7 @@ removeRaw = { symbol = "slug_fs_remove", signature = "(cstr path, producer reply
 removeAllRaw = { symbol = "slug_fs_remove_all", signature = "(cstr path, producer reply) -> i32" }
 temporaryDirectoryRaw = { symbol = "slug_fs_temporary_directory", signature = "(cstr prefix, producer reply) -> i32" }
 separatorRaw = { symbol = "slug_fs_separator", signature = "() -> cstr", thread_safe = true }
+
+[native.resources."slug.io.fs".WatchHandle]
+type = "slug_fs_watch"
+release = { symbol = "slug_fs_watch_release", signature = "(handle<WatchHandle> watch) -> void" }

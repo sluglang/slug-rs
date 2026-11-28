@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn named_arguments_can_skip_an_earlier_default_during_parameter_inference() {
+    let path = fixture_path("named-skipped-default-inference");
+    fs::write(
+        &path,
+        r#"
+val render = fn(title:str, recursive:bool = false, exclude:list<str> = []) {
+    println(title, recursive, exclude[0])
+}
+val run = fn(title) { render(title, exclude = ["dist"]) }
+run("site")
+"#,
+    )
+    .unwrap();
+    let output = slug().arg(&path).output().unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "site false dist\n");
+}
+
+#[test]
 fn executes_source_through_the_public_cli() {
     let path = fixture_path("success");
     fs::write(&path, "val total = 6 * 7\nprintln(total)\n").expect("write Slug source");

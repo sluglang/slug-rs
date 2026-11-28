@@ -128,6 +128,9 @@ make stage-native-clutches
 
 Markdown supports [typed document trees](docs/reference/markdown-documents.md)
 for source-aware inspection, transformation, safe rendering, and text extraction.
+The filesystem clutch supports [directory watching](docs/reference/filesystem-watch.md)
+on macOS, with recursive subscriptions, subtree exclusions, and explicit rescan
+and cancellation behavior.
 
 Staged platform libraries are local build outputs, not release artifacts. The
 clutch format is still version 0 and may change. See

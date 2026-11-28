@@ -17,6 +17,8 @@ builds, runtime substitution, or native staging. Source links follow upstream
 
 ```text
 resource File
+type Watcher // Opaque directory subscription.
+type WatchBatch = {paths: list<str>, rescan: bool}
 type Stat = {kind: str, size: num, modifiedMs: num}
 openRead = fn(path:str):File
 openWrite = fn(path:str):File
@@ -25,7 +27,7 @@ readLine = fn(file:File):str|nil
 read = fn(file:File, maxBytes:num = 65536):bytes|nil
 write = fn(file:File, content:str|bytes):num
 sync = fn(file:File):nil
-close = fn(file:File):nil
+close = fn(file:File|Watcher):nil
 stat = fn(path:str):Stat|nil
 list = fn(directory:str):list<str>
 makeDirectory = fn(path:str, parents:bool = false):nil
@@ -35,6 +37,9 @@ removeAll = fn(path:str):nil
 temporaryDirectory = fn(prefix:str = "slug-"):str
 separator:str
 join = fn(parts:list<str>):str
+watch = fn(directory:str, recursive:bool = false, exclude:list<str> = []):Watcher
+ready = fn(watcher:Watcher):chan<bool>
+drain = fn(watcher:Watcher):WatchBatch|nil
 ```
 
 Paths are relative to the shell's working directory unless absolute.
@@ -52,6 +57,16 @@ and `modifiedMs` is Unix-epoch milliseconds. `removeAll` is recursive: use
 only for paths the task authorizes deleting. `join` joins path components;
 it does not establish that a path stays inside an application directory.
 I/O failures generally throw `native.io` errors. See the [file example](examples/README.md).
+
+Native directory watching is available on macOS; other hosts report
+`native.io` with `data.code == "unsupported"`. Establish the watch before
+scanning, select on `ready`, then call `drain` even after readiness closes to
+observe a retained terminal error. Batches contain relative path invalidations,
+not an operation log; `rescan` requires rediscovering all inputs. Exclusions are
+root-relative subtrees using `/`, without empty, `.` or `..` components. Close
+watchers explicitly with `defer`. See the upstream
+[watch contract](https://github.com/sluglang/slug-rs/blob/main/docs/reference/filesystem-watch.md)
+for overflow, symlinks, root replacement, and cancellation.
 
 ## TCP — `slug.net.tcp`
 

@@ -41,6 +41,7 @@ a specified feature is implemented.
 | [compiled-modules.md](reference/compiled-modules.md) | Version-2 contract for importable compiled modules and closed linking. |
 | [clutches.md](reference/clutches.md) | Clutches: how modules, native libraries, tests, and assets are packaged and resolved. |
 | [markdown-documents.md](reference/markdown-documents.md) | Typed Markdown trees, transformations, source provenance, and safe rendering. |
+| [filesystem-watch.md](reference/filesystem-watch.md) | Native filesystem subscriptions, invalidations, overflow, and cancellation. |
 | [conformance-fixtures.md](reference/conformance-fixtures.md) | Portable fixture-sidecar contract. |
 | [native-abi.md](reference/native-abi.md) | Native calls, values, resources, threading, and future binary ABI contract. |
 | [value-json.md](reference/value-json.md) | The one JSON encoding of every Slug value. |

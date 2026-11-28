@@ -389,3 +389,106 @@ fn closing_a_file_twice_is_idempotent() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "nil\nnil\n");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn filesystem_watch_native_overflow_cancellation_and_scope() {
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = std::env::temp_dir().join(format!("slug-watch-native-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("slug_producer.h"),
+        slug_native_manifest::PRODUCER_HEADER,
+    )
+    .unwrap();
+    let executable = root.join("watch-test");
+    let compiled = std::process::Command::new("cc")
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
+        .arg(&root)
+        .arg("-I")
+        .arg(checkout.join("clutch/slug.io.fs.clutch/native/source"))
+        .arg(checkout.join("crates/slug/tests/native/filesystem_watch.c"))
+        .args([
+            "-framework",
+            "CoreServices",
+            "-framework",
+            "CoreFoundation",
+            "-o",
+        ])
+        .arg(&executable)
+        .output()
+        .expect("compile filesystem watcher invariants");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let output = std::process::Command::new(&executable).output().unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"watch invariants passed\n");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn filesystem_watch_reports_checked_startup_errors() {
+    let output = run_filesystem_program(
+        "watch-startup",
+        |root| {
+            fs::write(root.join("file"), "data").unwrap();
+            fs::create_dir(root.join("directory")).unwrap();
+            std::os::unix::fs::symlink(root.join("directory"), root.join("link")).unwrap();
+        },
+        r#"
+val report = fn(path:str) {
+    defer onerror(err) { println(err.type, err.data.code) }
+    fs.close(fs.watch(path))
+}
+
+report("ROOT/missing")
+report("ROOT/file")
+report("ROOT/link")
+report("ROOT/link/")
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "native.io not_found\nnative.io not_directory\nnative.io link_loop\nnative.io link_loop\n"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn filesystem_watch_reports_unsupported_without_disabling_file_io() {
+    let output = run_filesystem_program(
+        "watch-unsupported",
+        |_| {},
+        r#"
+val subscribe = fn() {
+    defer onerror(err) { println(err.type, err.data.code) }
+    fs.close(fs.watch("ROOT"))
+}
+subscribe()
+fs.close(fs.openWrite("ROOT/file"))
+println((fs.stat("ROOT/file") ?? {}).kind)
+"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "native.io unsupported\nfile\n"
+    );
+}
