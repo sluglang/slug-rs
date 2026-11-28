@@ -1,0 +1,169 @@
+name: Release
+
+# Pushing a `v<version>` tag builds the CLI for each platform, checks each
+# archive as an installation, and drafts a GitHub release with them; a person
+# reviews the draft and publishes it. Run by hand (workflow_dispatch), or on
+# a pull request that changes the release tooling, it is a dry run: it builds
+# and checks the archives as workflow artifacts and publishes nothing.
+#
+# A release commit sets `[workspace.package] version` in Cargo.toml and
+# renames the changelog's `## Unreleased` to `## <version>`; the tag must
+# match both.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/package-release.py
+      - scripts/release-notes.py
+      - scripts/release-smoke.py
+      - scripts/pgo-build.py
+      - scripts/stage-native-clutches.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the tag and write the release notes
+        if: github.ref_type == 'tag'
+        run: python -I scripts/release-notes.py "$GITHUB_REF_NAME" --repository "$GITHUB_REPOSITORY" > release-notes.md
+      - name: Choose the version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            # A dry run names its archives after the workspace version and build.
+            version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)-dev.$GITHUB_RUN_NUMBER
+            echo "Dry run: no release is drafted." > release-notes.md
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macos-aarch64
+            exe: ""
+            clutches: ""
+            skip: ""
+            pgo_skip: ""
+          # The oldest supported Ubuntu, so the binaries need the oldest glibc.
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            exe: ""
+            clutches: ""
+            skip: ""
+            pgo_skip: ""
+          # The clutches with a Windows build; slug.db.sqlite needs a system
+          # SQLite and slug.arcade has no Windows build yet.
+          - os: windows-latest
+            platform: windows-x86_64
+            exe: ".exe"
+            clutches: slug.core.clutch slug.crypto.clutch slug.random.secure.clutch slug.io.fs.clutch slug.net.tcp.clutch
+            skip: slug.db.sqlite slug.arcade
+            # crawl-crowd imports slug.games.crawl.web, which needs slug.db.sqlite.
+            pgo_skip: crawl-crowd
+    defaults:
+      run:
+        shell: bash
+    env:
+      SLUG_BUILD_COMMIT: ${{ github.sha }}
+      SLUG_BUILD_NUMBER: ${{ github.run_number }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # The executables and the native clutch libraries load on macOS 12 and later.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.1
+          components: llvm-tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # slug.arcade builds its vendored raylib against X11 and OpenGL, and
+      # slug.db.sqlite links the system SQLite.
+      - name: Install the Linux native clutch dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libgl-dev libsqlite3-dev
+      - name: Stage the native clutches
+        run: sh scripts/stage-native-clutches.sh ${{ matrix.clutches }}
+      - name: Build the profile-guided slug
+        run: python -I scripts/pgo-build.py --out "target/pgo/slug${{ matrix.exe }}" ${{ matrix.pgo_skip && format('--skip {0}', matrix.pgo_skip) || '' }}
+      - name: Build slug-repl
+        run: cargo build --release --locked -p slug-repl
+      - name: Assemble the archive
+        run: python -I scripts/package-release.py --version "$VERSION" --slug "target/pgo/slug${{ matrix.exe }}" --repl "target/release/slug-repl${{ matrix.exe }}" --out dist
+      - name: Check the unpacked archive as an installation
+        run: |
+          name="slug-$VERSION-${{ matrix.platform }}"
+          mkdir unpacked
+          if [ -f "dist/$name.zip" ]; then
+            python -m zipfile -e "dist/$name.zip" unpacked
+          else
+            tar -xzf "dist/$name.tar.gz" -C unpacked
+          fi
+          # The executables report the workspace version, which a dry run's
+          # archive name extends with `-dev.<run>`.
+          workspace=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          python -I scripts/release-smoke.py "unpacked/$name" --version "$workspace" ${{ matrix.skip && format('--skip {0}', matrix.skip) || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slug-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          cat artifacts/slug-*/*.sha256 | sort -k 2 > release/SHA256SUMS
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft $prerelease --verify-tag \
+            --title "Slug $VERSION" \
+            --notes-file artifacts/release-notes/release-notes.md

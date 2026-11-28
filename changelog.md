@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Releases: pushing a `v<version>` tag builds profile-guided CLI archives for
+  macOS (aarch64), Linux (x86_64), and Windows (x86_64), checks each unpacked
+  archive as an installation, and drafts a GitHub release with checksums and
+  the changelog section as notes. An installed `slug` finds its library and
+  clutches beside its `bin/` when `$SLUG_HOME` is unset, and `slug --version`
+  names a release build's commit and CI build number. Every crate now takes
+  its version from `[workspace.package]`.
+
 - A type named through an import that has no types, such as `sqlite.Database`
   when `slug.db.sqlite` cannot load its native library on this platform, now
   says why: the module cannot be loaded (with its load error), does not

@@ -1,6 +1,6 @@
 [package]
 name = "slug-typed-static-test"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 rust-version = "1.96.1"
 description = "Links two generated typed native shims into one static image for testing"
