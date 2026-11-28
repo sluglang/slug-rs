@@ -303,7 +303,7 @@ fn main() -> ExitCode {
     };
     match remaining.next().as_deref() {
         Some("--version" | "-V") => {
-            println!("slug-vm {}", env!("CARGO_PKG_VERSION"));
+            println!("slug-vm {}{}", env!("CARGO_PKG_VERSION"), build_details());
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") | None => {
@@ -375,9 +375,24 @@ fn main() -> ExitCode {
 }
 
 /// Reads an entry source and builds the desktop loader that resolves its imports.
+/// The release build's commit and CI build number, as ` (a1b2c3d, build 57)`;
+/// empty for builds made outside the release workflow.
+fn build_details() -> String {
+    let commit = option_env!("SLUG_BUILD_COMMIT").filter(|commit| !commit.is_empty());
+    let number = option_env!("SLUG_BUILD_NUMBER").filter(|number| !number.is_empty());
+    match (commit, number) {
+        (Some(commit), Some(number)) => {
+            format!(" ({}, build {number})", &commit[..commit.len().min(7)])
+        }
+        (Some(commit), None) => format!(" ({})", &commit[..commit.len().min(7)]),
+        (None, Some(number)) => format!(" (build {number})"),
+        (None, None) => String::new(),
+    }
+}
+
 fn load_entry_source(path: &str, json: bool) -> Result<(String, String, DesktopLoader), ExitCode> {
     let configured_source_root = env::var_os("SLUG_FIXTURE_MODULE_ROOT").map(PathBuf::from);
-    let slug_home = env::var_os("SLUG_HOME").map(PathBuf::from);
+    let slug_home = slug::slug_home();
     let library_root = default_library_root(slug_home.as_deref());
     let (resolved_path, source) = match DesktopLoader::load_entry(
         path,
@@ -541,7 +556,7 @@ fn run_artifact(path: &str, program_arguments: &[String], json: bool) -> ExitCod
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    let slug_home = env::var_os("SLUG_HOME").map(PathBuf::from);
+    let slug_home = slug::slug_home();
     // The artifact carries no native code: its foreign bindings come from
     // the installed clutches, which stay active while `loader` lives, so it
     // is declared before the host that calls them.
@@ -599,7 +614,7 @@ fn run_artifact(path: &str, program_arguments: &[String], json: bool) -> ExitCod
 
 fn run(path: &str, program_arguments: &[String], json: bool, allow_unexported: bool) -> ExitCode {
     let configured_source_root = env::var_os("SLUG_FIXTURE_MODULE_ROOT").map(PathBuf::from);
-    let slug_home = env::var_os("SLUG_HOME").map(PathBuf::from);
+    let slug_home = slug::slug_home();
     let library_root = default_library_root(slug_home.as_deref());
     let (resolved_path, source) = match DesktopLoader::load_entry(
         path,

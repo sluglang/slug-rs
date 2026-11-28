@@ -488,6 +488,31 @@ impl Drop for DesktopLoaderState {
     }
 }
 
+/// The Slug installation programs import from: `$SLUG_HOME` when it is set,
+/// otherwise the directory holding the running executable's `bin/`, when it
+/// is laid out as an installation, with `lib/` and `clutch/manifest.toml`, as
+/// a release archive is. A build in a checkout's `target/` has neither, so it
+/// keeps needing `$SLUG_HOME`.
+#[must_use]
+pub fn slug_home() -> Option<PathBuf> {
+    if let Some(home) = env::var_os("SLUG_HOME") {
+        return Some(PathBuf::from(home));
+    }
+    let executable = fs::canonicalize(env::current_exe().ok()?).ok()?;
+    installed_home(&executable)
+}
+
+/// The installation `executable` belongs to, if it is `<home>/bin/<name>`.
+fn installed_home(executable: &Path) -> Option<PathBuf> {
+    let bin = executable.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let home = bin.parent()?;
+    (home.join("lib").is_dir() && home.join("clutch/manifest.toml").is_file())
+        .then(|| home.to_path_buf())
+}
+
 /// Resolves the bundled library root from the standard host environment.
 #[must_use]
 pub fn default_library_root(slug_home: Option<&Path>) -> Option<PathBuf> {
@@ -615,4 +640,43 @@ pub fn build_default_host_vm(
     }
     let loader = DesktopLoader::with_resolver(resolver, configuration);
     Ok((Vm::with_host(slug_vm::Shared::new(loader.clone())), loader))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use super::installed_home;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("slug-installed-home-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("bin")).unwrap();
+        root
+    }
+
+    #[test]
+    fn an_executable_in_an_installation_finds_its_home() {
+        let root = scratch("laid-out");
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::create_dir_all(root.join("clutch")).unwrap();
+        fs::write(root.join("clutch/manifest.toml"), "[modules]\n").unwrap();
+        assert_eq!(installed_home(&root.join("bin/slug")), Some(root.clone()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_executable_outside_an_installation_has_no_home() {
+        let root = scratch("bare");
+        assert_eq!(installed_home(&root.join("bin/slug")), None);
+        fs::create_dir_all(root.join("lib")).unwrap();
+        assert_eq!(
+            installed_home(&root.join("bin/slug")),
+            None,
+            "needs clutch/manifest.toml"
+        );
+        assert_eq!(installed_home(Path::new("target/debug/slug")), None);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

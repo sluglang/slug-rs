@@ -27,6 +27,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCES = os.path.join(ROOT, "crates/slug-frontend/benches/source")
 # `http-server` and the Crawl workloads import clutches from this checkout.
+# Windows executables, the built `slug` and the toolchain's tools, end `.exe`.
+EXE = ".exe" if os.name == "nt" else ""
 ENVIRONMENT = {**os.environ, "SLUG_HOME": os.environ.get("SLUG_HOME", ROOT)}
 
 
@@ -80,7 +82,7 @@ def build(source, target_dir, host, rustflags, features):
         env={**os.environ, "CARGO_TARGET_DIR": target_dir, "RUSTFLAGS": rustflags},
         check=True,
     )
-    return os.path.join(target_dir, host, "release", "slug")
+    return os.path.join(target_dir, host, "release", "slug" + EXE)
 
 
 def install(source, binary):
@@ -108,7 +110,7 @@ def main():
     target_dir = os.path.abspath(options.target_dir)
     host = re.search(r"^host: (\S+)$", rustc(source, "-vV"), re.MULTILINE).group(1)
     sysroot = rustc(source, "--print", "sysroot").strip()
-    profdata = os.path.join(sysroot, "lib/rustlib", host, "bin/llvm-profdata")
+    profdata = os.path.join(sysroot, "lib/rustlib", host, "bin/llvm-profdata" + EXE)
     if not os.path.exists(profdata):
         sys.exit(f"{profdata} is missing; run `rustup component add llvm-tools`")
 
