@@ -87,7 +87,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="slug-release-smoke-") as scratch:
         version = run([slug, "--version"], scratch, environment)
         print(f"--version: {version.stdout.strip()}")
-        if version.returncode != 0 or (options.version and f" {options.version}" not in version.stdout):
+        reported = version.stdout.split()[1:2] == [options.version] if options.version else True
+        if version.returncode != 0 or not reported:
             failures.append(f"--version gave {version.stdout!r} (exit {version.returncode})")
         for module, (program, expected) in CHECKS.items():
             if module in options.skip:

@@ -13,7 +13,8 @@ checkout, so builds of different revisions train on the same programs.
 The build passes `--target` explicitly so that Cargo applies the
 instrumentation flags to `slug` and its dependencies but not to build scripts.
 It needs the `llvm-tools` rustup component; `--digest` prints a hash of the
-training set for caching builds.
+training set for caching builds. `--skip` leaves out workloads a platform
+cannot run, such as those importing a clutch with no native build there.
 """
 
 import argparse
@@ -101,7 +102,12 @@ def main():
     parser.add_argument("--out", default=os.path.join(ROOT, "target/pgo/slug"))
     parser.add_argument("--features", default="", help="extra Cargo features of `slug`, such as native")
     parser.add_argument("--digest", action="store_true", help="print the training-set hash")
+    parser.add_argument("--skip", nargs="*", default=[], help="training workloads to leave out")
     options = parser.parse_args()
+    names = {os.path.splitext(os.path.basename(program))[0] for program in training_workloads()}
+    unknown = set(options.skip) - names
+    if unknown:
+        sys.exit(f"no training workloads named {', '.join(sorted(unknown))}")
     if options.digest:
         print(training_digest())
         return
@@ -125,6 +131,9 @@ def main():
     )
     for program in training_workloads():
         name = os.path.splitext(os.path.basename(program))[0]
+        if name in options.skip:
+            print(f"skipping {name}", file=sys.stderr)
+            continue
         print(f"training on {name}", file=sys.stderr)
         subprocess.run(
             [instrumented, program],

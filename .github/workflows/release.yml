@@ -72,12 +72,14 @@ jobs:
             exe: ""
             clutches: ""
             skip: ""
+            pgo_skip: ""
           # The oldest supported Ubuntu, so the binaries need the oldest glibc.
           - os: ubuntu-22.04
             platform: linux-x86_64
             exe: ""
             clutches: ""
             skip: ""
+            pgo_skip: ""
           # The clutches with a Windows build; slug.db.sqlite needs a system
           # SQLite and slug.arcade has no Windows build yet.
           - os: windows-latest
@@ -85,6 +87,8 @@ jobs:
             exe: ".exe"
             clutches: slug.core.clutch slug.crypto.clutch slug.random.secure.clutch slug.io.fs.clutch slug.net.tcp.clutch
             skip: slug.db.sqlite slug.arcade
+            # crawl-crowd imports slug.games.crawl.web, which needs slug.db.sqlite.
+            pgo_skip: crawl-crowd
     defaults:
       run:
         shell: bash
@@ -111,7 +115,7 @@ jobs:
       - name: Stage the native clutches
         run: sh scripts/stage-native-clutches.sh ${{ matrix.clutches }}
       - name: Build the profile-guided slug
-        run: python -I scripts/pgo-build.py --out "target/pgo/slug${{ matrix.exe }}"
+        run: python -I scripts/pgo-build.py --out "target/pgo/slug${{ matrix.exe }}" ${{ matrix.pgo_skip && format('--skip {0}', matrix.pgo_skip) || '' }}
       - name: Build slug-repl
         run: cargo build --release --locked -p slug-repl
       - name: Assemble the archive
@@ -125,7 +129,10 @@ jobs:
           else
             tar -xzf "dist/$name.tar.gz" -C unpacked
           fi
-          python -I scripts/release-smoke.py "unpacked/$name" --version "$VERSION" ${{ matrix.skip && format('--skip {0}', matrix.skip) || '' }}
+          # The executables report the workspace version, which a dry run's
+          # archive name extends with `-dev.<run>`.
+          workspace=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          python -I scripts/release-smoke.py "unpacked/$name" --version "$workspace" ${{ matrix.skip && format('--skip {0}', matrix.skip) || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: slug-${{ matrix.platform }}
