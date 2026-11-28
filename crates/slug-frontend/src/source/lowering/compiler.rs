@@ -1270,6 +1270,32 @@ impl Compiler {
                             state.emit(self.greater_op(left, right), &expression.span);
                             state.emit(Op::Not, &expression.span);
                         }
+                        // `value + {field: v, ...}` sets those fields, as a
+                        // struct's copy does, without building the map: the
+                        // copy adds the literal as `+` would to anything that
+                        // is neither a struct nor a map.
+                        Binary::Add if right.field_merge_names().is_some() => {
+                            let ExprKind::Map(entries) = &right.kind else {
+                                unreachable!("a field merge is a map literal");
+                            };
+                            let names = right.field_merge_names().expect("checked above");
+                            let mut seen = HashSet::new();
+                            for ((key, replacement), name) in entries.iter().zip(&names) {
+                                if !seen.insert(name.as_str()) {
+                                    return Err(SourceError::semantic(
+                                        SourceErrorCode::RepeatedMapKey,
+                                        format!("map literal repeats key `{name}`"),
+                                        key.span.clone(),
+                                    )
+                                    .with_extent(key));
+                                }
+                                self.expression(state, replacement)?;
+                                self.emit_checks(state, &expression.span, |place| {
+                                    matches!(place, CheckPlace::Field(field) if field == name)
+                                })?;
+                            }
+                            state.emit(Op::StructCopy(names), &expression.span);
+                        }
                         Binary::Add => {
                             self.expression(state, right)?;
                             state.emit(

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `value + {field: v}` now sets a struct's fields wherever `copy` does, as a
+  first step to removing `copy`. On a value known to be a `struct<P>`, `+` was
+  rejected (``operator `+` does not accept struct<P> and {...}``); it now gets
+  `copy`'s checks and messages: an unknown field, a field's type (with a
+  generic schema's arguments), and a repeated key. A merge with keys known only
+  when it runs, as `p + {[k]: v}` or `p + changes`, needs string keys, which
+  the copy checks against the schema. A literal of string keys compiles to the
+  copy itself, without building the map, so `p = p + {hp: 2}` runs as fast as
+  `copy` (it was about 1.5x slower); added to a value that is neither a struct
+  nor a map, the literal is added as before.
+
 ## 0.5.0 (2026-11-28)
 
 - Releases: pushing a `v<version>` tag builds profile-guided CLI archives for

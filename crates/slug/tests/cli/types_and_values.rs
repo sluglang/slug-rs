@@ -3537,6 +3537,72 @@ fn a_record_merge_sets_listed_fields_of_a_map_or_a_struct() {
 }
 
 #[test]
+fn a_struct_merge_sets_fields_as_a_copy_does() {
+    let run = |source: &str| {
+        let path = fixture_path("struct-merge");
+        fs::write(&path, source).expect("write struct merge");
+        let output = slug().arg(&path).output().expect("run struct merge");
+        fs::remove_file(&path).expect("remove struct merge");
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let schema = "val P = struct { n: num, name: str }\nval p = P { n: 1, name: \"a\" }\n";
+
+    // A value the checker knows is a struct keeps its schema.
+    let (stdout, stderr) = run(&format!(
+        "{schema}val f = fn(p:struct<P>):struct<P> {{ p + {{name: \"b\"}} }}\n\
+         println(f(p), f(p) == P {{ n: 1, name: \"b\" }})\n"
+    ));
+    assert_eq!(
+        stdout, "struct {\"n\": 1, \"name\": \"b\"} true\n",
+        "{stderr}"
+    );
+
+    // Its fields are checked as a copy checks them.
+    for (merge, message) in [
+        ("p + {zz: 2}", "struct has no field `zz`"),
+        ("p + {n: \"s\"}", "expected num, got str"),
+        ("p + {n: 2, n: 3}", "map literal repeats key `n`"),
+    ] {
+        let (_, stderr) = run(&format!("{schema}println({merge})\n"));
+        assert!(stderr.contains(message), "{merge}: {stderr}");
+    }
+
+    // Keys known only when it runs are strings, checked by the copy.
+    let (stdout, stderr) = run(&format!(
+        "{schema}val k = \"n\"\nval m:map<str, num> = {{n: 9}}\n\
+         println(p + {{[k]: 5}}, p + m)\n"
+    ));
+    assert_eq!(
+        stdout, "struct {\"n\": 5, \"name\": \"a\"} struct {\"n\": 9, \"name\": \"a\"}\n",
+        "{stderr}"
+    );
+    let (_, stderr) = run(&format!(
+        "{schema}val f = fn(p:struct<P>, m:map<num, num>) {{ p + m }}\n"
+    ));
+    assert!(
+        stderr.contains("named by the map's keys, which are num, not str"),
+        "{stderr}"
+    );
+
+    // A value of another kind adds the literal as `+` does.
+    let (stdout, stderr) = run(
+        "val dyn = fn(x) { x }\nprintln(dyn(\"s\") + {a: 1}, dyn({a: 1, b: 2}) + {a: 5, c: 3})\n",
+    );
+    assert_eq!(
+        stdout, "s{\"a\": 1} {\"a\": 5, \"b\": 2, \"c\": 3}\n",
+        "{stderr}"
+    );
+    let (_, stderr) = run("val dyn = fn(x) { x }\nprintln(dyn(1) + {a: 1})\n");
+    assert!(
+        stderr.contains("expected numbers, got num and map"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_call_checks_what_it_cannot_prove_and_enters_past_the_checks() {
     // `add`'s calls in `go` are proven and enter past its entry check, a
     // walk of `out`; the call in `bad` checks its unproven argument where it

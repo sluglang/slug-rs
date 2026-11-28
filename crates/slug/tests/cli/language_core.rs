@@ -697,7 +697,7 @@ fn copies_structs_with_checked_replacement_fields() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .starts_with("slug: runtime error: cannot copy non-struct or map value")
+            .starts_with("slug: runtime error: expected numbers, got num and map")
     );
 }
 

@@ -3270,6 +3270,28 @@ fn check_expression_inner(
                     let right = check_expression(right, &mut right_environment, type_parameters)?;
                     return Ok(Type::union([left_type, right]));
                 }
+                // `value + {field: v, ...}` on a struct or record sets its
+                // fields, checked as a struct's copy checks them.
+                if matches!(operator, Binary::Add)
+                    && is_field_merge_target(&left_type)
+                    && right.field_merge_names().is_some()
+                    && let ExprKind::Map(entries) = &right.kind
+                {
+                    let names = right.field_merge_names().unwrap_or_default();
+                    let fields = names
+                        .iter()
+                        .zip(entries)
+                        .map(|(name, (key, value))| (name.as_str(), key, value))
+                        .collect::<Vec<_>>();
+                    return check_field_update(
+                        expression,
+                        left_type.unfolded(),
+                        &fields,
+                        true,
+                        environment,
+                        type_parameters,
+                    );
+                }
                 let right_type = check_expression(right, environment, type_parameters)?;
                 // A list literal appended to a list of tuples is the tuple
                 // its elements make, as `pairs :+ [x, y]`; a map literal
@@ -3879,72 +3901,18 @@ fn check_expression_inner(
             }
             ExprKind::StructCopy { value, fields } => {
                 let result = check_expression(value, environment, type_parameters)?;
-                let schema = known_struct_schema(&result, environment);
-                let mut replaced = std::collections::HashSet::new();
-                let mut map_replacements = Vec::new();
-                let mut record_fields = Vec::new();
-                for (name, replacement) in fields {
-                    if !replaced.insert(name) {
-                        return Err(SourceError::semantic(
-                            SourceErrorCode::DuplicateName,
-                            format!("duplicate struct field `{name}`"),
-                            replacement.span.clone(),
-                        )
-                        .with_extent(replacement));
-                    }
-                    let actual = check_expression(replacement, environment, type_parameters)?;
-                    // A list literal for a tuple field is that tuple.
-                    let wanted = result.record_field(name).cloned().or_else(|| {
-                        schema
-                            .as_ref()
-                            .and_then(|schema| schema.members.get(name))
-                            .map(|member| member.value_type.clone())
-                    });
-                    let actual = match wanted {
-                        Some(wanted) => {
-                            as_expected_tuple(&wanted, replacement, actual, environment)
-                        }
-                        None => actual,
-                    };
-                    map_replacements.push(actual.clone());
-                    record_fields.push((name.clone(), actual.clone()));
-                    if let Some(schema) = &schema {
-                        let expected = schema.members.get(name).ok_or_else(|| {
-                            SourceError::semantic(
-                                SourceErrorCode::UnknownMember,
-                                format!("struct has no field `{name}`"),
-                                replacement.span.clone(),
-                            )
-                            .with_extent(replacement)
-                        })?;
-                        require(&expected.value_type, &actual, &replacement.span)
-                            .map_err(|error| explain_nil_start(error, replacement, environment))?;
-                        environment.record_boundary_check(
-                            &expression.span,
-                            &actual,
-                            &expected.value_type,
-                            CheckPlace::Field(name.clone()),
-                        );
-                    }
-                }
-                // A record's copy has the replaced fields' new types.
-                if let Type::Record { fields, map } = &result {
-                    let kept = fields
-                        .iter()
-                        .filter(|(name, _)| !replaced.contains(name))
-                        .cloned();
-                    return Ok(Type::record(kept.chain(record_fields).collect(), *map));
-                }
-                if let Type::Map(Some((key, value))) = &result {
-                    Ok(Type::Map(Some((
-                        Box::new(Type::union([key.as_ref().clone(), Type::Str])),
-                        Box::new(Type::union(
-                            std::iter::once(value.as_ref().clone()).chain(map_replacements),
-                        )),
-                    ))))
-                } else {
-                    Ok(result)
-                }
+                let fields = fields
+                    .iter()
+                    .map(|(name, replacement)| (name.as_str(), replacement, replacement))
+                    .collect::<Vec<_>>();
+                check_field_update(
+                    expression,
+                    result,
+                    &fields,
+                    false,
+                    environment,
+                    type_parameters,
+                )
             }
             ExprKind::Index { collection, index } => {
                 let collection_expression = collection;
@@ -4478,6 +4446,32 @@ fn add_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, Sour
     if let Some(merged) = record_merge(left, right, span)? {
         return Ok(merged);
     }
+    // A struct or record merged with a map whose keys are known only when
+    // it runs, as `p + {[k]: v}` or `p + changes`: each key must be a
+    // string, and the copy checks that it names a field of the right type.
+    if is_field_merge_target(left) {
+        if is_dynamic_operation_type(right) {
+            return Ok(left.clone());
+        }
+        return match right.as_map() {
+            Type::Map(None) => Ok(left.clone()),
+            Type::Map(Some((key, _)))
+                if is_dynamic_operation_type(&key)
+                    || type_intersection(&key, &Type::Str).is_some() =>
+            {
+                Ok(left.clone())
+            }
+            Type::Map(Some((key, _))) => Err(SourceError::semantic(
+                SourceErrorCode::TypeMismatch,
+                format!(
+                    "`+` sets fields of {left} named by the map's keys, which are {key}, \
+                     not str"
+                ),
+                span.clone(),
+            )),
+            _ => invalid_operation("+", left, right, span),
+        };
+    }
     // Merging two map literals gives the right one's value at a shared key.
     if let (
         Type::Record {
@@ -4531,6 +4525,120 @@ fn add_result(left: &Type, right: &Type, span: &SourceSpan) -> Result<Type, Sour
             _ => None,
         })),
         _ => invalid_operation("+", left, right, span),
+    }
+}
+
+/// Whether `value + {field: v, ...}` sets fields of a value of this type, as
+/// a struct's copy does, rather than merging maps.
+fn is_field_merge_target(value_type: &Type) -> bool {
+    matches!(
+        value_type.unfolded(),
+        Type::Struct(..) | Type::Record { map: false, .. }
+    )
+}
+
+/// The type of `value` with `fields` replaced, each `(name, key, value)`,
+/// the key being where a problem with the name is reported, at `site`,
+/// recording the runtime checks of a struct's fields there.
+///
+/// `merge` is `value + {...}`, which sets only fields the type lists: an
+/// unknown field of a record type is an error, as the value may be a struct
+/// without it. A copy instead adds the field to a record type.
+fn check_field_update(
+    site: &Expr,
+    result: Type,
+    fields: &[(&str, &Expr, &Expr)],
+    merge: bool,
+    environment: &mut Environment,
+    type_parameters: &[String],
+) -> Result<Type, SourceError> {
+    let schema = known_struct_schema(&result, environment);
+    let mut replaced = HashSet::new();
+    let mut map_replacements = Vec::new();
+    let mut record_fields = Vec::new();
+    for &(name, key, replacement) in fields {
+        if !replaced.insert(name.to_owned()) {
+            return Err(if merge {
+                SourceError::semantic(
+                    SourceErrorCode::RepeatedMapKey,
+                    format!("map literal repeats key `{name}`"),
+                    key.span.clone(),
+                )
+                .with_extent(key)
+            } else {
+                SourceError::semantic(
+                    SourceErrorCode::DuplicateName,
+                    format!("duplicate struct field `{name}`"),
+                    replacement.span.clone(),
+                )
+                .with_extent(replacement)
+            });
+        }
+        if merge
+            && schema.is_none()
+            && matches!(result, Type::Record { .. })
+            && result.record_field(name).is_none()
+        {
+            return Err(SourceError::semantic(
+                SourceErrorCode::TypeMismatch,
+                format!(
+                    "`+` sets fields of {result}, which has no field `{name}`; a record merge \
+                     sets only the fields its type lists"
+                ),
+                key.span.clone(),
+            )
+            .with_extent(key));
+        }
+        let actual = check_expression(replacement, environment, type_parameters)?;
+        // A list literal for a tuple field is that tuple.
+        let wanted = result.record_field(name).cloned().or_else(|| {
+            schema
+                .as_ref()
+                .and_then(|schema| schema.members.get(name))
+                .map(|member| member.value_type.clone())
+        });
+        let actual = match wanted {
+            Some(wanted) => as_expected_tuple(&wanted, replacement, actual, environment),
+            None => actual,
+        };
+        map_replacements.push(actual.clone());
+        record_fields.push((name.to_owned(), actual.clone()));
+        if let Some(schema) = &schema {
+            let expected = schema.members.get(name).ok_or_else(|| {
+                SourceError::semantic(
+                    SourceErrorCode::UnknownMember,
+                    format!("struct has no field `{name}`"),
+                    key.span.clone(),
+                )
+                .with_extent(key)
+            })?;
+            require(&expected.value_type, &actual, &replacement.span)
+                .map_err(|error| explain_nil_start(error, replacement, environment))?;
+            environment.record_boundary_check(
+                &site.span,
+                &actual,
+                &expected.value_type,
+                CheckPlace::Field(name.to_owned()),
+            );
+        }
+    }
+    // A record's copy has the replaced fields' new types.
+    if let Type::Record { fields, map } = &result {
+        let kept = fields
+            .iter()
+            .filter(|(name, _)| !replaced.contains(name))
+            .cloned();
+        return Ok(Type::record(kept.chain(record_fields).collect(), *map));
+    }
+    if let Type::Map(Some((key, value))) = &result {
+        Ok(Type::Map(Some((
+            Box::new(Type::union([key.as_ref().clone(), Type::Str])),
+            Box::new(Type::union(
+                std::iter::once(value.as_ref().clone()).chain(map_replacements),
+            )),
+        ))))
+    } else {
+        Ok(result)
     }
 }
 
@@ -9086,6 +9194,10 @@ mod tests {
             ("var l = []\nval f = fn(v) { l = l :+ v }\nf(1)", ListAppend),
             (
                 "var p = {hp: 1}\nval f = fn() { p = p copy {hp: 2} }\nf()",
+                StructCopy,
+            ),
+            (
+                "var p = {hp: 1}\nval f = fn() { p = p + {hp: 2} }\nf()",
                 StructCopy,
             ),
         ] {
