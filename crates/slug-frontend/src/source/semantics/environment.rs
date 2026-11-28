@@ -58,6 +58,11 @@ pub(super) struct CallableSignature {
     /// caller then checks the result it instantiates. `None` until the
     /// function's body is checked, for a call that precedes it.
     pub(super) result_unproven: Option<bool>,
+    /// Whether a generic function only ever passes its function-typed
+    /// parameters values of the types its own parameters give, and never lets
+    /// them escape: then a function literal given to it, whose other
+    /// arguments are proven, need not check its own parameters.
+    pub(super) parametric: bool,
 }
 
 impl CallableSignature {
@@ -98,6 +103,16 @@ pub(super) fn foreign_resource_signature(
             _ => None,
         },
     )
+}
+
+/// A map named by an immutable binding and constant fields, as
+/// `empire.kills`: it is the same map wherever the binding is the same one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct KeyPath {
+    pub(super) root: String,
+    /// The root's binding, by address: a name bound again is another map.
+    pub(super) binding: usize,
+    pub(super) fields: Vec<String>,
 }
 
 /// A binding's function, as far as a call entering past its checks cares.
@@ -141,6 +156,12 @@ pub(super) struct SemanticBinding {
     /// What kind of function, if any, the binding is, as a proven call
     /// needs to know.
     pub(super) function_kind: FunctionKind,
+    /// For a closure's parameter, the map whose keys it ranges over, as
+    /// `k` in `filter(keys(m), fn(k) { ... })`: `m[k]` reads a value.
+    pub(super) key_of: Option<Rc<KeyPath>>,
+    /// For a `val` bound to `keys(m)`, the map `m`: an element of it is one
+    /// of `m`'s keys.
+    pub(super) keys_of: Option<Rc<KeyPath>>,
     /// For an immutable binding, the narrowed types of string-keyed members a
     /// nil test established on this path, such as `r.error` after
     /// `r.error != nil`. The binding never changes, so neither do they.
@@ -214,6 +235,8 @@ impl SemanticBinding {
             nil_start: None,
             implicit: false,
             function_kind: FunctionKind::Ordinary,
+            key_of: None,
+            keys_of: None,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -234,6 +257,8 @@ impl SemanticBinding {
             nil_start: None,
             implicit: false,
             function_kind: FunctionKind::Ordinary,
+            key_of: None,
+            keys_of: None,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -258,6 +283,8 @@ impl SemanticBinding {
             nil_start: None,
             implicit: false,
             function_kind: FunctionKind::Ordinary,
+            key_of: None,
+            keys_of: None,
             member_facts: HashMap::new(),
             schema_arity: 0,
         }
@@ -360,6 +387,10 @@ pub(super) struct SemanticAnalysis {
     /// positionally: such a call checks the arguments the checker cannot
     /// prove where it is, and enters past the function's entry checks.
     pub(super) proven_calls: HashSet<SourceSpan>,
+    /// The function literals given to a parametric function with proven
+    /// arguments and a proven result: they do not check their parameters,
+    /// whose values the function passes them only from those.
+    pub(super) trusted_closures: HashSet<SourceSpan>,
     pub(super) function_identities: HashMap<SourceSpan, CallableIdentity>,
     pub(super) foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     pub(crate) foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -390,6 +421,15 @@ struct SemanticRecords {
     /// proven every time it was checked: a trial, or a body checked again,
     /// that finds it unproven makes it unproven for good.
     proven_calls: HashMap<SourceSpan, bool>,
+    /// Whether each generic function literal was found parametric every time
+    /// it was checked.
+    parametric: HashMap<SourceSpan, bool>,
+    /// For a function literal given with `keys(m)`, which of its parameters
+    /// range over `m`'s keys, by position.
+    key_parameters: HashMap<SourceSpan, Vec<(usize, KeyPath)>>,
+    /// Whether each function literal given to a parametric function was
+    /// found to need no checks of its parameters every time it was checked.
+    trusted_closures: HashMap<SourceSpan, bool>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -461,6 +501,12 @@ struct FunctionReturns {
     /// Whether a value the checker could not prove may reach a type
     /// parameter in the result.
     result_unproven: bool,
+    /// A generic function's function-typed parameters, by name, with the
+    /// types of their parameters, which each call through one must pass
+    /// exactly for the function to be parametric.
+    through: Vec<(String, Vec<Type>)>,
+    /// Whether a call through one of `through` passed something else.
+    unparametric: bool,
 }
 
 impl Environment {
@@ -552,7 +598,46 @@ impl Environment {
             returned: Vec::new(),
             parameters,
             result_unproven: false,
+            through: Vec::new(),
+            unparametric: false,
         })));
+    }
+
+    /// Watches the calls through the function-typed parameters of the
+    /// generic function being checked: `parameters`, by name, with the types
+    /// each takes.
+    pub(super) fn watch_function_parameters(&self, parameters: Vec<(String, Vec<Type>)>) {
+        if let Some(function) = &self.function {
+            function.borrow_mut().through = parameters;
+        }
+    }
+
+    /// The types the function-typed parameter `name` of the generic function
+    /// being checked takes, when it is one.
+    pub(super) fn through_parameter(&self, name: &str) -> Option<Vec<Type>> {
+        let function = self.function.as_ref()?;
+        let function = function.borrow();
+        function
+            .through
+            .iter()
+            .find(|(parameter, _)| parameter == name)
+            .map(|(_, types)| types.clone())
+    }
+
+    /// Notes that the function being checked passed one of its
+    /// function-typed parameters a value not exactly of the type it takes.
+    pub(super) fn note_unparametric(&self) {
+        if let Some(function) = &self.function {
+            function.borrow_mut().unparametric = true;
+        }
+    }
+
+    /// Whether the function being checked passed a function-typed parameter
+    /// anything but what it takes.
+    pub(super) fn unparametric(&self) -> bool {
+        self.function
+            .as_ref()
+            .is_some_and(|function| function.borrow().unparametric)
     }
 
     /// The entry check of the parameter at `index` of the function being
@@ -780,6 +865,7 @@ impl Environment {
         identity: &CallableIdentity,
         result: Type,
         result_unproven: bool,
+        parametric: bool,
     ) {
         let Some(binding) = self.innermost_binding_mut(name) else {
             return;
@@ -791,6 +877,7 @@ impl Environment {
         {
             signature.result = result;
             signature.result_unproven = Some(result_unproven);
+            signature.parametric = parametric;
             binding.value_type = function_value_type(signature);
         }
     }
@@ -1088,6 +1175,58 @@ impl Environment {
         self.imports.get(name)
     }
 
+    /// Notes that the parameters at `parameters`' positions of the function
+    /// literal at `span` range over the keys of those maps.
+    pub(super) fn record_key_parameters(
+        &self,
+        span: SourceSpan,
+        parameters: Vec<(usize, KeyPath)>,
+    ) {
+        self.records
+            .borrow_mut()
+            .key_parameters
+            .insert(span, parameters);
+    }
+
+    /// The map whose keys parameter `index` of the function literal at
+    /// `span` ranges over, if it does.
+    pub(super) fn key_parameter(&self, span: &SourceSpan, index: usize) -> Option<KeyPath> {
+        self.records
+            .borrow()
+            .key_parameters
+            .get(span)?
+            .iter()
+            .find(|(position, _)| *position == index)
+            .map(|(_, path)| path.clone())
+    }
+
+    /// Notes whether the generic function literal at `span` was found
+    /// parametric this time it was checked.
+    pub(super) fn record_parametric(&self, span: SourceSpan, parametric: bool) {
+        let mut records = self.records.borrow_mut();
+        let entry = records.parametric.entry(span).or_insert(true);
+        *entry &= parametric;
+    }
+
+    /// Whether the function literal at `span` was found parametric each
+    /// time it was checked.
+    pub(super) fn is_parametric(&self, span: &SourceSpan) -> bool {
+        self.records
+            .borrow()
+            .parametric
+            .get(span)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Notes whether the function literal at `span`, given to a parametric
+    /// function, needs no checks of its parameters this time it is checked.
+    pub(super) fn record_trusted_closure(&self, span: SourceSpan, trusted: bool) {
+        let mut records = self.records.borrow_mut();
+        let entry = records.trusted_closures.entry(span).or_insert(true);
+        *entry &= trusted;
+    }
+
     /// Notes whether the call at `span` was proven, this time it is checked,
     /// to pass every one of its callee's entry checks.
     pub(super) fn record_proven_call(&self, span: SourceSpan, proven: bool) {
@@ -1256,6 +1395,12 @@ impl Environment {
                 .filter(|(_, proven)| **proven)
                 .map(|(span, _)| span.clone())
                 .collect(),
+            trusted_closures: records
+                .trusted_closures
+                .iter()
+                .filter(|(_, trusted)| **trusted)
+                .map(|(span, _)| span.clone())
+                .collect(),
             function_identities: records.function_identities.clone(),
             foreign_identities: records.foreign_identities.clone(),
             foreign_resource_signatures: records.foreign_resource_signatures.clone(),
@@ -1324,6 +1469,7 @@ mod tests {
             result,
             inferred_alternatives: Vec::new(),
             result_unproven: Some(false),
+            parametric: false,
         }
     }
 

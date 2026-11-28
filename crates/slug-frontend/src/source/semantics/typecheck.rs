@@ -12,7 +12,7 @@ use super::{
         Parameter, Pattern, Prefix, SelectCaseKind, Tag, TypeAnnotation,
     },
     environment::{
-        CallableParameter, CallableSignature, CheckPlace, Environment, ImportSnapshots,
+        CallableParameter, CallableSignature, CheckPlace, Environment, ImportSnapshots, KeyPath,
         ModuleSnapshot, NilStartSite, SemanticAnalysis, SemanticBinding, SessionSnapshot,
         function_value_type,
     },
@@ -2448,6 +2448,7 @@ fn function_type(
             .unwrap_or(Type::Unknown),
         inferred_alternatives: Vec::new(),
         result_unproven: None,
+        parametric: false,
     })
 }
 
@@ -2601,7 +2602,9 @@ fn check_function_body_in_scope(
                         parameter.annotation.is_none(),
                     ));
                 }
-                scoped.declare(parameter.name.clone(), SemanticBinding::value(binding_type));
+                let mut binding = SemanticBinding::value(binding_type);
+                binding.key_of = environment.key_parameter(span, index).map(Rc::new);
+                scoped.declare(parameter.name.clone(), binding);
             }
             if let Some(default) = &parameter.default {
                 let actual = check_expression(default, &mut scoped, type_parameters)?;
@@ -2614,6 +2617,16 @@ fn check_function_body_in_scope(
             })
             .transpose()?;
         scoped.enter_function(expected.clone(), parameter_checks);
+        // A generic function's calls through its function-typed parameters
+        // are watched: passing them only what they take, and never letting
+        // them escape, makes it parametric.
+        let through = watched_parameters(parameters, signature, type_parameters);
+        scoped.watch_function_parameters(
+            through
+                .iter()
+                .map(|(name, _, types)| (name.clone(), types.clone()))
+                .collect(),
+        );
         if let ExprKind::Match { subject: None, .. } = &body.kind {
             scoped.record_implicit_subject(body.span.clone(), Type::Tuple(arguments));
         }
@@ -2634,6 +2647,9 @@ fn check_function_body_in_scope(
         }
         if scoped.result_unproven() {
             scoped.record_unproven_result(span.clone());
+        }
+        if !type_parameters.is_empty() {
+            record_parametricity(&scoped, span, body, &through);
         }
         // The function produces its body's value or any `return`'s, which were
         // each checked against `expected` where they occur.
@@ -2911,6 +2927,7 @@ fn check_expression_inner(
                         &signature.identity(),
                         result.clone(),
                         environment.has_unproven_result(&value.span),
+                        environment.is_parametric(&value.span),
                     );
                 }
                 let declared = annotation
@@ -2948,6 +2965,13 @@ fn check_expression_inner(
                     }
                     if let Some(declared) = declared {
                         binding.value_type = declared;
+                    }
+                    if !*mutable && matches!(pattern, Pattern::Binding(_)) {
+                        binding.keys_of = keys_source(value, environment).map(Rc::new);
+                        // An element of a list of a map's keys is one of them.
+                        if let ExprKind::Index { collection, .. } = &value.kind {
+                            binding.key_of = keys_source(collection, environment).map(Rc::new);
+                        }
                     }
                     bind_semantic_pattern(pattern, &binding, environment);
                     if *mutable {
@@ -3873,6 +3897,13 @@ fn check_expression_inner(
                     return Ok(elements[element].clone());
                 }
                 let result = index_result(&collection, &index_type, &expression.span)?;
+                // One of a map's own keys reads one of its values.
+                if let Some(path) = stable_path(collection_expression, environment)
+                    && is_key_of(index, &path, environment)
+                    && let Type::Map(Some((_, value))) = collection.as_map()
+                {
+                    return Ok(*value);
+                }
                 if let Some(schema) = known_struct_schema(&collection, environment)
                     && let ExprKind::Value(Value::Str(name)) = &index.kind
                     && !schema.members.contains_key(name.as_ref())
@@ -5147,6 +5178,7 @@ fn declare_vm_builtins(environment: &mut Environment) {
                 result,
                 inferred_alternatives: Vec::new(),
                 result_unproven: Some(false),
+                parametric: false,
             });
             binding.implicit = true;
             environment.declare(name.into(), binding);
@@ -5623,6 +5655,9 @@ fn check_call(
             }),
         };
         let expected_result = environment.expected_result(&expression.span);
+        if let Some(signature) = &sole_signature {
+            note_key_parameters(signature, arguments, environment);
+        }
         let mut actuals = piped.into_iter().collect::<Vec<_>>();
         let piped_count = actuals.len();
         for (position, argument) in arguments.iter().enumerate() {
@@ -5637,6 +5672,23 @@ fn check_call(
                 );
             }
             actuals.push(check_argument(argument, environment, type_parameters)?);
+        }
+        // A call through a generic function's function-typed parameter must
+        // pass exactly what it takes, for the function to be parametric.
+        if let ExprKind::Name(name) = &callee.kind
+            && let Some(takes) = environment.through_parameter(name)
+        {
+            let exact = arguments
+                .iter()
+                .all(|argument| matches!(argument, CallArgument::Positional(_)))
+                && actuals.len() == takes.len()
+                && actuals
+                    .iter()
+                    .zip(&takes)
+                    .all(|(actual, takes)| actual.is_exactly_assignable_to(takes));
+            if !exact {
+                environment.note_unparametric();
+            }
         }
         let mut shapes = vec![ArgumentShape::Positional; actuals.len() - arguments.len()];
         shapes.extend(arguments.iter().map(|argument| match argument {
@@ -5775,6 +5827,17 @@ fn check_call(
             }
             environment.record_proven_call(expression.span.clone(), enters);
         }
+        if let [signature] = callables.as_slice()
+            && signature.parametric
+        {
+            trust_closures(
+                most_specific[0],
+                arguments,
+                &actuals,
+                piped_count,
+                environment,
+            );
+        }
         check_generic_result(
             &callables,
             most_specific[0],
@@ -5785,6 +5848,338 @@ fn check_call(
         );
         Ok(most_specific[0].result.clone())
     })
+}
+
+/// Records whether the generic function at `span`, with `body` and the
+/// function-typed parameters `through`, is parametric: it passed them only
+/// what they take, let none escape, and proved its result.
+fn record_parametricity(
+    scoped: &Environment,
+    span: &SourceSpan,
+    body: &Expr,
+    through: &[(String, usize, Vec<Type>)],
+) {
+    let names = through
+        .iter()
+        .map(|(name, index, _)| (name.as_str(), *index))
+        .collect::<Vec<_>>();
+    scoped.record_parametric(
+        span.clone(),
+        !scoped.unparametric()
+            && !scoped.result_unproven()
+            && !parameters_escape(body, &names, false),
+    );
+}
+
+/// A generic function's function-typed parameters, by name and position,
+/// with the types each takes; none for a function that is not generic.
+fn watched_parameters(
+    parameters: &[Parameter],
+    signature: &CallableSignature,
+    type_parameters: &[String],
+) -> Vec<(String, usize, Vec<Type>)> {
+    if type_parameters.is_empty() {
+        return Vec::new();
+    }
+    parameters
+        .iter()
+        .zip(&signature.parameters)
+        .enumerate()
+        .filter_map(|(index, (parameter, signature_parameter))| {
+            match &signature_parameter.value_type {
+                Type::Function(Some(types)) if !parameter.discard && !parameter.variadic => {
+                    Some((parameter.name.clone(), index, types[1..].to_vec()))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Notes, for each function literal a call gives a parametric function,
+/// whether it may go without checking its parameters: when every other
+/// argument is proven to be of its parameter's type and the literal's result
+/// of the one the function expects, the function passes the literal only
+/// values from those.
+fn trust_closures(
+    candidate: &InstantiatedCandidate,
+    arguments: &[CallArgument],
+    actuals: &[Type],
+    piped_count: usize,
+    environment: &Environment,
+) {
+    if candidate.bound_types.len() < actuals.len()
+        || !arguments
+            .iter()
+            .all(|argument| matches!(argument, CallArgument::Positional(_)))
+    {
+        return;
+    }
+    let literal = |index: usize| {
+        index
+            .checked_sub(piped_count)
+            .and_then(|index| arguments.get(index))
+            .and_then(|argument| match argument {
+                CallArgument::Positional(value)
+                    if matches!(value.kind, ExprKind::Function { .. }) =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            })
+    };
+    let others_proven = actuals
+        .iter()
+        .zip(&candidate.bound_types)
+        .enumerate()
+        .filter(|(index, _)| literal(*index).is_none())
+        .all(|(_, (actual, expected))| actual.is_proven_assignable_to(expected));
+    for (index, (actual, expected)) in actuals.iter().zip(&candidate.bound_types).enumerate() {
+        let Some(value) = literal(index) else {
+            continue;
+        };
+        let result_proven = match (actual, expected) {
+            (Type::Function(Some(actual)), Type::Function(Some(expected))) => {
+                actual.len() == expected.len() && actual[0].is_proven_assignable_to(&expected[0])
+            }
+            _ => false,
+        };
+        environment.record_trusted_closure(value.span.clone(), others_proven && result_proven);
+    }
+}
+
+/// Whether one of a generic function's function-typed `parameters`, by name
+/// and position, escapes its `body`: is used other than called, given to a
+/// `recur` in its own position, or piped into; inside a nested function at
+/// all; or shadowed.
+fn parameters_escape(body: &Expr, parameters: &[(&str, usize)], nested: bool) -> bool {
+    let watched = |name: &str| parameters.iter().any(|(parameter, _)| *parameter == name);
+    let named =
+        |expression: &Expr| matches!(&expression.kind, ExprKind::Name(name) if watched(name));
+    let escapes = |expression: &Expr| parameters_escape(expression, parameters, nested);
+    let arguments_escape = |arguments: &[CallArgument]| {
+        arguments.iter().any(|argument| match argument {
+            CallArgument::Positional(value)
+            | CallArgument::Named { value, .. }
+            | CallArgument::Spread(value) => escapes(value),
+        })
+    };
+    let shadows = |pattern: &Pattern| {
+        let mut bound = Vec::new();
+        pattern_binding_names(pattern, &mut bound);
+        bound.iter().any(|name| watched(name))
+    };
+    super::stack::grow(|| {
+        match &body.kind {
+        ExprKind::Name(name) => watched(name),
+        ExprKind::Call { callee, arguments } if named(callee) && !nested => {
+            arguments_escape(arguments)
+        }
+        ExprKind::Binary {
+            left,
+            operator: Binary::Pipeline,
+            right,
+        } if !nested => match &right.kind {
+            _ if named(right) => escapes(left),
+            ExprKind::Call { callee, arguments } if named(callee) => {
+                escapes(left) || arguments_escape(arguments)
+            }
+            _ => escapes(left) || escapes(right),
+        },
+        ExprKind::Recur(arguments) if !nested => {
+            arguments.iter().enumerate().any(|(position, argument)| match argument {
+                CallArgument::Positional(value)
+                    if matches!(&value.kind, ExprKind::Name(name)
+                        if parameters.iter().any(|(parameter, index)| parameter == name && *index == position)) =>
+                {
+                    false
+                }
+                CallArgument::Positional(value)
+                | CallArgument::Named { value, .. }
+                | CallArgument::Spread(value) => escapes(value),
+            })
+        }
+        ExprKind::Function { parameters: inner, body: inner_body, .. } => {
+            inner.iter().any(|parameter| watched(&parameter.name))
+                || parameters_escape(inner_body, parameters, true)
+        }
+        // A function whose body is a `match` matches its arguments: the
+        // subject lists its parameters, and a parameter escapes only if a
+        // case binds its position.
+        ExprKind::Match {
+            subject: Some(subject),
+            cases,
+        } if subject_lists_parameters(subject, parameters)
+            || matches!(&subject.kind, ExprKind::Name(name)
+                if parameters.len() == 1 && parameters[0] == (name.as_str(), 0)) =>
+        {
+            cases.iter().any(|case| {
+                case.patterns
+                    .iter()
+                    .any(|pattern| binds_watched(&pattern.pattern, subject, parameters))
+                    || case.guard.as_ref().is_some_and(escapes)
+                    || escapes(&case.value)
+            })
+        }
+        ExprKind::Declare { pattern, .. } if shadows(pattern) => true,
+        ExprKind::Match { cases, .. }
+            if cases
+                .iter()
+                .any(|case| case.patterns.iter().any(|pattern| shadows(&pattern.pattern))) =>
+        {
+            true
+        }
+        _ => {
+            let mut found = false;
+            body.for_each_child(|child| found = found || escapes(child));
+            found
+        }
+    }
+    })
+}
+
+/// The map `expression` names, when it is an immutable binding's or its
+/// constant fields', as `empire.kills`.
+fn stable_path(expression: &Expr, environment: &Environment) -> Option<KeyPath> {
+    match &expression.kind {
+        ExprKind::Name(name) => {
+            let binding = environment.lookup(name)?;
+            binding.declared.is_none().then(|| KeyPath {
+                root: name.clone(),
+                binding: std::ptr::from_ref(binding) as usize,
+                fields: Vec::new(),
+            })
+        }
+        ExprKind::Index { collection, index } => {
+            let ExprKind::Value(Value::Str(field)) = &index.kind else {
+                return None;
+            };
+            let mut path = stable_path(collection, environment)?;
+            path.fields.push(field.as_ref().to_owned());
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
+/// The map whose keys `expression` lists: `keys(m)` for a stable `m`, or a
+/// `val` bound to it.
+fn keys_source(expression: &Expr, environment: &Environment) -> Option<KeyPath> {
+    match &expression.kind {
+        ExprKind::Call { callee, arguments } => match (&callee.kind, arguments.as_slice()) {
+            (ExprKind::Name(name), [CallArgument::Positional(map)])
+                if name == "keys" && environment.lookup(name).is_some_and(|keys| keys.implicit) =>
+            {
+                stable_path(map, environment)
+            }
+            _ => None,
+        },
+        ExprKind::Name(name) => environment.lookup(name)?.keys_of.as_deref().cloned(),
+        _ => None,
+    }
+}
+
+/// Whether `index` is one of the keys of the map at `path`: a parameter
+/// ranging over them, or an element of a list of them.
+fn is_key_of(index: &Expr, path: &KeyPath, environment: &Environment) -> bool {
+    match &index.kind {
+        ExprKind::Name(name) => environment
+            .lookup(name)
+            .and_then(|binding| binding.key_of.as_deref())
+            .is_some_and(|of| of == path),
+        ExprKind::Index { collection, .. } => {
+            keys_source(collection, environment).is_some_and(|of| of == *path)
+        }
+        _ => false,
+    }
+}
+
+/// Notes, for each function literal a call to the generic `signature`
+/// gives, which parameters range over the keys of a map another argument
+/// lists with `keys(m)`: those whose type is the element type of the
+/// parameter that list is given to.
+fn note_key_parameters(
+    signature: &CallableSignature,
+    arguments: &[CallArgument],
+    environment: &Environment,
+) {
+    if signature.generic_arity == 0 {
+        return;
+    }
+    let positional = |index: usize| match arguments.get(index) {
+        Some(CallArgument::Positional(value)) => Some(value),
+        _ => None,
+    };
+    let sources = signature
+        .parameters
+        .iter()
+        .enumerate()
+        .filter_map(|(index, parameter)| match &parameter.value_type {
+            Type::List(Some(element)) => match element.as_ref() {
+                Type::Generic(generic) => {
+                    Some((*generic, keys_source(positional(index)?, environment)?))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if sources.is_empty() {
+        return;
+    }
+    for (index, parameter) in signature.parameters.iter().enumerate() {
+        let (Some(value), Type::Function(Some(types))) = (positional(index), &parameter.value_type)
+        else {
+            continue;
+        };
+        if !matches!(value.kind, ExprKind::Function { .. }) {
+            continue;
+        }
+        let keyed = types[1..]
+            .iter()
+            .enumerate()
+            .filter_map(|(position, takes)| match takes {
+                Type::Generic(generic) => sources
+                    .iter()
+                    .find(|(source, _)| source == generic)
+                    .map(|(_, path)| (position, path.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !keyed.is_empty() {
+            environment.record_key_parameters(value.span.clone(), keyed);
+        }
+    }
+}
+
+/// Whether `subject` is the list of a function's parameters that a `match`
+/// body matches, with each watched one of `parameters` in its own position.
+fn subject_lists_parameters(subject: &Expr, parameters: &[(&str, usize)]) -> bool {
+    let ExprKind::List(items) = &subject.kind else {
+        return false;
+    };
+    parameters.iter().all(|(name, index)| {
+        matches!(items.get(*index), Some(ListElement::Value(Expr { kind: ExprKind::Name(item), .. })) if item == name)
+    })
+}
+
+/// Whether `pattern`, a case of a `match` body over `subject`, the
+/// parameters, binds one of the watched `parameters`: a list pattern does
+/// unless the item at its position, or the rest past its items, discards it;
+/// any other pattern but `_` binds the arguments whole.
+fn binds_watched(pattern: &Pattern, subject: &Expr, parameters: &[(&str, usize)]) -> bool {
+    match (pattern, &subject.kind) {
+        (Pattern::Wildcard, _) => false,
+        (Pattern::List { items, rest }, ExprKind::List(_)) => {
+            parameters.iter().any(|(_, index)| match items.get(*index) {
+                Some(item) => {
+                    !matches!(item, Pattern::Wildcard) && !matches!(item, Pattern::Literal(_))
+                }
+                None => matches!(rest, Some(super::ast::RestPattern::Binding(_))),
+            })
+        }
+        _ => true,
+    }
 }
 
 /// Whether `callee` names its function directly, so a call knows which it
@@ -7284,6 +7679,75 @@ mod tests {
     }
 
     #[test]
+    fn a_literal_given_to_a_parametric_function_checks_no_parameters() {
+        use slug_vm::PackedOpcode::CheckFailed;
+        // `fold` passes `f` only its own `v` and elements and `f`'s results,
+        // so a literal given it, with a proven start, checks nothing on entry;
+        // from an unproven start it checks its accumulator.
+        let checks = |start: &str| {
+            let source = format!(
+                "val fold = fn<T, A>(vs:list<T>, v:A, f:fn<A, A, T>):A match {{\n\
+                   [[], ...] => v\n\
+                   [[h, ...t], ...] => recur(t, f(v, h), f)\n\
+                 }}\n\
+                 type E = {{n: num, xs: list<str>}}\n\
+                 val bump = fn(e:E, x:num):E {{ e copy {{n: e.n + x}} }}\n\
+                 val dyn = fn(x) {{ x }}\n\
+                 val run = fn(e:E):E {{ fold([1, 2], {start}, fn(acc, x) {{ bump(acc, x) }}) }}\n"
+            );
+            let program = super::super::compile("test.slug", &source).expect("folds compile");
+            (0..program.chunk_count())
+                .map(|index| {
+                    program
+                        .chunk(index)
+                        .expect("existing chunk")
+                        .code
+                        .iter()
+                        .filter(|instruction| instruction.opcode == CheckFailed)
+                        .count()
+                })
+                .sum::<usize>()
+        };
+        assert!(
+            checks("e") < checks("dyn(e)"),
+            "{} {}",
+            checks("e"),
+            checks("dyn(e)")
+        );
+
+        // A generic that keeps `f` or binds it in a case is not parametric:
+        // the literal checks its parameter. (One cannot pass `f` a value not
+        // of `A`: the checker rejects that.)
+        let entry_checks = |callee: &str| {
+            let source = format!(
+                "{callee}\n\
+                 type E = {{n: num, xs: list<str>}}\n\
+                 val bump = fn(e:E):E {{ e copy {{n: e.n + 1}} }}\n\
+                 val run = fn(e:E) {{ g(e, fn(acc) {{ bump(acc) }}) }}\n"
+            );
+            let program = super::super::compile("test.slug", &source).expect("calls compile");
+            (0..program.chunk_count())
+                .map(|index| {
+                    program
+                        .chunk(index)
+                        .expect("existing chunk")
+                        .code
+                        .iter()
+                        .filter(|instruction| instruction.opcode == CheckFailed)
+                        .count()
+                })
+                .sum::<usize>()
+        };
+        let parametric = entry_checks("val g = fn<A>(v:A, f:fn<A, A>):A { f(v) }");
+        for unsound in [
+            "var kept = []\nval g = fn<A>(v:A, f:fn<A, A>):A { kept = [f]\n f(v) }",
+            "val g = fn<A>(v:A, f:fn<A, A>):A match {\n  [x, h] => h(x)\n}",
+        ] {
+            assert!(entry_checks(unsound) > parametric, "{unsound}");
+        }
+    }
+
+    #[test]
     fn a_checked_assignment_leaves_the_var_of_its_declared_type() {
         // The first assignment is checked; the copy after it is proven, so
         // only one check is made.
@@ -7567,6 +8031,7 @@ mod tests {
                 result: Type::Unknown,
                 inferred_alternatives: Vec::new(),
                 result_unproven: Some(false),
+                parametric: false,
             }
             .identity(),
         }
@@ -8250,6 +8715,7 @@ mod tests {
             result: Type::union([Type::Generic(0), Type::Nil]),
             inferred_alternatives: Vec::new(),
             result_unproven: Some(false),
+            parametric: false,
         };
         let database = Type::Resource(ResourceIdentity::declared("db.slug", "Database"));
         let status = Type::Enum(
@@ -8422,6 +8888,7 @@ mod tests {
             result: Type::union([Type::Generic(0), Type::Nil]),
             inferred_alternatives: Vec::new(),
             result_unproven: Some(false),
+            parametric: false,
         };
         let actual = Type::List(Some(Box::new(Type::Str)));
         let mut inferred = HashMap::new();
@@ -8571,6 +9038,7 @@ mod tests {
             result: Type::Generic(0),
             inferred_alternatives: Vec::new(),
             result_unproven: Some(false),
+            parametric: false,
         };
         let result = instantiate_candidate(
             &signature,

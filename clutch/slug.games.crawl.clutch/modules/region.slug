@@ -61,7 +61,7 @@ export val tally = fn(monsters:list):Counts {
 /**
  * How many monsters `counts` holds in all.
  */
-export val total = fn(counts:Counts):num { reduce(keys(counts), 0, fn(sum, k) { sum + (counts[k] ?? 0) }) }
+export val total = fn(counts:Counts):num { reduce(keys(counts), 0, fn(sum, k) { sum + counts[k] }) }
 
 val levelOf = fn(name:str):num {
     val found = filter(bestiary.monsters, fn(m) { m.name == name })

@@ -881,7 +881,7 @@ export val bleed = fn(empire:Empire):Empire {
         val parts = string.split(k, "|")
         val territory = parts[0]
         val kind = parts[1]
-        val n = empire.kills[k] ?? 0
+        val n = empire.kills[k]
         match e.holds[territory] {
             i: num => if (e.factions[i].people == peopleOf(kind)) {
                 if (len(parts) > 2) {

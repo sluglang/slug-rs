@@ -42,6 +42,14 @@
   `random.Generator`, since a record type is not a `map`. `slug.std`'s `get`,
   `put`, and `remove` keep a map's key and value types, and
   `signal.notify` takes a `list<str>`.
+- A function literal given to `map`, `filter`, `reduce`, or another generic
+  function that only ever passes it what its own arguments and results give
+  no longer checks its parameters when its other arguments are proven, so
+  `reduce(xs, state, fn(s, x) { ... })` over typed state is not checked on
+  each element.
+- `m[k]` is one of `m`'s values, not `V|nil`, when `k` is one of `m`'s keys:
+  a closure's parameter over `keys(m)`, as `filter(keys(m), fn(k) { m[k] >
+  1 })`, or an element of a `val` bound to `keys(m)`.
 - Crawl's region, empire, lore, and world state are typed: `region` exports
   `Counts` and `Visit`, `empire` exports `Empire`, `Faction`, `War`, `Land`,
   and narrower `Factions`, `Held`, and `Territories`, and `game` exports

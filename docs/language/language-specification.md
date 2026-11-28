@@ -1201,6 +1201,13 @@ literal whose keys are all distinct string constants has a record type as
 well as its map type. [Record Types](record-types.md) defines conformance,
 field reads, and record match constraints.
 
+Reading `m[k]` from a `map<K, V>` gives `V|nil`, since `k` may be missing,
+except where the checker knows `k` is one of `m`'s keys: `m` is named by an
+immutable binding and constant fields, as `empire.kills`, and `k` is a
+parameter of a function literal given, alongside `keys(m)`, to a generic
+function that passes it that list's elements, as `filter(keys(m), fn(k) {
+m[k] > 1 })`, or an element of a `val` bound to `keys(m)`. Then it gives `V`.
+
 `A|B` describes a value that may conform to either `A` or `B`; it does not
 convert between them. `nil` is an ordinary union member, so `str|nil` is the
 nilable form of `str`. A declaration of `str` does not permit `nil`, while a

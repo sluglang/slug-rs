@@ -30,6 +30,7 @@ pub(super) struct Compiler {
     declarations: Vec<ModuleDeclaration>,
     selected_calls: HashMap<SourceSpan, CallableIdentity>,
     proven_calls: HashSet<SourceSpan>,
+    trusted_closures: HashSet<SourceSpan>,
     function_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_identities: HashMap<SourceSpan, CallableIdentity>,
     foreign_resource_signatures: HashMap<SourceSpan, ForeignResourceSignature>,
@@ -116,6 +117,7 @@ impl Compiler {
             declarations: Vec::new(),
             selected_calls: analysis.selected_calls.clone(),
             proven_calls: analysis.proven_calls.clone(),
+            trusted_closures: analysis.trusted_closures.clone(),
             function_identities: analysis.function_identities.clone(),
             foreign_identities: analysis.foreign_identities.clone(),
             foreign_resource_signatures: analysis.foreign_resource_signatures.clone(),
@@ -2182,12 +2184,17 @@ impl Compiler {
             // re-enters past these checks, its arguments checked where it
             // is; any other `recur` restarts at the first instruction.
             let mut checked = false;
+            // A function literal given to a parametric function is passed
+            // only values its parameters' types describe, and checks none.
+            let trusted = self.trusted_closures.contains(span);
             for slot in 0..parameter_metadata.len() {
-                if self.boundary_checks.get(span).is_some_and(|checks| {
-                    checks.iter().any(|check| {
+                if !trusted
+                    && self.boundary_checks.get(span).is_some_and(|checks| {
+                        checks.iter().any(|check| {
                         matches!(check.place, CheckPlace::Parameter { index, .. } if index == slot)
                     })
-                }) {
+                    })
+                {
                     state.emit(Op::GetLocal(slot), span);
                     self.emit_checks(&mut state, span, |place| {
                         matches!(place, CheckPlace::Parameter { index, .. } if *index == slot)

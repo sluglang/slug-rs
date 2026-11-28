@@ -109,6 +109,17 @@ entry check would, naming the same parameter. A call through a function
 value, of an overload set, of a generic function, or with named, spread, or
 defaulted arguments enters at the start, checks included.
 
+**A function literal given to a parametric function checks nothing on
+entry.** A generic function is parametric when it calls each of its
+function-typed parameters only with exactly the types they take, lets none
+of them escape, being only called, piped into, or given to its own `recur`,
+and proves its result. Such a function passes a function literal only
+values that came from its own arguments or from the literal's results. So a
+literal given to it, when the other arguments are proven and the literal's
+result is too, as `reduce(xs, state, fn(s, x) { step(s, x) })` for a proven
+`state`, has no entry checks: its parameters are proven by the call.
+`slug.std`'s `map`, `filter`, `reduce`, and `each` are parametric.
+
 **A dynamic call to an overload set selects by type.** A call the checker
 could not resolve, as one through an overload set passed as a value, takes
 the first member whose parameters bind the arguments and whose parameters'

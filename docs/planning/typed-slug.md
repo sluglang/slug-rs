@@ -787,11 +787,22 @@ removed `nil`s, now written with `compact`, and one wrong annotation.
     a large record type, as `Empire`, compiled a third slower (109 to 145
     ms for `crawl-ticks`, which compiles each run, and was the whole of
     that benchmark's slowdown). Record fields are shared, `Rc`, now.
-  - [ ] A closure's parameters typed from a generic's signature, as
-    `reduce(xs, empire, fn(e, x) { ... })`, are not proven, so its calls
-    check the empire on each element; the season's loops became `recur`s.
-  - [ ] `m[k]` is `V|nil` even where `k` came from `keys(m)`, which Crawl
-    met six times.
+  - [x] A closure's parameters typed from a generic's signature, as
+    `reduce(xs, empire, fn(e, x) { ... })`, were checked on every call, the
+    empire deeply, on each element; the season's loops became `recur`s.
+    Now a generic function is *parametric* when it calls its function-typed
+    parameters only with exactly what they take, never lets them escape
+    (any use but a call, a pipe into one, or a `recur` in its own position,
+    or a case of a `match` body binding it), and proves its result; a
+    function literal given to one, whose other arguments are proven and
+    whose result is proven, checks none of its parameters: the function
+    passes it only values from those. `slug.std`'s `map`, `filter`,
+    `reduce`, `each`, and the like are parametric.
+  - [x] `m[k]` was `V|nil` even where `k` came from `keys(m)`, which Crawl
+    met six times. Now, for a map named by an immutable binding and
+    constant fields, a closure parameter over `keys(m)` given to a generic,
+    a `val` bound to `keys(m)`'s element, or `ks[i]` for `val ks =
+    keys(m)`, is one of `m`'s keys, and `m[k]` reads `V`.
 
   With those, typed Crawl runs within 2% of untyped, the rest compile time.
 - [ ] Specify opt-in strict modules, where everything must type and unknown

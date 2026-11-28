@@ -3437,6 +3437,37 @@ fn tuples_recursive_types_and_generic_structs_are_checked_deeply() {
 }
 
 #[test]
+fn a_maps_own_keys_read_its_values() {
+    let run = |source: &str| {
+        let path = fixture_path("map-keys");
+        fs::write(&path, source).expect("write map keys");
+        let output = slug().arg(&path).output().expect("run map keys");
+        fs::remove_file(&path).expect("remove map keys");
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    // Over `keys(m)`, directly, through a `val`, or of a field's map, `m[k]`
+    // is one of `m`'s values, not `nil`.
+    let (stdout, stderr) = run("val {filter, reduce} = import(\"slug.std\")\n\
+         val counts:map<str, num> = {a: 1, b: 2}\n\
+         val total:num = reduce(keys(counts), 0, fn(sum, k) { sum + counts[k] })\n\
+         val ks = keys(counts)\n\
+         val go = fn(i:num, acc:num):num { if (i == len(ks)) { acc } else { recur(i + 1, acc + counts[ks[i]]) } }\n\
+         type E = {holds: map<str, num>}\n\
+         val held = fn(e:E):list<str> { filter(keys(e.holds), fn(k) { e.holds[k] > 1 }) }\n\
+         println(total, go(0, 0), held({holds: {x: 1, y: 2}}))\n");
+    assert_eq!(stdout, "3 3 [\"y\"]\n", "{stderr}");
+    // Another map's keys are not this one's.
+    let (_, stderr) = run("val {reduce} = import(\"slug.std\")\n\
+         val a:map<str, num> = {x: 1}\n\
+         val b:map<str, num> = {y: 2}\n\
+         val total:num = reduce(keys(a), 0, fn(sum, k) { sum + b[k] })\n");
+    assert!(stderr.contains("num|nil"), "{stderr}");
+}
+
+#[test]
 fn an_alias_names_an_imported_type_and_a_checked_var_stays_proven() {
     // An alias may name an imported module's type; a `var` assigned an
     // unproven value is checked there, and of its type after.
