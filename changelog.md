@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 (2026-11-28)
+
 - Releases: pushing a `v<version>` tag builds profile-guided CLI archives for
   macOS (aarch64), Linux (x86_64), and Windows (x86_64), checks each unpacked
   archive as an installation, and drafts a GitHub release with checksums and

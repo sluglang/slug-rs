@@ -5,7 +5,7 @@ fn help_describes_the_current_public_capability() {
     let output = slug().arg("--help").output().expect("run slug --help");
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
-    assert!(stdout.contains("slug-vm 0.1.0"));
+    assert!(stdout.contains(&format!("slug-vm {}", env!("CARGO_PKG_VERSION"))));
     let build = if cfg!(feature = "concurrency") {
         "full build"
     } else {
@@ -129,7 +129,7 @@ fn version_is_available_without_loading_source() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).expect("version is UTF-8"),
-        "slug-vm 0.1.0\n"
+        format!("slug-vm {}\n", env!("CARGO_PKG_VERSION"))
     );
     assert!(output.stderr.is_empty());
 }

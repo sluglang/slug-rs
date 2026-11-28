@@ -19,7 +19,7 @@ resolver = "3"
 
 # Every crate shares the release version; a `v<version>` tag publishes it.
 [workspace.package]
-version = "0.1.0"
+version = "0.5.0"
 
 # Normal desktop/server Slug
 [profile.release]
